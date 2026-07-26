@@ -4,8 +4,9 @@ JLShell Link 是 JLShell 的私有商业网络组件原型，预定仓库为
 `Voghost/JLShellLink`。它通过 rust-libp2p 在本机 Connector 与远端 Agent
 之间建立加密 TCP 隧道，优先直连，并可通过 Circuit Relay v2 回退。
 
-> 当前为 unsigned Stage 0 prototype，不可直接用于生产环境。尚未接入账号、
-> 套餐、正式控制平面、自动部署、二进制签名或生产 Relay 运维能力。
+> 当前仍是 unsigned prototype，不可直接用于生产环境。网站控制平面已经定义账号
+> 权限、节点持钥注册、短期凭据、Authority 轮换和 Relay Grant 配额接口；Rust
+> 进程主动调用这些 HTTP 接口、自动部署、二进制签名和生产 Relay 运维属于下一阶段。
 
 ## 组件
 
@@ -22,6 +23,10 @@ JLShell Link 是 JLShell 的私有商业网络组件原型，预定仓库为
 原始 `claimsBytes`。Relay 只能看到加密后的 libp2p 流量。网站控制平面使用同一
 version 1 Protobuf wire format 和 Ed25519 key-id 算法；`link-protocol` 中的固定
 兼容性夹具用于防止 Java/Rust 编码产生漂移。
+
+Agent 的 `--authority-public` 既接受 `authority-init` 生成的旧版单公钥 JSON，也接受
+网站 `GET /api/v1/link/ticket-authority` 返回的轮换 keyring JSON。过渡期新旧公钥
+可同时验证票据，但签发端只使用当前 active key。
 
 当前安全基线只接受 `/ip4` 或 `/ip6` multiaddr。DNS multiaddr 暂时禁用，以避免
 libp2p 0.56 DNS 依赖中的已知 RustSec DoS 公告；CI 会验证 Hickory 不在实际构建
@@ -45,6 +50,7 @@ cargo build --workspace
 ```text
 jlshell-linkctl authority-init
 jlshell-linkctl identity-init
+jlshell-linkctl identity-proof --identity <node.key> --payload <base64url-payload>
 jlshell-linkctl ticket-issue
 jlshell-relay
 jlshell-agent --connect-policy auto|direct-only|relay-only

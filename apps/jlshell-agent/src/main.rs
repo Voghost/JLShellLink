@@ -10,8 +10,8 @@ use futures::{AsyncWriteExt, StreamExt};
 use libp2p::swarm::{StreamProtocol, SwarmEvent};
 use libp2p::{Multiaddr, PeerId};
 use link_crypto::{
-    NonceReplayCache, VerificationContext, load_authority_public, load_or_generate_identity,
-    verify_ticket,
+    AuthorityKeyring, NonceReplayCache, VerificationContext, load_authority_keyring,
+    load_or_generate_identity, verify_ticket_with_keyring,
 };
 use link_protocol::{
     OpenStatus, OpenTcpRequest, OpenTcpResponse, TCP_PROTOCOL, read_frame, write_frame,
@@ -45,8 +45,7 @@ struct Args {
 }
 
 struct Authorization {
-    key_id: String,
-    public_key: ed25519_dalek::VerifyingKey,
+    authority_keys: AuthorityKeyring,
     agent_peer_id: PeerId,
     allowed_targets: HashSet<SocketAddr>,
     replay_cache: NonceReplayCache,
@@ -60,10 +59,9 @@ async fn main() -> Result<()> {
 
     let identity = load_or_generate_identity(&args.identity)?;
     let agent_peer_id = identity.public().to_peer_id();
-    let (key_id, public_key) = load_authority_public(&args.authority_public)?;
+    let authority_keys = load_authority_keyring(&args.authority_public)?;
     let authorization = Arc::new(Authorization {
-        key_id,
-        public_key,
+        authority_keys,
         agent_peer_id,
         allowed_targets: args.allowed_targets.into_iter().collect(),
         replay_cache: NonceReplayCache::default(),
@@ -167,10 +165,9 @@ async fn handle_stream(
         target_port: target.port(),
         now_epoch_seconds: now_epoch_seconds()?,
     };
-    if let Err(error) = verify_ticket(
+    if let Err(error) = verify_ticket_with_keyring(
         &ticket,
-        &authorization.key_id,
-        &authorization.public_key,
+        &authorization.authority_keys,
         &context,
         &authorization.replay_cache,
     ) {
