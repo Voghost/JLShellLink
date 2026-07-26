@@ -1,0 +1,21 @@
+[package]
+name = "link-crypto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+base64.workspace = true
+ed25519-dalek.workspace = true
+libp2p.workspace = true
+link-protocol = { path = "../link-protocol" }
+parking_lot.workspace = true
+prost.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

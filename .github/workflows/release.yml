@@ -1,0 +1,68 @@
+name: Prototype Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            archive: jlshell-link-linux-x64.tar.gz
+            exe: ''
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            archive: jlshell-link-macos-arm64.tar.gz
+            exe: ''
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            archive: jlshell-link-windows-x64.tar.gz
+            exe: .exe
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+          targets: ${{ matrix.target }}
+      - name: Install musl toolchain
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install --yes musl-tools
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Package unsigned prototype
+        shell: bash
+        run: |
+          mkdir -p dist/package
+          for binary in jlshell-agent jlshell-connector jlshell-relay jlshell-linkctl; do
+            cp "target/${{ matrix.target }}/release/${binary}${{ matrix.exe }}" dist/package/
+          done
+          tar -czf "dist/${{ matrix.archive }}" -C dist/package .
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "dist/${{ matrix.archive }}" > "dist/${{ matrix.archive }}.sha256"
+          else
+            shasum -a 256 "dist/${{ matrix.archive }}" > "dist/${{ matrix.archive }}.sha256"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create private unsigned prototype release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME (unsigned prototype)" --prerelease --notes "Unsigned Stage 0 prototype. Not for production use."

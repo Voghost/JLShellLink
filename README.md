@@ -1,0 +1,55 @@
+# JLShell Link
+
+JLShell Link 是 JLShell 的私有商业网络组件原型，预定仓库为
+`Voghost/JLShellLink`。它通过 rust-libp2p 在本机 Connector 与远端 Agent
+之间建立加密 TCP 隧道，优先直连，并可通过 Circuit Relay v2 回退。
+
+> 当前为 unsigned Stage 0 prototype，不可直接用于生产环境。尚未接入账号、
+> 套餐、正式控制平面、自动部署、二进制签名或生产 Relay 运维能力。
+
+## 组件
+
+- `jlshell-agent`：运行在远端服务器，只访问显式授权的精确 IP:端口。
+- `jlshell-connector`：运行在 JLShell 所在机器，只监听回环地址。
+- `jlshell-relay`：Circuit Relay v2 中继，默认只允许回环监听。
+- `jlshell-linkctl`：生成开发 Authority、节点身份和五分钟单流票据。
+- `link-protocol`：版本化 Protobuf 控制帧和 `/jlshell/link/tcp/1.0.0`。
+- `link-crypto`：Ed25519 票据签发、验证与 nonce 防重放。
+- `link-transport`：封装 QUIC、TCP/Noise/Yamux、AutoNAT、DCUtR 和 alpha
+  `libp2p-stream`，不向业务接口泄漏其类型。
+
+传输链路中的 QUIC 或 Noise 提供节点间加密与身份认证；授权票据的签名对象是
+原始 `claimsBytes`。Relay 只能看到加密后的 libp2p 流量。
+
+## 构建与验证
+
+需要 Rust/Cargo 1.97.1：
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo build --workspace
+```
+
+常用 CLI：
+
+```text
+jlshell-linkctl authority-init
+jlshell-linkctl identity-init
+jlshell-linkctl ticket-issue
+jlshell-relay
+jlshell-agent --connect-policy auto|direct-only|relay-only
+jlshell-connector --connect-policy auto|direct-only|relay-only
+```
+
+完整的回环直连和 Relay 演示步骤见 [docs/local-smoke-test.md](docs/local-smoke-test.md)。
+Linux 双网络场景可直接以 root 运行
+[scripts/linux-netns-smoke.sh](scripts/linux-netns-smoke.sh)。脚本创建隔离的 Agent 和
+Connector network namespace，并强制经 Relay 完成二进制 Echo；GitHub-hosted runner
+会尝试运行，但不保证具有创建 namespace 所需的能力。
+
+## 发布边界
+
+Cargo workspace 全部设置 `publish = false`，不会发布到 crates.io。GitHub Actions
+只向私有仓库的 GitHub Release 上传 unsigned prototype 压缩包和 SHA-256。

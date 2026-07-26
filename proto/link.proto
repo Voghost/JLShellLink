@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package jlshell.link.v1;
+
+// Do not add map fields: claims_bytes must remain deterministically reproducible
+// by the future Java control plane.
+message TicketClaims {
+  uint32 version = 1;
+  bytes connector_peer_id = 2;
+  bytes agent_peer_id = 3;
+  string target_ip = 4;
+  uint32 target_port = 5;
+  int64 issued_at_epoch_seconds = 6;
+  int64 not_before_epoch_seconds = 7;
+  int64 expires_at_epoch_seconds = 8;
+  bytes nonce = 9;
+  uint32 max_streams = 10;
+}
+
+message SignedTicket {
+  bytes claims_bytes = 1;
+  string key_id = 2;
+  bytes signature = 3;
+}
+
+message OpenTcpRequest {
+  SignedTicket ticket = 1;
+  string target_ip = 2;
+  uint32 target_port = 3;
+}
+
+message OpenTcpResponse {
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    STATUS_OK = 1;
+    STATUS_UNAUTHORIZED = 2;
+    STATUS_TARGET_DENIED = 3;
+    STATUS_CONNECT_FAILED = 4;
+    STATUS_BAD_REQUEST = 5;
+  }
+  Status status = 1;
+  string message = 2;
+}
+

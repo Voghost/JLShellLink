@@ -1,0 +1,7 @@
+/target/
+/.dev/
+*.key
+*.ticket
+*.log
+.DS_Store
+.idea/
