@@ -45,7 +45,6 @@ pub fn build_client_swarm(identity: identity::Keypair) -> Result<Swarm<ClientBeh
             yamux::Config::default,
         )?
         .with_quic()
-        .with_dns()?
         .with_relay_client(noise::Config::new, yamux::Config::default)?
         .with_behaviour(|key, relay_client| {
             let local_peer_id = key.public().to_peer_id();
@@ -75,7 +74,6 @@ pub fn build_relay_swarm(identity: identity::Keypair) -> Result<Swarm<RelayBehav
             yamux::Config::default,
         )?
         .with_quic()
-        .with_dns()?
         .with_behaviour(|key| {
             let local_peer_id = key.public().to_peer_id();
             RelayBehaviour {

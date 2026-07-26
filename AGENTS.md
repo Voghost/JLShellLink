@@ -19,6 +19,9 @@
 - `libp2p-stream` 只能出现在 `link-transport` 和二进制内部，不成为公共业务 API。
 - Connector 只能监听回环地址；Agent 目标必须是显式精确 IP:端口。
 - Relay 默认只能监听回环地址，公网监听必须显式确认且不得宣称生产可用。
+- 当前只使用 IP multiaddr；在依赖安全公告修复前不得重新启用 libp2p `dns` feature。
+- RustSec 对 `RUSTSEC-2026-0118`、`RUSTSEC-2026-0119` 的临时豁免必须与 CI 的实际
+  构建图检查同时存在；若 Hickory 进入构建图，CI 必须立即失败。
 - 不提交身份私钥、Authority 私钥、票据或运行日志中的敏感数据。
 
 ## 验证

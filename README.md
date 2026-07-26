@@ -23,6 +23,12 @@ JLShell Link 是 JLShell 的私有商业网络组件原型，预定仓库为
 version 1 Protobuf wire format 和 Ed25519 key-id 算法；`link-protocol` 中的固定
 兼容性夹具用于防止 Java/Rust 编码产生漂移。
 
+当前安全基线只接受 `/ip4` 或 `/ip6` multiaddr。DNS multiaddr 暂时禁用，以避免
+libp2p 0.56 DNS 依赖中的已知 RustSec DoS 公告；CI 会验证 Hickory 不在实际构建
+依赖图中。由于 libp2p 元包仍会把未启用的可选依赖记录到 `Cargo.lock`，安全审计仅
+临时豁免 `RUSTSEC-2026-0118` 和 `RUSTSEC-2026-0119`；升级到修复版依赖后必须移除
+豁免，再评估是否恢复 DNS multiaddr。
+
 ## 构建与验证
 
 需要 Rust/Cargo 1.97.1：
