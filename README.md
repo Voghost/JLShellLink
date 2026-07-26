@@ -19,7 +19,9 @@ JLShell Link 是 JLShell 的私有商业网络组件原型，预定仓库为
   `libp2p-stream`，不向业务接口泄漏其类型。
 
 传输链路中的 QUIC 或 Noise 提供节点间加密与身份认证；授权票据的签名对象是
-原始 `claimsBytes`。Relay 只能看到加密后的 libp2p 流量。
+原始 `claimsBytes`。Relay 只能看到加密后的 libp2p 流量。网站控制平面使用同一
+version 1 Protobuf wire format 和 Ed25519 key-id 算法；`link-protocol` 中的固定
+兼容性夹具用于防止 Java/Rust 编码产生漂移。
 
 ## 构建与验证
 
