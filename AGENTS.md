@@ -5,6 +5,12 @@
 本目录是独立 Git 仓库，预定远程为私有 `Voghost/JLShellLink`。不要把本仓库的
 提交与父级聚合目录、`JLShell`、`JLShellWebsite` 或 `JLShellLinkPlugin` 混合。
 
+## 分支流程
+
+- 日常开发和功能分支以 `develop` 为基线，提交先进入 `develop`。
+- `main` 只接收 GitHub 上的 `develop -> main` Pull Request，不得直接推送开发提交。
+- 发布标签只从 `main` 创建。
+
 ## 技术与边界
 
 - Rust 1.97.1、2024 edition，workspace 内所有 crate 禁止发布到 crates.io。
@@ -25,4 +31,3 @@ cargo test --workspace
 
 网络行为变更还应分别验证 `direct-only`、`relay-only` 和 `auto` 回退，并确认
 二进制数据双向完整、半关闭正常、进程退出后监听端口释放。
-
