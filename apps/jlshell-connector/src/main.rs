@@ -32,8 +32,11 @@ use tracing::{info, warn};
 struct Args {
     #[arg(long, default_value = "connector-identity.key")]
     identity: PathBuf,
+    /// Create/load the connector identity, print its `PeerId`, then exit.
     #[arg(long)]
-    agent_peer: PeerId,
+    print_identity: bool,
+    #[arg(long)]
+    agent_peer: Option<PeerId>,
     #[arg(long = "agent-address")]
     agent_addresses: Vec<Multiaddr>,
     #[arg(long)]
@@ -43,10 +46,22 @@ struct Args {
     #[arg(long, value_enum, default_value_t = ConnectPolicy::Auto)]
     connect_policy: ConnectPolicy,
     #[arg(long)]
-    ticket: PathBuf,
+    ticket: Option<PathBuf>,
     #[arg(long)]
-    target: SocketAddr,
+    target: Option<SocketAddr>,
     #[arg(long, default_value = "127.0.0.1:0")]
+    local_bind: SocketAddr,
+}
+
+#[derive(Debug)]
+struct RunArgs {
+    agent_peer: PeerId,
+    agent_addresses: Vec<Multiaddr>,
+    relay_address: Option<Multiaddr>,
+    relay_peer: Option<PeerId>,
+    connect_policy: ConnectPolicy,
+    ticket: PathBuf,
+    target: SocketAddr,
     local_bind: SocketAddr,
 }
 
@@ -60,11 +75,20 @@ enum ConnectionPath {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_target(false).init();
     let args = Args::parse();
+    if args.print_identity {
+        let identity = load_or_generate_identity(&args.identity)?;
+        let connector_peer_id = identity.public().to_peer_id();
+        println!("CONNECTOR_PEER_ID={connector_peer_id}");
+        println!("CONNECTOR_EVENT=IDENTITY_READY");
+        return Ok(());
+    }
+    let identity_path = args.identity.clone();
+    let args = RunArgs::try_from(args)?;
     validate_args(&args)?;
+    let identity = load_or_generate_identity(&identity_path)?;
+    let connector_peer_id = identity.public().to_peer_id();
     let ticket = SignedTicket::decode(fs::read(&args.ticket)?.as_slice())
         .context("ticket file is not a valid signed-ticket envelope")?;
-    let identity = load_or_generate_identity(&args.identity)?;
-    let connector_peer_id = identity.public().to_peer_id();
     let mut swarm = link_transport::build_client_swarm(identity)?;
 
     let path = establish_connection(&mut swarm, &args).await?;
@@ -85,7 +109,9 @@ async fn main() -> Result<()> {
 
     let listener = TcpListener::bind(args.local_bind).await?;
     println!("LISTEN_ADDRESS={}", listener.local_addr()?);
+    println!("CONNECTOR_EVENT=TUNNEL_LISTENING");
     let (mut local_stream, local_peer) = listener.accept().await?;
+    println!("CONNECTOR_EVENT=LOCAL_CONNECTED");
     info!(%local_peer, "local client connected");
 
     let mut tunnel = control
@@ -113,6 +139,7 @@ async fn main() -> Result<()> {
         agent_to_local = copied.1,
         "TCP tunnel closed"
     );
+    println!("CONNECTOR_EVENT=TUNNEL_CLOSED");
     swarm_task.abort();
     let _ = swarm_task.await;
     Ok(())
@@ -120,7 +147,7 @@ async fn main() -> Result<()> {
 
 async fn establish_connection(
     swarm: &mut libp2p::Swarm<link_transport::ClientBehaviour>,
-    args: &Args,
+    args: &RunArgs,
 ) -> Result<ConnectionPath> {
     if args.connect_policy != ConnectPolicy::RelayOnly && !args.agent_addresses.is_empty() {
         let (quic_addresses, fallback_addresses): (Vec<_>, Vec<_>) = args
@@ -219,7 +246,30 @@ async fn wait_for_agent(
     }
 }
 
-fn validate_args(args: &Args) -> Result<()> {
+impl TryFrom<Args> for RunArgs {
+    type Error = anyhow::Error;
+
+    fn try_from(value: Args) -> Result<Self> {
+        Ok(Self {
+            agent_peer: value
+                .agent_peer
+                .context("--agent-peer is required unless --print-identity is used")?,
+            agent_addresses: value.agent_addresses,
+            relay_address: value.relay_address,
+            relay_peer: value.relay_peer,
+            connect_policy: value.connect_policy,
+            ticket: value
+                .ticket
+                .context("--ticket is required unless --print-identity is used")?,
+            target: value
+                .target
+                .context("--target is required unless --print-identity is used")?,
+            local_bind: value.local_bind,
+        })
+    }
+}
+
+fn validate_args(args: &RunArgs) -> Result<()> {
     if !args.local_bind.ip().is_loopback() {
         bail!("--local-bind must use 127.0.0.1 or ::1");
     }
@@ -232,4 +282,24 @@ fn validate_args(args: &Args) -> Result<()> {
         bail!("--target must be an exact, non-unspecified IP address");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identity_probe_requires_no_tunnel_arguments() {
+        let args = Args::try_parse_from(["jlshell-connector", "--print-identity"]).unwrap();
+        assert!(args.print_identity);
+        assert!(args.agent_peer.is_none());
+        assert!(args.ticket.is_none());
+        assert!(args.target.is_none());
+    }
+
+    #[test]
+    fn tunnel_arguments_are_checked_before_startup() {
+        let args = Args::try_parse_from(["jlshell-connector"]).unwrap();
+        assert!(RunArgs::try_from(args).is_err());
+    }
 }

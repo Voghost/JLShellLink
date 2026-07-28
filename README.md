@@ -54,8 +54,17 @@ jlshell-linkctl identity-proof --identity <node.key> --payload <base64url-payloa
 jlshell-linkctl ticket-issue
 jlshell-relay
 jlshell-agent --connect-policy auto|direct-only|relay-only
+jlshell-connector --print-identity --identity <connector-identity.key>
 jlshell-connector --connect-policy auto|direct-only|relay-only
 ```
+
+`--print-identity` 只创建或读取 0600 Connector 身份文件，输出稳定的
+`CONNECTOR_PEER_ID` 后退出，供 Program 插件在取票前完成设备身份绑定。正常隧道模式
+额外输出 `CONNECTOR_EVENT` 生命周期行，已有参数和人类可读日志保持兼容。
+
+标签发布包保留标准的 `jlshell-agent` 可执行文件，同时额外包含供 Program 插件部署使用的
+平台文件名：`jlshell-agent-linux-x64`、`jlshell-agent-macos-arm64` 和
+`jlshell-agent-windows-x64.exe`。
 
 完整的回环直连和 Relay 演示步骤见 [docs/local-smoke-test.md](docs/local-smoke-test.md)。
 Linux 双网络场景可直接以 root 运行
