@@ -187,7 +187,8 @@ pub fn load_authority_keyring(path: &Path) -> Result<AuthorityKeyring, CryptoErr
     parse_authority_keyring(&fs::read(path)?)
 }
 
-fn parse_authority_keyring(data: &[u8]) -> Result<AuthorityKeyring, CryptoError> {
+/// Parses either the website keyring response or the legacy single public-key file.
+pub fn parse_authority_keyring(data: &[u8]) -> Result<AuthorityKeyring, CryptoError> {
     if let Ok(legacy) = serde_json::from_slice::<EncodedAuthorityKey>(data) {
         if legacy.kind != "ed25519-public" {
             return Err(CryptoError::InvalidKey(

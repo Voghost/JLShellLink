@@ -5,8 +5,9 @@ JLShell Link 是 JLShell 的私有商业网络组件原型，预定仓库为
 之间建立加密 TCP 隧道，优先直连，并可通过 Circuit Relay v2 回退。
 
 > 当前仍是 unsigned prototype，不可直接用于生产环境。网站控制平面已经定义账号
-> 权限、节点持钥注册、短期凭据、Authority 轮换和 Relay Grant 配额接口；Rust
-> 进程主动调用这些 HTTP 接口、自动部署、二进制签名和生产 Relay 运维属于下一阶段。
+> 权限、节点持钥注册、短期凭据、Authority 轮换和 Relay Grant 配额接口。Rust
+> Agent/Relay 已能通过 HTTPS 主动心跳，Agent 会在线刷新 Authority；Relay Grant
+> 对 Circuit Relay 数据面的强制执行、二进制签名和生产 Relay 运维仍未完成。
 
 ## 组件
 
@@ -18,6 +19,8 @@ JLShell Link 是 JLShell 的私有商业网络组件原型，预定仓库为
 - `link-crypto`：Ed25519 票据签发、验证与 nonce 防重放。
 - `link-transport`：封装 QUIC、TCP/Noise/Yamux、AutoNAT、DCUtR 和 alpha
   `libp2p-stream`，不向业务接口泄漏其类型。
+- `link-control-plane`：关闭重定向的 Rustls HTTPS 客户端，负责节点心跳和 Authority
+  刷新；明文 HTTP 只允许显式回环开发地址。
 
 传输链路中的 QUIC 或 Noise 提供节点间加密与身份认证；授权票据的签名对象是
 原始 `claimsBytes`。Relay 只能看到加密后的 libp2p 流量。网站控制平面使用同一
@@ -53,13 +56,18 @@ jlshell-linkctl identity-init
 jlshell-linkctl identity-proof --identity <node.key> --payload <base64url-payload>
 jlshell-linkctl ticket-issue
 jlshell-relay
-jlshell-agent --connect-policy auto|direct-only|relay-only
+jlshell-agent --print-identity --identity <agent-identity.key>
+jlshell-agent --connect-policy auto|direct-only|relay-only \
+  --control-plane-url <https-url> --credential-file <0600-token-file>
 jlshell-connector --print-identity --identity <connector-identity.key>
+jlshell-connector --identity-proof <base64url-payload> --identity <connector-identity.key>
 jlshell-connector --connect-policy auto|direct-only|relay-only
 ```
 
 `--print-identity` 只创建或读取 0600 Connector 身份文件，输出稳定的
-`CONNECTOR_PEER_ID` 后退出，供 Program 插件在取票前完成设备身份绑定。正常隧道模式
+`CONNECTOR_PEER_ID` 和 `CONNECTOR_PUBLIC_KEY` 后退出，供 Program 插件在取票前完成
+设备身份绑定；`--identity-proof` 使用同一私钥签名网站 challenge。Agent 和 Relay
+提供等价的持钥输出。正常隧道模式
 额外输出 `CONNECTOR_EVENT` 生命周期行，已有参数和人类可读日志保持兼容。
 
 标签发布包保留标准的 `jlshell-agent` 可执行文件，同时额外包含供 Program 插件部署使用的

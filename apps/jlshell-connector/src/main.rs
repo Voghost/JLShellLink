@@ -4,12 +4,14 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use clap::Parser;
 use futures::StreamExt;
 use libp2p::core::ConnectedPoint;
 use libp2p::swarm::{StreamProtocol, SwarmEvent};
 use libp2p::{Multiaddr, PeerId};
-use link_crypto::load_or_generate_identity;
+use link_crypto::{load_or_generate_identity, sign_identity_payload};
 use link_protocol::{
     OpenStatus, OpenTcpRequest, OpenTcpResponse, SignedTicket, TCP_PROTOCOL, read_frame,
     write_frame,
@@ -35,6 +37,9 @@ struct Args {
     /// Create/load the connector identity, print its `PeerId`, then exit.
     #[arg(long)]
     print_identity: bool,
+    /// Sign one base64url control-plane challenge payload, then exit.
+    #[arg(long, conflicts_with = "print_identity")]
+    identity_proof: Option<String>,
     #[arg(long)]
     agent_peer: Option<PeerId>,
     #[arg(long = "agent-address")]
@@ -75,10 +80,28 @@ enum ConnectionPath {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_target(false).init();
     let args = Args::parse();
-    if args.print_identity {
+    if args.print_identity || args.identity_proof.is_some() {
         let identity = load_or_generate_identity(&args.identity)?;
         let connector_peer_id = identity.public().to_peer_id();
+        let public_key = identity
+            .public()
+            .try_into_ed25519()
+            .context("Connector identity is not Ed25519")?;
         println!("CONNECTOR_PEER_ID={connector_peer_id}");
+        println!(
+            "CONNECTOR_PUBLIC_KEY={}",
+            URL_SAFE_NO_PAD.encode(public_key.to_bytes())
+        );
+        if let Some(payload) = args.identity_proof {
+            let payload = URL_SAFE_NO_PAD
+                .decode(payload)
+                .context("--identity-proof must be base64url encoded")?;
+            let signature = sign_identity_payload(&identity, &payload)?;
+            println!(
+                "CONNECTOR_PROOF_SIGNATURE={}",
+                URL_SAFE_NO_PAD.encode(signature)
+            );
+        }
         println!("CONNECTOR_EVENT=IDENTITY_READY");
         return Ok(());
     }
