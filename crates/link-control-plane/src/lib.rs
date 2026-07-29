@@ -53,12 +53,21 @@ impl ControlPlaneClient {
     }
 
     /// Sends an Agent heartbeat using the short-lived node credential.
-    pub async fn agent_heartbeat(&self, credential: &str, version: &str) -> Result<()> {
-        self.heartbeat(
-            "/api/v1/link/agent-heartbeats",
+    pub async fn agent_heartbeat(
+        &self,
+        credential: &str,
+        version: &str,
+        addresses: &[String],
+    ) -> Result<()> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
             "X-Agent-Token",
-            credential,
-            version,
+            HeaderValue::from_str(credential.trim()).context("invalid node credential")?,
+        );
+        self.post(
+            "/api/v1/link/agent-heartbeats",
+            headers,
+            &serde_json::json!({ "version": version, "addresses": addresses }),
         )
         .await
     }
@@ -86,11 +95,16 @@ impl ControlPlaneClient {
             header,
             HeaderValue::from_str(credential.trim()).context("invalid node credential")?,
         );
+        self.post(path, headers, &serde_json::json!({ "version": version }))
+            .await
+    }
+
+    async fn post(&self, path: &str, headers: HeaderMap, body: &serde_json::Value) -> Result<()> {
         let response = self
             .client
             .post(self.url(path))
             .headers(headers)
-            .json(&serde_json::json!({ "version": version }))
+            .json(body)
             .send()
             .await
             .context("control-plane heartbeat failed")?;

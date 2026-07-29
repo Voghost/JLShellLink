@@ -103,6 +103,24 @@ pub fn is_quic_address(address: &libp2p::Multiaddr) -> bool {
         .any(|protocol| matches!(protocol, libp2p::multiaddr::Protocol::QuicV1))
 }
 
+/// Returns true for an exact, dialable IP TCP or QUIC Agent address.
+pub fn is_advertisable_agent_address(address: &libp2p::Multiaddr) -> bool {
+    use libp2p::multiaddr::Protocol;
+
+    let protocols = address.iter().collect::<Vec<_>>();
+    match protocols.as_slice() {
+        [Protocol::Ip4(ip), Protocol::Tcp(port)]
+        | [Protocol::Ip4(ip), Protocol::Udp(port), Protocol::QuicV1] => {
+            !ip.is_unspecified() && !ip.is_multicast() && *port > 0
+        }
+        [Protocol::Ip6(ip), Protocol::Tcp(port)]
+        | [Protocol::Ip6(ip), Protocol::Udp(port), Protocol::QuicV1] => {
+            !ip.is_unspecified() && !ip.is_multicast() && *port > 0
+        }
+        _ => false,
+    }
+}
+
 pub fn relay_circuit_address(
     relay_address: &libp2p::Multiaddr,
     relay_peer_id: PeerId,
@@ -152,5 +170,21 @@ mod tests {
     fn recognizes_quic_address() {
         let address: libp2p::Multiaddr = "/ip4/127.0.0.1/udp/7001/quic-v1".parse().unwrap();
         assert!(is_quic_address(&address));
+    }
+
+    #[test]
+    fn accepts_only_exact_agent_ip_addresses() {
+        assert!(is_advertisable_agent_address(
+            &"/ip4/203.0.113.10/tcp/7001".parse().unwrap()
+        ));
+        assert!(is_advertisable_agent_address(
+            &"/ip6/2001:db8::10/udp/7001/quic-v1".parse().unwrap()
+        ));
+        assert!(!is_advertisable_agent_address(
+            &"/ip4/0.0.0.0/tcp/7001".parse().unwrap()
+        ));
+        assert!(!is_advertisable_agent_address(
+            &"/ip4/203.0.113.10/tcp/7001/p2p-circuit".parse().unwrap()
+        ));
     }
 }

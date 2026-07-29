@@ -58,7 +58,8 @@ jlshell-linkctl ticket-issue
 jlshell-relay
 jlshell-agent --print-identity --identity <agent-identity.key>
 jlshell-agent --connect-policy auto|direct-only|relay-only \
-  --control-plane-url <https-url> --credential-file <0600-token-file>
+  --control-plane-url <https-url> --credential-file <0600-token-file> \
+  --advertise /ip4/203.0.113.10/tcp/7001
 jlshell-connector --print-identity --identity <connector-identity.key>
 jlshell-connector --identity-proof <base64url-payload> --identity <connector-identity.key>
 jlshell-connector --connect-policy auto|direct-only|relay-only
@@ -69,6 +70,10 @@ jlshell-connector --connect-policy auto|direct-only|relay-only
 设备身份绑定；`--identity-proof` 使用同一私钥签名网站 challenge。Agent 和 Relay
 提供等价的持钥输出。正常隧道模式
 额外输出 `CONNECTOR_EVENT` 生命周期行，已有参数和人类可读日志保持兼容。
+
+Agent 心跳会把经过严格校验的 `--advertise` 和实际监听 IP multiaddr 上报给网站，
+供插件自动填充直连地址；未指定地址、组播、DNS 和 Circuit 地址不会上报。Windows
+构建包含供 SCM 调用的内部 service-host 模式，普通用户不应手工使用该参数。
 
 标签发布包保留标准的 `jlshell-agent` 可执行文件，同时额外包含供 Program 插件部署使用的
 平台文件名：`jlshell-agent-linux-x64`、`jlshell-agent-macos-arm64` 和

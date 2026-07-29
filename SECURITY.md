@@ -21,5 +21,9 @@ Rustls HTTPS 和 0600 节点凭据心跳，Agent 刷新失败时保留最后一�
 Circuit Relay 尚未把 Grant 验证绑定到每次 reservation/流量统计，因此当前 Relay
 仍不得作为生产授权链路。
 
+Agent 只上报精确 IP TCP/QUIC multiaddr，Connector 连接时仍强制匹配 Agent PeerId。
+Windows SCM 模式由最小包装进程托管数据平面子进程，节点凭据仍只以文件路径传递；
+Linux/macOS 的服务沙箱和远端文件权限由插件生成的原生服务定义负责。
+
 生产化前仍需完成完整威胁建模、第三方审计、凭据吊销运维、数据平面限速与强制
 配额联调、供应链签名和各平台代码签名。

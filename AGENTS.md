@@ -18,6 +18,8 @@
 - `link-protocol` 的票据声明禁止 map 字段；Ed25519 只签名原始 `claimsBytes`。
 - `libp2p-stream` 只能出现在 `link-transport` 和二进制内部，不成为公共业务 API。
 - Connector 只能监听回环地址；Agent 目标必须是显式精确 IP:端口。
+- Agent 只可向控制平面上报精确 IP TCP/QUIC multiaddr；Windows SCM 隐藏模式仅供
+  插件生成的服务配置调用，不能暴露节点凭据。
 - Relay 默认只能监听回环地址，公网监听必须显式确认且不得宣称生产可用。
 - 当前只使用 IP multiaddr；在依赖安全公告修复前不得重新启用 libp2p `dns` feature。
 - RustSec 对 `RUSTSEC-2026-0118`、`RUSTSEC-2026-0119` 的临时豁免必须与 CI 的实际
