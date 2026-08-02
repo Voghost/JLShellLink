@@ -4,6 +4,7 @@ members = [
     "crates/link-protocol",
     "crates/link-crypto",
     "crates/link-transport",
+    "crates/link-control-plane",
     "apps/jlshell-agent",
     "apps/jlshell-connector",
     "apps/jlshell-relay",
@@ -44,6 +45,7 @@ libp2p-stream = "=0.4.0-alpha"
 parking_lot = "=0.12.5"
 prost = "=0.14.4"
 rand = "=0.8.7"
+reqwest = { version = "=0.13.4", default-features = false, features = ["json", "rustls"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 sha2 = "=0.10.9"

@@ -87,6 +87,37 @@ struct EncodedAuthorityKey {
     key: String,
 }
 
+#[derive(Deserialize)]
+struct EncodedAuthorityKeyring {
+    keys: Vec<EncodedAuthorityPublicKey>,
+}
+
+#[derive(Deserialize)]
+struct EncodedAuthorityPublicKey {
+    #[serde(alias = "keyId", alias = "key_id")]
+    key_id: String,
+    #[serde(alias = "publicKey", alias = "key")]
+    public_key: String,
+}
+
+pub struct AuthorityKeyring {
+    keys: HashMap<String, VerifyingKey>,
+}
+
+impl AuthorityKeyring {
+    pub fn get(&self, key_id: &str) -> Option<&VerifyingKey> {
+        self.keys.get(key_id)
+    }
+
+    pub fn len(&self) -> usize {
+        self.keys.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+}
+
 pub fn generate_authority() -> SigningKey {
     SigningKey::generate(&mut OsRng)
 }
@@ -152,6 +183,62 @@ pub fn load_authority_public(path: &Path) -> Result<(String, VerifyingKey), Cryp
     Ok((encoded.key_id, key))
 }
 
+pub fn load_authority_keyring(path: &Path) -> Result<AuthorityKeyring, CryptoError> {
+    parse_authority_keyring(&fs::read(path)?)
+}
+
+/// Parses either the website keyring response or the legacy single public-key file.
+pub fn parse_authority_keyring(data: &[u8]) -> Result<AuthorityKeyring, CryptoError> {
+    if let Ok(legacy) = serde_json::from_slice::<EncodedAuthorityKey>(data) {
+        if legacy.kind != "ed25519-public" {
+            return Err(CryptoError::InvalidKey(
+                "expected an Ed25519 public key".to_owned(),
+            ));
+        }
+        let key = decode_verifying_key(&legacy.key)?;
+        if authority_key_id(&key) != legacy.key_id {
+            return Err(CryptoError::InvalidKey(format!(
+                "authority key id {} does not match its public key",
+                legacy.key_id
+            )));
+        }
+        let mut keys = HashMap::new();
+        keys.insert(legacy.key_id, key);
+        return Ok(AuthorityKeyring { keys });
+    }
+    let encoded: EncodedAuthorityKeyring = serde_json::from_slice(data).map_err(invalid_key)?;
+    let mut keys = HashMap::new();
+    for entry in encoded.keys {
+        let key = decode_verifying_key(&entry.public_key)?;
+        if authority_key_id(&key) != entry.key_id {
+            return Err(CryptoError::InvalidKey(format!(
+                "authority key id {} does not match its public key",
+                entry.key_id
+            )));
+        }
+        if keys.insert(entry.key_id.clone(), key).is_some() {
+            return Err(CryptoError::InvalidKey(format!(
+                "duplicate authority key id {}",
+                entry.key_id
+            )));
+        }
+    }
+    if keys.is_empty() {
+        return Err(CryptoError::InvalidKey(
+            "authority keyring must contain at least one key".to_owned(),
+        ));
+    }
+    Ok(AuthorityKeyring { keys })
+}
+
+fn decode_verifying_key(encoded: &str) -> Result<VerifyingKey, CryptoError> {
+    let bytes = URL_SAFE_NO_PAD.decode(encoded).map_err(invalid_key)?;
+    let array: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| CryptoError::InvalidKey("public key must be 32 bytes".to_owned()))?;
+    VerifyingKey::from_bytes(&array).map_err(invalid_key)
+}
+
 pub fn generate_identity() -> identity::Keypair {
     identity::Keypair::generate_ed25519()
 }
@@ -177,6 +264,14 @@ pub fn load_or_generate_identity(path: &Path) -> Result<identity::Keypair, Crypt
         save_identity(path, &key)?;
         Ok(key)
     }
+}
+
+pub fn sign_identity_payload(
+    key: &identity::Keypair,
+    payload: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
+    key.sign(payload)
+        .map_err(|error| CryptoError::InvalidKey(error.to_string()))
 }
 
 pub fn issue_ticket(signing_key: &SigningKey, request: &TicketRequest) -> SignedTicket {
@@ -228,6 +323,18 @@ pub fn verify_ticket(
     validate_claims(&claims, context)?;
     replay_cache.check_and_record(&claims, context.now_epoch_seconds)?;
     Ok(claims)
+}
+
+pub fn verify_ticket_with_keyring(
+    ticket: &SignedTicket,
+    keyring: &AuthorityKeyring,
+    context: &VerificationContext,
+    replay_cache: &NonceReplayCache,
+) -> Result<TicketClaims, CryptoError> {
+    let verifying_key = keyring
+        .get(&ticket.key_id)
+        .ok_or_else(|| CryptoError::InvalidTicket("unknown signing key id".to_owned()))?;
+    verify_ticket(ticket, &ticket.key_id, verifying_key, context, replay_cache)
 }
 
 fn validate_claims(
@@ -462,5 +569,80 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(wrong, CryptoError::WrongAgent));
+    }
+
+    #[test]
+    fn verifies_tickets_with_rotating_authority_keyring() {
+        let active = generate_authority();
+        let previous = generate_authority();
+        let mut keys = HashMap::new();
+        keys.insert(
+            authority_key_id(&active.verifying_key()),
+            active.verifying_key(),
+        );
+        keys.insert(
+            authority_key_id(&previous.verifying_key()),
+            previous.verifying_key(),
+        );
+        let keyring = AuthorityKeyring { keys };
+        let request = TicketRequest {
+            connector_peer_id: PeerId::random(),
+            agent_peer_id: PeerId::random(),
+            target_ip: "127.0.0.1".parse().unwrap(),
+            target_port: 22,
+            now_epoch_seconds: 3_000,
+            ttl_seconds: 300,
+        };
+        let ticket = issue_ticket(&previous, &request);
+        verify_ticket_with_keyring(
+            &ticket,
+            &keyring,
+            &context(&request, 3_001),
+            &NonceReplayCache::default(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn parses_website_authority_keyring_response() {
+        let active = generate_authority().verifying_key();
+        let previous = generate_authority().verifying_key();
+        let active_id = authority_key_id(&active);
+        let previous_id = authority_key_id(&previous);
+        let document = serde_json::json!({
+            "algorithm": "Ed25519",
+            "keyId": active_id,
+            "publicKey": URL_SAFE_NO_PAD.encode(active.as_bytes()),
+            "protocolVersion": 1,
+            "keys": [
+                {
+                    "keyId": active_id,
+                    "publicKey": URL_SAFE_NO_PAD.encode(active.as_bytes()),
+                    "active": true
+                },
+                {
+                    "keyId": previous_id,
+                    "publicKey": URL_SAFE_NO_PAD.encode(previous.as_bytes()),
+                    "active": false
+                }
+            ]
+        });
+
+        let keyring = parse_authority_keyring(&serde_json::to_vec(&document).unwrap()).unwrap();
+        assert_eq!(keyring.len(), 2);
+        assert_eq!(keyring.get(&active_id), Some(&active));
+        assert_eq!(keyring.get(&previous_id), Some(&previous));
+    }
+
+    #[test]
+    fn signs_control_plane_challenge_with_libp2p_identity() {
+        let identity = generate_identity();
+        let payload = b"jlshell-link-node-proof/v1";
+        let signature = sign_identity_payload(&identity, payload).unwrap();
+        let public = identity.public().try_into_ed25519().unwrap();
+        let verifying_key = VerifyingKey::from_bytes(&public.to_bytes()).unwrap();
+        verifying_key
+            .verify(payload, &Signature::from_slice(&signature).unwrap())
+            .unwrap();
     }
 }
