@@ -90,7 +90,7 @@ jobs:
             echo "No release files were produced" >&2
             exit 1
           fi
-          notes="Unsigned prototype. The jlshell-link-plugin-runtime archive is consumed by the private Program plugin build and includes a signed-hash manifest, but the executables themselves are not code-signed yet."
+          notes="Unsigned prototype. The jlshell-link-plugin-runtime archive is consumed by the private Program plugin build and includes a SHA-256 manifest; the executables themselves are not code-signed yet."
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release edit "$GITHUB_REF_NAME" \
               --title "$GITHUB_REF_NAME (unsigned prototype)" --prerelease --notes "$notes"
