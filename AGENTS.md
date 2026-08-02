@@ -25,6 +25,9 @@
 - RustSec 对 `RUSTSEC-2026-0118`、`RUSTSEC-2026-0119` 的临时豁免必须与 CI 的实际
   构建图检查同时存在；若 Hickory 进入构建图，CI 必须立即失败。
 - 不提交身份私钥、Authority 私钥、票据或运行日志中的敏感数据。
+- Release 必须同时生成 `jlshell-link-plugin-runtime-<version>.tar.gz`，内含三平台
+  Connector/Agent 和逐文件 SHA-256 清单；更改文件名或清单 schema 时必须同步修改
+  JLShellLinkPlugin 的内置运行时加载器。
 
 ## 验证
 
