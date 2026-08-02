@@ -79,6 +79,11 @@ Agent 心跳会把经过严格校验的 `--advertise` 和实际监听 IP multiad
 平台文件名：`jlshell-agent-linux-x64`、`jlshell-agent-macos-arm64` 和
 `jlshell-agent-windows-x64.exe`。
 
+Release 还会生成 `jlshell-link-plugin-runtime-<version>.tar.gz`。它同时包含三平台
+Connector 和 Agent，以及逐文件 `size + SHA-256` 的 `manifest.json`。Program 插件构建
+只消费这个整体运行时包，并在解包到用户目录前后再次验证清单；普通用户无需配置本地
+可执行文件或 Agent 发布目录。该原型发布物目前仍未进行平台代码签名。
+
 完整的回环直连和 Relay 演示步骤见 [docs/local-smoke-test.md](docs/local-smoke-test.md)。
 Linux 双网络场景可直接以 root 运行
 [scripts/linux-netns-smoke.sh](scripts/linux-netns-smoke.sh)。脚本创建隔离的 Agent 和
