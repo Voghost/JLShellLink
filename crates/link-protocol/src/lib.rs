@@ -152,4 +152,47 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, FrameError::TooLarge(_)));
     }
+
+    #[test]
+    fn java_control_plane_claims_fixture_is_wire_compatible() {
+        let mut connector_peer_id = vec![0x00, 0x24, 0x08, 0x01, 0x12, 0x20];
+        connector_peer_id.extend([0x11; 32]);
+        let mut agent_peer_id = vec![0x00, 0x24, 0x08, 0x01, 0x12, 0x20];
+        agent_peer_id.extend([0x22; 32]);
+        let claims = TicketClaims {
+            version: 1,
+            connector_peer_id,
+            agent_peer_id,
+            target_ip: "127.0.0.1".to_owned(),
+            target_port: 22,
+            issued_at_epoch_seconds: 1_000,
+            not_before_epoch_seconds: 1_000,
+            expires_at_epoch_seconds: 1_300,
+            nonce: vec![0x33; 32],
+            max_streams: 1,
+        };
+        let expected = decode_hex(concat!(
+            "08011226002408011220",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            "1a26002408011220",
+            "2222222222222222222222222222222222222222222222222222222222222222",
+            "22093132372e302e302e31",
+            "281630e80738e80740940a4a20",
+            "3333333333333333333333333333333333333333333333333333333333333333",
+            "5001"
+        ));
+        assert_eq!(claims.encode_to_vec(), expected);
+    }
+
+    fn decode_hex(value: &str) -> Vec<u8> {
+        value
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| {
+                let high = (pair[0] as char).to_digit(16).unwrap();
+                let low = (pair[1] as char).to_digit(16).unwrap();
+                u8::try_from((high << 4) | low).unwrap()
+            })
+            .collect()
+    }
 }

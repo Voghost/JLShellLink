@@ -5,11 +5,14 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use clap::{Parser, Subcommand};
 use libp2p::PeerId;
 use link_crypto::{
     TicketRequest, generate_authority, generate_identity, issue_ticket, load_authority_private,
-    save_authority_private, save_authority_public, save_identity,
+    load_identity, save_authority_private, save_authority_public, save_identity,
+    sign_identity_payload,
 };
 use prost::Message;
 
@@ -37,6 +40,13 @@ enum Command {
     IdentityInit {
         #[arg(long)]
         output: PathBuf,
+    },
+    /// Sign a control-plane node challenge payload with a libp2p identity.
+    IdentityProof {
+        #[arg(long)]
+        identity: PathBuf,
+        #[arg(long)]
+        payload: String,
     },
     /// Issue a short-lived, one-stream ticket for one exact IP and port.
     TicketIssue {
@@ -70,9 +80,25 @@ fn main() -> Result<()> {
         Command::IdentityInit { output } => {
             let identity = generate_identity();
             let peer_id = identity.public().to_peer_id();
+            let public_key = identity
+                .public()
+                .try_into_ed25519()
+                .context("generated identity is not Ed25519")?;
             save_identity(&output, &identity)?;
             println!("PEER_ID={peer_id}");
+            println!(
+                "PUBLIC_KEY={}",
+                URL_SAFE_NO_PAD.encode(public_key.to_bytes())
+            );
             println!("IDENTITY={}", output.display());
+        }
+        Command::IdentityProof { identity, payload } => {
+            let key = load_identity(&identity)?;
+            let payload_bytes = URL_SAFE_NO_PAD
+                .decode(payload)
+                .context("--payload must be base64url encoded")?;
+            let signature = sign_identity_payload(&key, &payload_bytes)?;
+            println!("SIGNATURE={}", URL_SAFE_NO_PAD.encode(signature));
         }
         Command::TicketIssue {
             authority_private,

@@ -4,8 +4,10 @@ JLShell Link 是 JLShell 的私有商业网络组件原型，预定仓库为
 `Voghost/JLShellLink`。它通过 rust-libp2p 在本机 Connector 与远端 Agent
 之间建立加密 TCP 隧道，优先直连，并可通过 Circuit Relay v2 回退。
 
-> 当前为 unsigned Stage 0 prototype，不可直接用于生产环境。尚未接入账号、
-> 套餐、正式控制平面、自动部署、二进制签名或生产 Relay 运维能力。
+> 当前仍是 unsigned prototype，不可直接用于生产环境。网站控制平面已经定义账号
+> 权限、节点持钥注册、短期凭据、Authority 轮换和 Relay Grant 配额接口。Rust
+> Agent/Relay 已能通过 HTTPS 主动心跳，Agent 会在线刷新 Authority；Relay Grant
+> 对 Circuit Relay 数据面的强制执行、二进制签名和生产 Relay 运维仍未完成。
 
 ## 组件
 
@@ -17,9 +19,23 @@ JLShell Link 是 JLShell 的私有商业网络组件原型，预定仓库为
 - `link-crypto`：Ed25519 票据签发、验证与 nonce 防重放。
 - `link-transport`：封装 QUIC、TCP/Noise/Yamux、AutoNAT、DCUtR 和 alpha
   `libp2p-stream`，不向业务接口泄漏其类型。
+- `link-control-plane`：关闭重定向的 Rustls HTTPS 客户端，负责节点心跳和 Authority
+  刷新；明文 HTTP 只允许显式回环开发地址。
 
 传输链路中的 QUIC 或 Noise 提供节点间加密与身份认证；授权票据的签名对象是
-原始 `claimsBytes`。Relay 只能看到加密后的 libp2p 流量。
+原始 `claimsBytes`。Relay 只能看到加密后的 libp2p 流量。网站控制平面使用同一
+version 1 Protobuf wire format 和 Ed25519 key-id 算法；`link-protocol` 中的固定
+兼容性夹具用于防止 Java/Rust 编码产生漂移。
+
+Agent 的 `--authority-public` 既接受 `authority-init` 生成的旧版单公钥 JSON，也接受
+网站 `GET /api/v1/link/ticket-authority` 返回的轮换 keyring JSON。过渡期新旧公钥
+可同时验证票据，但签发端只使用当前 active key。
+
+当前安全基线只接受 `/ip4` 或 `/ip6` multiaddr。DNS multiaddr 暂时禁用，以避免
+libp2p 0.56 DNS 依赖中的已知 RustSec DoS 公告；CI 会验证 Hickory 不在实际构建
+依赖图中。由于 libp2p 元包仍会把未启用的可选依赖记录到 `Cargo.lock`，安全审计仅
+临时豁免 `RUSTSEC-2026-0118` 和 `RUSTSEC-2026-0119`；升级到修复版依赖后必须移除
+豁免，再评估是否恢复 DNS multiaddr。
 
 ## 构建与验证
 
@@ -37,11 +53,31 @@ cargo build --workspace
 ```text
 jlshell-linkctl authority-init
 jlshell-linkctl identity-init
+jlshell-linkctl identity-proof --identity <node.key> --payload <base64url-payload>
 jlshell-linkctl ticket-issue
 jlshell-relay
-jlshell-agent --connect-policy auto|direct-only|relay-only
+jlshell-agent --print-identity --identity <agent-identity.key>
+jlshell-agent --connect-policy auto|direct-only|relay-only \
+  --control-plane-url <https-url> --credential-file <0600-token-file> \
+  --advertise /ip4/203.0.113.10/tcp/7001
+jlshell-connector --print-identity --identity <connector-identity.key>
+jlshell-connector --identity-proof <base64url-payload> --identity <connector-identity.key>
 jlshell-connector --connect-policy auto|direct-only|relay-only
 ```
+
+`--print-identity` 只创建或读取 0600 Connector 身份文件，输出稳定的
+`CONNECTOR_PEER_ID` 和 `CONNECTOR_PUBLIC_KEY` 后退出，供 Program 插件在取票前完成
+设备身份绑定；`--identity-proof` 使用同一私钥签名网站 challenge。Agent 和 Relay
+提供等价的持钥输出。正常隧道模式
+额外输出 `CONNECTOR_EVENT` 生命周期行，已有参数和人类可读日志保持兼容。
+
+Agent 心跳会把经过严格校验的 `--advertise` 和实际监听 IP multiaddr 上报给网站，
+供插件自动填充直连地址；未指定地址、组播、DNS 和 Circuit 地址不会上报。Windows
+构建包含供 SCM 调用的内部 service-host 模式，普通用户不应手工使用该参数。
+
+标签发布包保留标准的 `jlshell-agent` 可执行文件，同时额外包含供 Program 插件部署使用的
+平台文件名：`jlshell-agent-linux-x64`、`jlshell-agent-macos-arm64` 和
+`jlshell-agent-windows-x64.exe`。
 
 完整的回环直连和 Relay 演示步骤见 [docs/local-smoke-test.md](docs/local-smoke-test.md)。
 Linux 双网络场景可直接以 root 运行

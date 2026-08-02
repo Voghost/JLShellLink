@@ -3,10 +3,11 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [develop, main]
 
 permissions:
   contents: read
+  checks: write
 
 jobs:
   quality:
@@ -22,12 +23,22 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
       - run: cargo build --workspace --locked
+      - name: Verify vulnerable DNS code is not in the build graph
+        shell: bash
+        run: |
+          if cargo tree --edges normal --prefix none --format '{p}' | grep -q '^hickory-proto '; then
+            echo 'hickory-proto must remain outside the active dependency graph'
+            exit 1
+          fi
       - name: Attempt dual-network namespace Relay smoke test
         continue-on-error: true
         run: sudo env JLSHELL_LINK_BIN_DIR="$PWD/target/debug" ./scripts/linux-netns-smoke.sh
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          # libp2p 0.56 keeps disabled optional DNS crates in Cargo.lock. The
+          # preceding build-graph check makes these two exceptions fail closed.
+          ignore: RUSTSEC-2026-0118,RUSTSEC-2026-0119
 
   native-build:
     strategy:
