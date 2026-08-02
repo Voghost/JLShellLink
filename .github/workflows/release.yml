@@ -54,10 +54,11 @@ jobs:
           cp "target/${{ matrix.target }}/release/jlshell-connector${{ matrix.exe }}" \
             "dist/package/${{ matrix.connector_asset }}"
           tar -czf "dist/${{ matrix.archive }}" -C dist/package .
+          cd dist
           if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "dist/${{ matrix.archive }}" > "dist/${{ matrix.archive }}.sha256"
+            sha256sum "${{ matrix.archive }}" > "${{ matrix.archive }}.sha256"
           else
-            shasum -a 256 "dist/${{ matrix.archive }}" > "dist/${{ matrix.archive }}.sha256"
+            shasum -a 256 "${{ matrix.archive }}" > "${{ matrix.archive }}.sha256"
           fi
       - uses: actions/upload-artifact@v4
         with:
@@ -82,4 +83,19 @@ jobs:
       - name: Create private unsigned prototype release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME (unsigned prototype)" --prerelease --notes "Unsigned prototype. The jlshell-link-plugin-runtime archive is consumed by the private Program plugin build and includes a signed-hash manifest, but the executables themselves are not code-signed yet."
+        shell: bash
+        run: |
+          mapfile -d '' assets < <(find dist -maxdepth 1 -type f -print0)
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "No release files were produced" >&2
+            exit 1
+          fi
+          notes="Unsigned prototype. The jlshell-link-plugin-runtime archive is consumed by the private Program plugin build and includes a SHA-256 manifest; the executables themselves are not code-signed yet."
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" \
+              --title "$GITHUB_REF_NAME (unsigned prototype)" --prerelease --notes "$notes"
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --title "$GITHUB_REF_NAME (unsigned prototype)" --prerelease --notes "$notes"
+          fi
+          gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
