@@ -54,10 +54,11 @@ jobs:
           cp "target/${{ matrix.target }}/release/jlshell-connector${{ matrix.exe }}" \
             "dist/package/${{ matrix.connector_asset }}"
           tar -czf "dist/${{ matrix.archive }}" -C dist/package .
+          cd dist
           if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "dist/${{ matrix.archive }}" > "dist/${{ matrix.archive }}.sha256"
+            sha256sum "${{ matrix.archive }}" > "${{ matrix.archive }}.sha256"
           else
-            shasum -a 256 "dist/${{ matrix.archive }}" > "dist/${{ matrix.archive }}.sha256"
+            shasum -a 256 "${{ matrix.archive }}" > "${{ matrix.archive }}.sha256"
           fi
       - uses: actions/upload-artifact@v4
         with:
