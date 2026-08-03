@@ -13,8 +13,8 @@ use libp2p::swarm::{StreamProtocol, SwarmEvent};
 use libp2p::{Multiaddr, PeerId};
 use link_crypto::{load_or_generate_identity, sign_identity_payload};
 use link_protocol::{
-    OpenStatus, OpenTcpRequest, OpenTcpResponse, SignedTicket, TCP_PROTOCOL, read_frame,
-    write_frame,
+    OpenStatus, OpenTcpRequest, OpenTcpResponse, RELAY_AUTH_PROTOCOL, RelayAuthRequest,
+    RelayAuthResponse, RelayAuthStatus, SignedTicket, TCP_PROTOCOL, read_frame, write_frame,
 };
 use link_transport::{
     ConnectPolicy, DIRECT_DIAL_TIMEOUT_SECONDS, QUIC_DIAL_PRIORITY_SECONDS, ensure_expected_peer,
@@ -48,6 +48,9 @@ struct Args {
     relay_address: Option<Multiaddr>,
     #[arg(long)]
     relay_peer: Option<PeerId>,
+    /// File containing the short-lived Relay Grant. Never pass the credential directly on CLI.
+    #[arg(long)]
+    relay_grant: Option<PathBuf>,
     #[arg(long, value_enum, default_value_t = ConnectPolicy::Auto)]
     connect_policy: ConnectPolicy,
     #[arg(long)]
@@ -64,6 +67,7 @@ struct RunArgs {
     agent_addresses: Vec<Multiaddr>,
     relay_address: Option<Multiaddr>,
     relay_peer: Option<PeerId>,
+    relay_grant: Option<PathBuf>,
     connect_policy: ConnectPolicy,
     ticket: PathBuf,
     target: SocketAddr,
@@ -218,11 +222,103 @@ async fn establish_connection(
     let relay_peer = args
         .relay_peer
         .context("relay fallback requires --relay-peer")?;
+    let mut relay_direct_address = relay_address.clone();
+    ensure_expected_peer(&mut relay_direct_address, relay_peer);
+    swarm
+        .dial(relay_direct_address.clone())
+        .with_context(|| format!("cannot dial relay {relay_direct_address}"))?;
+    wait_for_peer(swarm, relay_peer).await?;
+
+    if let Some(grant_file) = &args.relay_grant {
+        authenticate_relay(swarm, relay_peer, args.agent_peer, grant_file).await?;
+    } else {
+        warn!(
+            "no Relay Grant supplied; only an explicitly unauthenticated loopback Relay can accept this circuit"
+        );
+    }
     let address = relay_circuit_address(relay_address, relay_peer, Some(args.agent_peer));
     swarm
         .dial(address.clone())
         .with_context(|| format!("cannot dial relay circuit {address}"))?;
     wait_for_agent(swarm, args.agent_peer).await
+}
+
+async fn wait_for_peer(
+    swarm: &mut libp2p::Swarm<link_transport::ClientBehaviour>,
+    expected_peer: PeerId,
+) -> Result<()> {
+    loop {
+        match swarm.select_next_some().await {
+            SwarmEvent::ConnectionEstablished { peer_id, .. } if peer_id == expected_peer => {
+                return Ok(());
+            }
+            SwarmEvent::OutgoingConnectionError {
+                peer_id: Some(peer_id),
+                error,
+                ..
+            } if peer_id == expected_peer => bail!("cannot connect to Relay {peer_id}: {error}"),
+            _ => {}
+        }
+    }
+}
+
+async fn authenticate_relay(
+    swarm: &mut libp2p::Swarm<link_transport::ClientBehaviour>,
+    relay_peer: PeerId,
+    agent_peer: PeerId,
+    grant_file: &PathBuf,
+) -> Result<()> {
+    let grant_credential = fs::read_to_string(grant_file)
+        .context("cannot read Relay Grant file")?
+        .trim()
+        .to_owned();
+    if grant_credential.is_empty()
+        || grant_credential.len() > 512
+        || grant_credential.chars().any(char::is_whitespace)
+    {
+        bail!("Relay Grant file contains an invalid credential");
+    }
+    let mut control = swarm.behaviour().streams.new_control();
+    let authentication = async move {
+        let mut stream = control
+            .open_stream(relay_peer, StreamProtocol::new(RELAY_AUTH_PROTOCOL))
+            .await
+            .context("Relay does not support JLShell Grant preauthorization")?;
+        write_frame(
+            &mut stream,
+            &RelayAuthRequest {
+                grant_credential,
+                agent_peer_id: agent_peer.to_bytes(),
+            },
+        )
+        .await?;
+        let response: RelayAuthResponse = read_frame(&mut stream).await?;
+        if RelayAuthStatus::try_from(response.status).unwrap_or(RelayAuthStatus::Unspecified)
+            != RelayAuthStatus::Ok
+        {
+            bail!(
+                "Relay rejected Grant preauthorization: {}",
+                response.message
+            );
+        }
+        Ok(())
+    };
+    tokio::pin!(authentication);
+    let timeout = tokio::time::sleep(Duration::from_secs(10));
+    tokio::pin!(timeout);
+    loop {
+        tokio::select! {
+            result = &mut authentication => return result,
+            () = &mut timeout => bail!("Relay Grant preauthorization timed out"),
+            event = swarm.select_next_some() => {
+                if let SwarmEvent::ConnectionClosed { peer_id, .. } = event
+                    && peer_id == relay_peer
+                {
+                    bail!("Relay connection closed during Grant preauthorization");
+                }
+            }
+        }
+    }
 }
 
 fn start_direct_dials(
@@ -280,6 +376,7 @@ impl TryFrom<Args> for RunArgs {
             agent_addresses: value.agent_addresses,
             relay_address: value.relay_address,
             relay_peer: value.relay_peer,
+            relay_grant: value.relay_grant,
             connect_policy: value.connect_policy,
             ticket: value
                 .ticket

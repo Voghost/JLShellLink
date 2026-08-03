@@ -1572,7 +1572,9 @@ dependencies = [
  "libp2p",
  "link-control-plane",
  "link-crypto",
+ "link-protocol",
  "link-transport",
+ "time",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -2016,8 +2018,6 @@ dependencies = [
 [[package]]
 name = "libp2p-relay"
 version = "0.21.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8b9b0392ed623243ad298326b9f806d51191829ac7585cc825c54c6c67b04d9"
 dependencies = [
  "asynchronous-codec",
  "bytes",
@@ -2172,6 +2172,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "reqwest",
+ "serde",
  "serde_json",
  "tokio",
 ]
@@ -2212,6 +2213,8 @@ dependencies = [
  "libp2p",
  "libp2p-stream",
  "link-protocol",
+ "parking_lot",
+ "thiserror 2.0.19",
  "tokio",
  "tokio-util",
  "tracing",

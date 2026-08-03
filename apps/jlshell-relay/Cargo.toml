@@ -13,7 +13,9 @@ futures.workspace = true
 libp2p.workspace = true
 link-crypto = { path = "../../crates/link-crypto" }
 link-control-plane = { path = "../../crates/link-control-plane" }
+link-protocol = { path = "../../crates/link-protocol" }
 link-transport = { path = "../../crates/link-transport" }
+time.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
