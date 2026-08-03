@@ -1,5 +1,6 @@
 [workspace]
 resolver = "2"
+exclude = ["vendor/libp2p-relay"]
 members = [
     "crates/link-protocol",
     "crates/link-crypto",
@@ -54,6 +55,12 @@ tokio = { version = "=1.53.1", features = ["full"] }
 tokio-util = { version = "=0.7.19", features = ["compat"] }
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", features = ["env-filter"] }
+time = { version = "=0.3.54", features = ["parsing"] }
+
+[patch.crates-io]
+# Pinned security patch: adds target-bound Circuit authorization and exact
+# bidirectional byte accounting before the upstream relay server exposes hooks.
+libp2p-relay = { path = "vendor/libp2p-relay" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

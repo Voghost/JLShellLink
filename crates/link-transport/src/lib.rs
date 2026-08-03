@@ -1,6 +1,8 @@
 //! Shared libp2p transport assembly and TCP stream bridging.
 
-use std::time::Duration;
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use libp2p::swarm::{NetworkBehaviour, Swarm};
@@ -11,6 +13,120 @@ use libp2p::{
 pub const DIRECT_DIAL_TIMEOUT_SECONDS: u64 = 3;
 pub const QUIC_DIAL_PRIORITY_SECONDS: u64 = 1;
 pub const IDENTIFY_PROTOCOL: &str = "/jlshell/link/identify/1.0.0";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreauthorizedRelayGrant {
+    pub grant_id: String,
+    pub connector_peer_id: PeerId,
+    pub agent_peer_id: PeerId,
+    pub remaining_bytes: u64,
+    pub expires_at_epoch_seconds: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum RelayGrantCacheError {
+    #[error("relay grant has already been preauthorized")]
+    Duplicate,
+    #[error("relay grant is already expired")]
+    Expired,
+    #[error("relay grant has no remaining byte allowance")]
+    Exhausted,
+}
+
+#[derive(Clone, Default)]
+pub struct RelayGrantCache {
+    inner: Arc<parking_lot::Mutex<RelayGrantCacheState>>,
+}
+
+#[derive(Default)]
+struct RelayGrantCacheState {
+    pending: HashMap<(PeerId, PeerId), VecDeque<PreauthorizedRelayGrant>>,
+    known_grants: HashMap<String, i64>,
+}
+
+impl RelayGrantCache {
+    /// Registers a validated grant and binds it to the authenticated connector peer.
+    pub fn preauthorize(&self, grant: PreauthorizedRelayGrant) -> Result<(), RelayGrantCacheError> {
+        self.preauthorize_at(grant, unix_epoch_seconds())
+    }
+
+    fn preauthorize_at(
+        &self,
+        grant: PreauthorizedRelayGrant,
+        now_epoch_seconds: i64,
+    ) -> Result<(), RelayGrantCacheError> {
+        if grant.expires_at_epoch_seconds <= now_epoch_seconds {
+            return Err(RelayGrantCacheError::Expired);
+        }
+        if grant.remaining_bytes == 0 {
+            return Err(RelayGrantCacheError::Exhausted);
+        }
+        let mut state = self.inner.lock();
+        state
+            .known_grants
+            .retain(|_, expires_at| *expires_at > now_epoch_seconds);
+        if state
+            .known_grants
+            .insert(grant.grant_id.clone(), grant.expires_at_epoch_seconds)
+            .is_some()
+        {
+            return Err(RelayGrantCacheError::Duplicate);
+        }
+        state
+            .pending
+            .entry((grant.connector_peer_id, grant.agent_peer_id))
+            .or_default()
+            .push_back(grant);
+        drop(state);
+        Ok(())
+    }
+
+    fn consume_at(
+        &self,
+        connector_peer_id: PeerId,
+        agent_peer_id: PeerId,
+        now_epoch_seconds: i64,
+    ) -> Option<libp2p::relay::CircuitAuthorization> {
+        let mut state = self.inner.lock();
+        let key = (connector_peer_id, agent_peer_id);
+        let queue = state.pending.get_mut(&key)?;
+        while let Some(grant) = queue.pop_front() {
+            if grant.expires_at_epoch_seconds <= now_epoch_seconds || grant.remaining_bytes == 0 {
+                continue;
+            }
+            let seconds = u64::try_from(grant.expires_at_epoch_seconds - now_epoch_seconds).ok()?;
+            let authorization = libp2p::relay::CircuitAuthorization {
+                id: grant.grant_id,
+                max_circuit_bytes: grant.remaining_bytes,
+                max_circuit_duration: Duration::from_secs(seconds),
+            };
+            if queue.is_empty() {
+                state.pending.remove(&key);
+            }
+            return Some(authorization);
+        }
+        state.pending.remove(&key);
+        None
+    }
+}
+
+impl libp2p::relay::CircuitAuthorizer for RelayGrantCache {
+    fn authorize(
+        &mut self,
+        src_peer_id: PeerId,
+        dst_peer_id: PeerId,
+    ) -> Option<libp2p::relay::CircuitAuthorization> {
+        self.consume_at(src_peer_id, dst_peer_id, unix_epoch_seconds())
+    }
+}
+
+fn unix_epoch_seconds() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_secs()).ok())
+        .unwrap_or(i64::MAX)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]
 pub enum ConnectPolicy {
@@ -34,6 +150,7 @@ pub struct RelayBehaviour {
     pub relay: relay::Behaviour,
     pub identify: identify::Behaviour,
     pub ping: ping::Behaviour,
+    pub streams: libp2p_stream::Behaviour,
 }
 
 pub fn build_client_swarm(identity: identity::Keypair) -> Result<Swarm<ClientBehaviour>> {
@@ -65,7 +182,10 @@ pub fn build_client_swarm(identity: identity::Keypair) -> Result<Swarm<ClientBeh
     Ok(swarm)
 }
 
-pub fn build_relay_swarm(identity: identity::Keypair) -> Result<Swarm<RelayBehaviour>> {
+pub fn build_relay_swarm(
+    identity: identity::Keypair,
+    circuit_authorizer: Option<Box<dyn relay::CircuitAuthorizer>>,
+) -> Result<Swarm<RelayBehaviour>> {
     let swarm = SwarmBuilder::with_existing_identity(identity)
         .with_tokio()
         .with_tcp(
@@ -74,15 +194,34 @@ pub fn build_relay_swarm(identity: identity::Keypair) -> Result<Swarm<RelayBehav
             yamux::Config::default,
         )?
         .with_quic()
-        .with_behaviour(|key| {
+        .with_behaviour(move |key| {
             let local_peer_id = key.public().to_peer_id();
+            let protected = circuit_authorizer.is_some();
+            let default_config = relay::Config::default();
+            let relay_config = relay::Config {
+                circuit_authorizer,
+                // Each validated Grant supplies its own remaining byte allowance.
+                max_circuit_bytes: if protected {
+                    0
+                } else {
+                    default_config.max_circuit_bytes
+                },
+                // The one-circuit authorization supplies the effective deadline.
+                max_circuit_duration: if protected {
+                    Duration::from_secs(u64::from(u32::MAX))
+                } else {
+                    default_config.max_circuit_duration
+                },
+                ..default_config
+            };
             RelayBehaviour {
-                relay: relay::Behaviour::new(local_peer_id, relay::Config::default()),
+                relay: relay::Behaviour::new(local_peer_id, relay_config),
                 identify: identify::Behaviour::new(identify::Config::new(
                     IDENTIFY_PROTOCOL.to_owned(),
                     key.public(),
                 )),
                 ping: ping::Behaviour::new(ping::Config::new()),
+                streams: libp2p_stream::Behaviour::new(),
             }
         })?
         .with_swarm_config(|config| config.with_idle_connection_timeout(Duration::from_mins(2)))
@@ -186,5 +325,63 @@ mod tests {
         assert!(!is_advertisable_agent_address(
             &"/ip4/203.0.113.10/tcp/7001/p2p-circuit".parse().unwrap()
         ));
+    }
+
+    #[test]
+    fn relay_grant_is_target_bound_and_single_use() {
+        let cache = RelayGrantCache::default();
+        let connector = PeerId::random();
+        let agent = PeerId::random();
+        let other_agent = PeerId::random();
+        cache
+            .preauthorize_at(
+                PreauthorizedRelayGrant {
+                    grant_id: "grant-1".to_owned(),
+                    connector_peer_id: connector,
+                    agent_peer_id: agent,
+                    remaining_bytes: 4096,
+                    expires_at_epoch_seconds: 1_100,
+                },
+                1_000,
+            )
+            .unwrap();
+
+        assert!(cache.consume_at(connector, other_agent, 1_001).is_none());
+        let authorization = cache.consume_at(connector, agent, 1_001).unwrap();
+        assert_eq!(authorization.id, "grant-1");
+        assert_eq!(authorization.max_circuit_bytes, 4096);
+        assert!(cache.consume_at(connector, agent, 1_002).is_none());
+    }
+
+    #[test]
+    fn relay_grant_rejects_replay_expiry_and_exhaustion() {
+        let cache = RelayGrantCache::default();
+        let grant = PreauthorizedRelayGrant {
+            grant_id: "grant-1".to_owned(),
+            connector_peer_id: PeerId::random(),
+            agent_peer_id: PeerId::random(),
+            remaining_bytes: 1,
+            expires_at_epoch_seconds: 1_100,
+        };
+        cache.preauthorize_at(grant.clone(), 1_000).unwrap();
+        assert_eq!(
+            cache.preauthorize_at(grant, 1_000),
+            Err(RelayGrantCacheError::Duplicate)
+        );
+        let expired = PreauthorizedRelayGrant {
+            grant_id: "expired".to_owned(),
+            expires_at_epoch_seconds: 1_000,
+            ..PreauthorizedRelayGrant {
+                grant_id: String::new(),
+                connector_peer_id: PeerId::random(),
+                agent_peer_id: PeerId::random(),
+                remaining_bytes: 1,
+                expires_at_epoch_seconds: 0,
+            }
+        };
+        assert_eq!(
+            cache.preauthorize_at(expired, 1_000),
+            Err(RelayGrantCacheError::Expired)
+        );
     }
 }
