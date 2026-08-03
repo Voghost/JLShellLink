@@ -41,7 +41,7 @@ mod proto {
 
 pub use behaviour::{
     rate_limiter::RateLimiter, Behaviour, CircuitAuthorization, CircuitAuthorizer, CircuitId,
-    Config, Event, StatusCode,
+    Config, Event, ReservationAuthorizer, StatusCode,
 };
 pub use protocol::{HOP_PROTOCOL_NAME, STOP_PROTOCOL_NAME};
 

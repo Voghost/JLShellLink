@@ -13,6 +13,8 @@ use libp2p::{
 pub const DIRECT_DIAL_TIMEOUT_SECONDS: u64 = 3;
 pub const QUIC_DIAL_PRIORITY_SECONDS: u64 = 1;
 pub const IDENTIFY_PROTOCOL: &str = "/jlshell/link/identify/1.0.0";
+pub const RELAY_RESERVATION_AUTH_TTL_SECONDS: i64 = 5 * 60;
+pub const RELAY_RESERVATION_REFRESH_SECONDS: u64 = 2 * 60;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreauthorizedRelayGrant {
@@ -120,6 +122,53 @@ impl libp2p::relay::CircuitAuthorizer for RelayGrantCache {
     }
 }
 
+#[derive(Clone, Default)]
+pub struct RelayReservationCache {
+    authorized: Arc<parking_lot::Mutex<HashMap<PeerId, i64>>>,
+}
+
+impl RelayReservationCache {
+    /// Authorizes reservations from an authenticated Agent `PeerId` until the bounded expiry.
+    pub fn preauthorize(
+        &self,
+        agent_peer_id: PeerId,
+        expires_at_epoch_seconds: i64,
+    ) -> Result<i64, RelayGrantCacheError> {
+        self.preauthorize_at(
+            agent_peer_id,
+            expires_at_epoch_seconds,
+            unix_epoch_seconds(),
+        )
+    }
+
+    fn preauthorize_at(
+        &self,
+        agent_peer_id: PeerId,
+        expires_at_epoch_seconds: i64,
+        now_epoch_seconds: i64,
+    ) -> Result<i64, RelayGrantCacheError> {
+        let bounded_expiry = expires_at_epoch_seconds
+            .min(now_epoch_seconds.saturating_add(RELAY_RESERVATION_AUTH_TTL_SECONDS));
+        if bounded_expiry <= now_epoch_seconds {
+            return Err(RelayGrantCacheError::Expired);
+        }
+        self.authorized.lock().insert(agent_peer_id, bounded_expiry);
+        Ok(bounded_expiry)
+    }
+
+    fn authorize_at(&self, agent_peer_id: PeerId, now_epoch_seconds: i64) -> bool {
+        let mut authorized = self.authorized.lock();
+        authorized.retain(|_, expires_at| *expires_at > now_epoch_seconds);
+        authorized.contains_key(&agent_peer_id)
+    }
+}
+
+impl libp2p::relay::ReservationAuthorizer for RelayReservationCache {
+    fn authorize(&mut self, src_peer_id: PeerId) -> bool {
+        self.authorize_at(src_peer_id, unix_epoch_seconds())
+    }
+}
+
 fn unix_epoch_seconds() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -185,6 +234,7 @@ pub fn build_client_swarm(identity: identity::Keypair) -> Result<Swarm<ClientBeh
 pub fn build_relay_swarm(
     identity: identity::Keypair,
     circuit_authorizer: Option<Box<dyn relay::CircuitAuthorizer>>,
+    reservation_authorizer: Option<Box<dyn relay::ReservationAuthorizer>>,
 ) -> Result<Swarm<RelayBehaviour>> {
     let swarm = SwarmBuilder::with_existing_identity(identity)
         .with_tokio()
@@ -196,18 +246,25 @@ pub fn build_relay_swarm(
         .with_quic()
         .with_behaviour(move |key| {
             let local_peer_id = key.public().to_peer_id();
-            let protected = circuit_authorizer.is_some();
+            let circuit_protected = circuit_authorizer.is_some();
+            let reservation_protected = reservation_authorizer.is_some();
             let default_config = relay::Config::default();
             let relay_config = relay::Config {
                 circuit_authorizer,
+                reservation_authorizer,
+                reservation_duration: if reservation_protected {
+                    Duration::from_secs(RELAY_RESERVATION_AUTH_TTL_SECONDS as u64)
+                } else {
+                    default_config.reservation_duration
+                },
                 // Each validated Grant supplies its own remaining byte allowance.
-                max_circuit_bytes: if protected {
+                max_circuit_bytes: if circuit_protected {
                     0
                 } else {
                     default_config.max_circuit_bytes
                 },
                 // The one-circuit authorization supplies the effective deadline.
-                max_circuit_duration: if protected {
+                max_circuit_duration: if circuit_protected {
                     Duration::from_secs(u64::from(u32::MAX))
                 } else {
                     default_config.max_circuit_duration
@@ -383,5 +440,17 @@ mod tests {
             cache.preauthorize_at(expired, 1_000),
             Err(RelayGrantCacheError::Expired)
         );
+    }
+
+    #[test]
+    fn relay_reservation_authorization_is_peer_bound_and_bounded() {
+        let cache = RelayReservationCache::default();
+        let agent = PeerId::random();
+        let other = PeerId::random();
+        cache.preauthorize_at(agent, 10_000, 1_000).unwrap();
+
+        assert!(cache.authorize_at(agent, 1_299));
+        assert!(!cache.authorize_at(other, 1_299));
+        assert!(!cache.authorize_at(agent, 1_300));
     }
 }

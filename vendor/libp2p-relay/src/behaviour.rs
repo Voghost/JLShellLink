@@ -70,6 +70,11 @@ pub trait CircuitAuthorizer: Send {
     ) -> Option<CircuitAuthorization>;
 }
 
+/// Synchronous authorization hook invoked before a reservation or renewal is accepted.
+pub trait ReservationAuthorizer: Send {
+    fn authorize(&mut self, src_peer_id: PeerId) -> bool;
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct CircuitByteCounters {
     uploaded: Arc<AtomicU64>,
@@ -103,6 +108,7 @@ pub struct Config {
     pub max_reservations_per_peer: usize,
     pub reservation_duration: Duration,
     pub reservation_rate_limiters: Vec<Box<dyn rate_limiter::RateLimiter>>,
+    pub reservation_authorizer: Option<Box<dyn ReservationAuthorizer>>,
 
     pub max_circuits: usize,
     pub max_circuits_per_peer: usize,
@@ -157,6 +163,10 @@ impl std::fmt::Debug for Config {
                 "reservation_rate_limiters",
                 &format!("[{} rate limiters]", self.reservation_rate_limiters.len()),
             )
+            .field(
+                "reservation_authorizer",
+                &self.reservation_authorizer.is_some(),
+            )
             .field("max_circuits", &self.max_circuits)
             .field("max_circuits_per_peer", &self.max_circuits_per_peer)
             .field("max_circuit_duration", &self.max_circuit_duration)
@@ -209,6 +219,7 @@ impl Default for Config {
             max_reservations_per_peer: 4,
             reservation_duration: Duration::from_secs(60 * 60),
             reservation_rate_limiters,
+            reservation_authorizer: None,
 
             max_circuits: 16,
             max_circuits_per_peer: 4,
@@ -505,6 +516,20 @@ impl NetworkBehaviour for Behaviour {
                         event: Either::Left(handler::In::DenyReservationReq {
                             inbound_reservation_req,
                             status: proto::Status::RESOURCE_LIMIT_EXCEEDED,
+                        }),
+                    }
+                } else if self
+                    .config
+                    .reservation_authorizer
+                    .as_mut()
+                    .is_some_and(|authorizer| !authorizer.authorize(event_source))
+                {
+                    ToSwarm::NotifyHandler {
+                        handler: NotifyHandler::One(connection),
+                        peer_id: event_source,
+                        event: Either::Left(handler::In::DenyReservationReq {
+                            inbound_reservation_req,
+                            status: proto::Status::PERMISSION_DENIED,
                         }),
                     }
                 } else {

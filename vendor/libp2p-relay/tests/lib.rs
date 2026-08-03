@@ -404,6 +404,55 @@ async fn propagate_reservation_error_to_listener() {
 }
 
 #[tokio::test]
+async fn reservation_authorizer_denies_unauthenticated_peer() {
+    struct DenyAll;
+
+    impl relay::ReservationAuthorizer for DenyAll {
+        fn authorize(&mut self, _src_peer_id: PeerId) -> bool {
+            false
+        }
+    }
+
+    let relay_addr = Multiaddr::empty().with(Protocol::Memory(rand::random::<u64>()));
+    let mut relay = build_relay_with_config(relay::Config {
+        reservation_authorizer: Some(Box::new(DenyAll)),
+        ..relay::Config::default()
+    });
+    let relay_peer_id = *relay.local_peer_id();
+    relay.listen_on(relay_addr.clone()).unwrap();
+    relay.add_external_address(relay_addr.clone());
+    tokio::spawn(async move {
+        relay.collect::<Vec<_>>().await;
+    });
+
+    let client_addr = relay_addr
+        .with(Protocol::P2p(relay_peer_id))
+        .with(Protocol::P2pCircuit);
+    let mut client = build_client();
+    let listener = client.listen_on(client_addr).unwrap();
+    assert!(wait_for_dial(&mut client, relay_peer_id).await);
+
+    let error = client
+        .wait(|event| match event {
+            SwarmEvent::ListenerClosed {
+                listener_id,
+                reason: Err(error),
+                ..
+            } if listener_id == listener => Some(error),
+            _ => None,
+        })
+        .await;
+    let reserve_error = error
+        .source()
+        .and_then(|error| error.downcast_ref::<relay::outbound::hop::ReserveError>())
+        .expect("Relay denial must reach the reserving Agent");
+    assert!(matches!(
+        reserve_error,
+        relay::outbound::hop::ReserveError::PermissionDenied
+    ));
+}
+
+#[tokio::test]
 async fn propagate_connect_error_to_unknown_peer_to_dialer() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
