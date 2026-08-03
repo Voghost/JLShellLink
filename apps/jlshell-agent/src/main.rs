@@ -2,7 +2,7 @@ use std::collections::{BTreeSet, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use base64::Engine;
@@ -18,9 +18,14 @@ use link_crypto::{
     verify_ticket_with_keyring,
 };
 use link_protocol::{
-    OpenStatus, OpenTcpRequest, OpenTcpResponse, TCP_PROTOCOL, read_frame, write_frame,
+    OpenStatus, OpenTcpRequest, OpenTcpResponse, RELAY_RESERVATION_AUTH_PROTOCOL,
+    RelayReservationAuthRequest, RelayReservationAuthResponse, RelayReservationAuthStatus,
+    TCP_PROTOCOL, read_frame, write_frame,
 };
-use link_transport::{ConnectPolicy, is_advertisable_agent_address, relay_circuit_address};
+use link_transport::{
+    ConnectPolicy, RELAY_RESERVATION_REFRESH_SECONDS, ensure_expected_peer,
+    is_advertisable_agent_address, relay_circuit_address,
+};
 use tokio::net::TcpStream;
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 use tracing::{debug, info, warn};
@@ -76,6 +81,11 @@ struct Authorization {
     replay_cache: NonceReplayCache,
 }
 
+#[derive(Clone)]
+struct AgentControlPlane {
+    credential: String,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_target(false).init();
@@ -127,16 +137,27 @@ async fn main() -> Result<()> {
         .accept(StreamProtocol::new(TCP_PROTOCOL))
         .context("TCP stream protocol is already registered")?;
 
-    configure_listeners(&mut swarm, &args, agent_peer_id)?;
-    start_control_plane(
+    let control_plane = start_control_plane(
         &args,
         Arc::clone(&authorization),
         Arc::clone(&reachable_addresses),
     )?;
+    prepare_relay_reservation(&mut swarm, &args, control_plane.as_ref()).await?;
+    configure_listeners(&mut swarm, &args, agent_peer_id)?;
+    let mut reservation_refresh =
+        tokio::time::interval(Duration::from_secs(RELAY_RESERVATION_REFRESH_SECONDS));
+    reservation_refresh.tick().await;
 
     println!("AGENT_PEER_ID={agent_peer_id}");
     loop {
         tokio::select! {
+            _ = reservation_refresh.tick() => {
+                if let Err(error) = refresh_relay_reservation(
+                    &mut swarm, &args, control_plane.as_ref(),
+                ).await {
+                    warn!(%error, "Relay reservation authorization refresh failed");
+                }
+            }
             incoming_stream = incoming.next() => {
                 let Some((remote_peer, stream)) = incoming_stream else {
                     bail!("incoming stream listener stopped unexpectedly");
@@ -173,6 +194,34 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+async fn prepare_relay_reservation(
+    swarm: &mut libp2p::Swarm<link_transport::ClientBehaviour>,
+    args: &Args,
+    control_plane: Option<&AgentControlPlane>,
+) -> Result<()> {
+    if args.relay_address.is_some() && control_plane.is_none() {
+        warn!(
+            "no Agent credential supplied; only an explicitly unauthenticated loopback Relay can accept the reservation"
+        );
+        return Ok(());
+    }
+    refresh_relay_reservation(swarm, args, control_plane).await
+}
+
+async fn refresh_relay_reservation(
+    swarm: &mut libp2p::Swarm<link_transport::ClientBehaviour>,
+    args: &Args,
+    control_plane: Option<&AgentControlPlane>,
+) -> Result<()> {
+    let (Some(relay_address), Some(relay_peer), Some(control_plane)) =
+        (args.relay_address.as_ref(), args.relay_peer, control_plane)
+    else {
+        return Ok(());
+    };
+    authenticate_relay_reservation(swarm, relay_address, relay_peer, &control_plane.credential)
+        .await
+}
+
 fn configure_listeners(
     swarm: &mut libp2p::Swarm<link_transport::ClientBehaviour>,
     args: &Args,
@@ -206,6 +255,82 @@ fn configure_listeners(
         warn!("auto policy has no relay configured; only direct connections are available");
     }
     Ok(())
+}
+
+async fn authenticate_relay_reservation(
+    swarm: &mut libp2p::Swarm<link_transport::ClientBehaviour>,
+    relay_address: &Multiaddr,
+    relay_peer: PeerId,
+    agent_credential: &str,
+) -> Result<()> {
+    if !swarm.is_connected(&relay_peer) {
+        let mut direct_address = relay_address.clone();
+        ensure_expected_peer(&mut direct_address, relay_peer);
+        swarm
+            .dial(direct_address.clone())
+            .with_context(|| format!("cannot dial Relay {direct_address}"))?;
+        wait_for_relay(swarm, relay_peer).await?;
+    }
+
+    let mut control = swarm.behaviour().streams.new_control();
+    let agent_credential = agent_credential.to_owned();
+    let authentication = async move {
+        let mut stream = control
+            .open_stream(
+                relay_peer,
+                StreamProtocol::new(RELAY_RESERVATION_AUTH_PROTOCOL),
+            )
+            .await
+            .context("Relay does not support Agent reservation authorization")?;
+        write_frame(
+            &mut stream,
+            &RelayReservationAuthRequest { agent_credential },
+        )
+        .await?;
+        let response: RelayReservationAuthResponse = read_frame(&mut stream).await?;
+        if RelayReservationAuthStatus::try_from(response.status)
+            .unwrap_or(RelayReservationAuthStatus::Unspecified)
+            != RelayReservationAuthStatus::Ok
+        {
+            bail!("Relay rejected Agent reservation: {}", response.message);
+        }
+        Ok(())
+    };
+    tokio::pin!(authentication);
+    let timeout = tokio::time::sleep(Duration::from_secs(10));
+    tokio::pin!(timeout);
+    loop {
+        tokio::select! {
+            result = &mut authentication => return result,
+            () = &mut timeout => bail!("Relay reservation authorization timed out"),
+            event = swarm.select_next_some() => {
+                if let SwarmEvent::ConnectionClosed { peer_id, .. } = event
+                    && peer_id == relay_peer
+                {
+                    bail!("Relay connection closed during reservation authorization");
+                }
+            }
+        }
+    }
+}
+
+async fn wait_for_relay(
+    swarm: &mut libp2p::Swarm<link_transport::ClientBehaviour>,
+    relay_peer: PeerId,
+) -> Result<()> {
+    loop {
+        match swarm.select_next_some().await {
+            SwarmEvent::ConnectionEstablished { peer_id, .. } if peer_id == relay_peer => {
+                return Ok(());
+            }
+            SwarmEvent::OutgoingConnectionError {
+                peer_id: Some(peer_id),
+                error,
+                ..
+            } if peer_id == relay_peer => bail!("cannot connect to Relay {peer_id}: {error}"),
+            _ => {}
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -428,12 +553,12 @@ fn start_control_plane(
     args: &Args,
     authorization: Arc<Authorization>,
     reachable_addresses: Arc<tokio::sync::RwLock<BTreeSet<String>>>,
-) -> Result<()> {
+) -> Result<Option<AgentControlPlane>> {
     let Some(base_url) = &args.control_plane_url else {
         if args.credential_file.is_some() {
             bail!("--credential-file requires --control-plane-url");
         }
-        return Ok(());
+        return Ok(None);
     };
     let credential_path = args
         .credential_file
@@ -441,6 +566,9 @@ fn start_control_plane(
         .context("--credential-file is required with --control-plane-url")?;
     let credential = read_node_credential(credential_path)?;
     let client = ControlPlaneClient::new(base_url)?;
+    let runtime = AgentControlPlane {
+        credential: credential.clone(),
+    };
     let seconds = args.heartbeat_seconds;
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(seconds));
@@ -470,7 +598,7 @@ fn start_control_plane(
             }
         }
     });
-    Ok(())
+    Ok(Some(runtime))
 }
 
 async fn write_rejection(

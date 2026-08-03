@@ -12,6 +12,8 @@ futures.workspace = true
 libp2p.workspace = true
 libp2p-stream.workspace = true
 link-protocol = { path = "../link-protocol" }
+parking_lot.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true

@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use reqwest::header::{HeaderMap, HeaderValue};
+use serde::{Deserialize, Serialize};
 
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 
@@ -11,6 +12,49 @@ const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 pub struct ControlPlaneClient {
     base_url: String,
     client: reqwest::Client,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidatedRelayGrant {
+    pub grant_id: String,
+    pub user_id: String,
+    pub relay_id: String,
+    pub agent_id: String,
+    pub agent_peer_id: String,
+    pub byte_limit: u64,
+    pub used_bytes: u64,
+    pub expires_at: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidatedRelayAgent {
+    pub agent_id: String,
+    pub user_id: String,
+    pub agent_peer_id: String,
+    pub credential_expires_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayUsageReport<'a> {
+    pub grant_id: &'a str,
+    pub sequence: u64,
+    pub uploaded_bytes: u64,
+    pub downloaded_bytes: u64,
+    pub closed: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayUsageResult {
+    pub grant_id: String,
+    pub sequence: u64,
+    pub uploaded_bytes: u64,
+    pub downloaded_bytes: u64,
+    pub remaining_bytes: u64,
+    pub closed_at: Option<String>,
 }
 
 impl ControlPlaneClient {
@@ -83,6 +127,67 @@ impl ControlPlaneClient {
         .await
     }
 
+    /// Validates a single-use Relay Grant against the authenticated Relay node.
+    pub async fn validate_relay_grant(
+        &self,
+        relay_credential: &str,
+        grant_credential: &str,
+    ) -> Result<ValidatedRelayGrant> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "X-Relay-Token",
+            credential_header(relay_credential, "relay credential")?,
+        );
+        headers.insert(
+            "X-Relay-Grant",
+            credential_header(grant_credential, "relay grant")?,
+        );
+        self.post_json(
+            "/api/v1/link/relay-grant-validations",
+            headers,
+            &serde_json::Value::Null,
+        )
+        .await
+    }
+
+    /// Validates an Agent node credential for a Relay reservation.
+    pub async fn validate_relay_agent(
+        &self,
+        relay_credential: &str,
+        agent_credential: &str,
+    ) -> Result<ValidatedRelayAgent> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "X-Relay-Token",
+            credential_header(relay_credential, "relay credential")?,
+        );
+        headers.insert(
+            "X-Agent-Token",
+            credential_header(agent_credential, "agent credential")?,
+        );
+        self.post_json(
+            "/api/v1/link/relay-agent-validations",
+            headers,
+            &serde_json::Value::Null,
+        )
+        .await
+    }
+
+    /// Reports monotonic bidirectional byte counters for an active Relay Grant.
+    pub async fn report_relay_usage(
+        &self,
+        relay_credential: &str,
+        report: &RelayUsageReport<'_>,
+    ) -> Result<RelayUsageResult> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "X-Relay-Token",
+            credential_header(relay_credential, "relay credential")?,
+        );
+        self.post_json("/api/v1/link/relay-usage", headers, report)
+            .await
+    }
+
     async fn heartbeat(
         &self,
         path: &str,
@@ -117,6 +222,38 @@ impl ControlPlaneClient {
         Ok(())
     }
 
+    async fn post_json<T: Serialize + Sync + ?Sized, R: for<'de> Deserialize<'de>>(
+        &self,
+        path: &str,
+        headers: HeaderMap,
+        body: &T,
+    ) -> Result<R> {
+        let request = self.client.post(self.url(path)).headers(headers);
+        let response = if path.ends_with("validations") {
+            request.send().await
+        } else {
+            request.json(body).send().await
+        }
+        .context("control-plane request failed")?;
+        if !response.status().is_success() {
+            bail!("control-plane request returned HTTP {}", response.status());
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
+        {
+            bail!("control-plane response is too large");
+        }
+        let bytes = response
+            .bytes()
+            .await
+            .context("cannot read control-plane response")?;
+        if bytes.len() > MAX_RESPONSE_BYTES {
+            bail!("control-plane response is too large");
+        }
+        serde_json::from_slice(&bytes).context("invalid control-plane JSON response")
+    }
+
     async fn get(&self, path: &str) -> Result<Vec<u8>> {
         let response = self
             .client
@@ -146,6 +283,14 @@ impl ControlPlaneClient {
     fn url(&self, path: &str) -> String {
         format!("{}{}", self.base_url, path)
     }
+}
+
+fn credential_header(value: &str, name: &str) -> Result<HeaderValue> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 512 || value.chars().any(char::is_whitespace) {
+        bail!("{name} is invalid");
+    }
+    HeaderValue::from_str(value).with_context(|| format!("{name} is invalid"))
 }
 
 /// Reads a node credential and enforces owner-only permissions on Unix.
@@ -186,5 +331,39 @@ mod tests {
         assert!(ControlPlaneClient::new("https://example.com").is_ok());
         assert!(ControlPlaneClient::new("https://example.com/control").is_err());
         assert!(ControlPlaneClient::new("https://example.com/#fragment").is_err());
+    }
+
+    #[test]
+    fn decodes_relay_grant_and_usage_contracts() {
+        let grant: ValidatedRelayGrant = serde_json::from_str(
+            r#"{"grantId":"11111111-1111-1111-1111-111111111111","userId":"22222222-2222-2222-2222-222222222222","relayId":"33333333-3333-3333-3333-333333333333","agentId":"44444444-4444-4444-4444-444444444444","agentPeerId":"12D3KooWAgent","byteLimit":4096,"usedBytes":10,"expiresAt":"2026-08-03T10:00:00Z"}"#,
+        )
+        .unwrap();
+        assert_eq!(grant.byte_limit, 4096);
+        assert_eq!(grant.agent_peer_id, "12D3KooWAgent");
+
+        let report = RelayUsageReport {
+            grant_id: &grant.grant_id,
+            sequence: 1,
+            uploaded_bytes: 20,
+            downloaded_bytes: 30,
+            closed: false,
+        };
+        let encoded = serde_json::to_value(report).unwrap();
+        assert_eq!(encoded["uploadedBytes"], 20);
+        assert_eq!(encoded["downloadedBytes"], 30);
+
+        let agent: ValidatedRelayAgent = serde_json::from_str(
+            r#"{"agentId":"agent-id","userId":"user-id","agentPeerId":"12D3KooWAgent","credentialExpiresAt":"2030-01-01T00:00:00Z"}"#,
+        )
+        .unwrap();
+        assert_eq!(agent.agent_peer_id, "12D3KooWAgent");
+    }
+
+    #[test]
+    fn rejects_invalid_relay_credentials_before_network_use() {
+        assert!(credential_header("", "relay credential").is_err());
+        assert!(credential_header("contains whitespace", "relay grant").is_err());
+        assert!(credential_header("valid-token", "relay grant").is_ok());
     }
 }

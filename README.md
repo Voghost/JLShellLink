@@ -65,6 +65,19 @@ jlshell-connector --identity-proof <base64url-payload> --identity <connector-ide
 jlshell-connector --connect-policy auto|direct-only|relay-only
 ```
 
+使用受控 Relay 时，Connector 额外传入 `--relay-grant <credential-file>`。Connector
+会先通过 `/jlshell/link/relay-auth/1.0.0` 加密流完成一次性预授权，再发起 Circuit；
+Grant 不应直接出现在命令行或日志中。公网 Relay 必须同时配置控制平面 URL 和 Relay
+节点凭据，未配置控制平面的模式只用于回环开发测试。
+
+配置控制平面的 Agent 会在申请 Relay reservation 前自动使用节点凭据完成加密
+预授权，并每两分钟刷新五分钟租约。Relay 会将 Website 返回的注册 PeerId 与 Noise
+连接的真实源 PeerId 精确匹配；凭据撤销、冒用或控制平面持续不可用时拒绝续约。
+
+Relay server 使用仓库内固定的 `vendor/libp2p-relay` 安全补丁，在接受 Circuit 前核对
+Connector/Agent 绑定并记录精确双向字节数。该目录保留上游 MIT 许可证，CI 会独立运行
+其测试。
+
 `--print-identity` 只创建或读取 0600 Connector 身份文件，输出稳定的
 `CONNECTOR_PEER_ID` 和 `CONNECTOR_PUBLIC_KEY` 后退出，供 Program 插件在取票前完成
 设备身份绑定；`--identity-proof` 使用同一私钥签名网站 challenge。Agent 和 Relay
