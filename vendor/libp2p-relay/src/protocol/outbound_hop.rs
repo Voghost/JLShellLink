@@ -60,6 +60,8 @@ pub enum ReserveError {
     Refused,
     #[error("Remote reported resource limit exceeded.")]
     ResourceLimitExceeded,
+    #[error("Remote denied permission.")]
+    PermissionDenied,
     #[error("Remote does not support the `{HOP_PROTOCOL_NAME}` protocol")]
     Unsupported,
     #[error("IO error")]
@@ -162,6 +164,9 @@ pub(crate) async fn make_reservation(stream: Stream) -> Result<Reservation, Rese
         }
         proto::Status::RESOURCE_LIMIT_EXCEEDED => {
             return Err(ReserveError::ResourceLimitExceeded);
+        }
+        proto::Status::PERMISSION_DENIED => {
+            return Err(ReserveError::PermissionDenied);
         }
         s => {
             return Err(ReserveError::Protocol(ProtocolViolation::UnexpectedStatus(

@@ -12,14 +12,19 @@ use libp2p::swarm::StreamProtocol;
 use libp2p::swarm::SwarmEvent;
 use libp2p::{Multiaddr, PeerId};
 use link_control_plane::{
-    ControlPlaneClient, RelayUsageReport, ValidatedRelayGrant, read_node_credential,
+    ControlPlaneClient, RelayUsageReport, ValidatedRelayAgent, ValidatedRelayGrant,
+    read_node_credential,
 };
 use link_crypto::{load_or_generate_identity, sign_identity_payload};
 use link_protocol::{
-    RELAY_AUTH_PROTOCOL, RelayAuthRequest, RelayAuthResponse, RelayAuthStatus, read_frame,
-    write_frame,
+    RELAY_AUTH_PROTOCOL, RELAY_RESERVATION_AUTH_PROTOCOL, RelayAuthRequest, RelayAuthResponse,
+    RelayAuthStatus, RelayReservationAuthRequest, RelayReservationAuthResponse,
+    RelayReservationAuthStatus, read_frame, write_frame,
 };
-use link_transport::{PreauthorizedRelayGrant, RelayGrantCache};
+use link_transport::{
+    PreauthorizedRelayGrant, RELAY_RESERVATION_AUTH_TTL_SECONDS, RelayGrantCache,
+    RelayReservationCache,
+};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use tracing::{info, warn};
@@ -118,16 +123,27 @@ async fn run_relay(
     control_plane: Option<RelayControlPlane>,
 ) -> Result<()> {
     let grant_cache = RelayGrantCache::default();
-    let authorizer = control_plane
+    let reservation_cache = RelayReservationCache::default();
+    let circuit_authorizer = control_plane
         .as_ref()
         .map(|_| Box::new(grant_cache.clone()) as Box<dyn libp2p::relay::CircuitAuthorizer>);
-    let mut swarm = link_transport::build_relay_swarm(identity, authorizer)?;
+    let reservation_authorizer = control_plane.as_ref().map(|_| {
+        Box::new(reservation_cache.clone()) as Box<dyn libp2p::relay::ReservationAuthorizer>
+    });
+    let mut swarm =
+        link_transport::build_relay_swarm(identity, circuit_authorizer, reservation_authorizer)?;
     let mut relay_auth = swarm
         .behaviour()
         .streams
         .new_control()
         .accept(StreamProtocol::new(RELAY_AUTH_PROTOCOL))
         .context("Relay auth protocol is already registered")?;
+    let mut reservation_auth = swarm
+        .behaviour()
+        .streams
+        .new_control()
+        .accept(StreamProtocol::new(RELAY_RESERVATION_AUTH_PROTOCOL))
+        .context("Relay reservation auth protocol is already registered")?;
     for address in addresses {
         swarm.listen_on(address)?;
     }
@@ -135,6 +151,23 @@ async fn run_relay(
 
     loop {
         tokio::select! {
+            incoming = reservation_auth.next() => {
+                let Some((agent_peer, stream)) = incoming else {
+                    bail!("Relay reservation auth listener stopped unexpectedly");
+                };
+                let control_plane = control_plane.clone();
+                let reservation_cache = reservation_cache.clone();
+                tokio::spawn(async move {
+                    if let Err(error) = handle_reservation_auth(
+                        agent_peer,
+                        stream,
+                        control_plane,
+                        reservation_cache,
+                    ).await {
+                        warn!(%agent_peer, %error, "Relay reservation preauthorization failed");
+                    }
+                });
+            }
             incoming = relay_auth.next() => {
                 let Some((connector_peer, stream)) = incoming else {
                     bail!("Relay auth protocol listener stopped unexpectedly");
@@ -290,6 +323,83 @@ async fn process_relay_auth(
     })
 }
 
+async fn handle_reservation_auth(
+    agent_peer: PeerId,
+    mut stream: libp2p::swarm::Stream,
+    control_plane: Option<RelayControlPlane>,
+    reservation_cache: RelayReservationCache,
+) -> Result<()> {
+    let request: RelayReservationAuthRequest = read_frame(&mut stream).await?;
+    let response = match process_reservation_auth(
+        agent_peer,
+        request,
+        control_plane,
+        &reservation_cache,
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            warn!(%agent_peer, %error, "Relay Agent reservation rejected");
+            RelayReservationAuthResponse {
+                status: RelayReservationAuthStatus::Unauthorized.into(),
+                message: "Agent reservation was rejected".to_owned(),
+                agent_id: String::new(),
+                authorization_expires_at_epoch_seconds: 0,
+            }
+        }
+    };
+    write_frame(&mut stream, &response).await?;
+    Ok(())
+}
+
+async fn process_reservation_auth(
+    agent_peer: PeerId,
+    request: RelayReservationAuthRequest,
+    control_plane: Option<RelayControlPlane>,
+    reservation_cache: &RelayReservationCache,
+) -> Result<RelayReservationAuthResponse> {
+    let control_plane = control_plane.context("Relay is not connected to its control plane")?;
+    let validated = control_plane
+        .client
+        .validate_relay_agent(&control_plane.credential, &request.agent_credential)
+        .await?;
+    validate_agent_peer(agent_peer, &validated)?;
+    let credential_expires_at = validated.credential_expires_at.as_deref().map_or_else(
+        || {
+            Ok::<_, anyhow::Error>(
+                OffsetDateTime::now_utc()
+                    .unix_timestamp()
+                    .saturating_add(RELAY_RESERVATION_AUTH_TTL_SECONDS),
+            )
+        },
+        |expires_at| {
+            OffsetDateTime::parse(expires_at, &Rfc3339)
+                .context("control plane returned an invalid Agent credential expiry")
+                .map(OffsetDateTime::unix_timestamp)
+        },
+    )?;
+    let authorization_expires_at =
+        reservation_cache.preauthorize(agent_peer, credential_expires_at)?;
+    Ok(RelayReservationAuthResponse {
+        status: RelayReservationAuthStatus::Ok.into(),
+        message: "Agent reservations authorized for a bounded lease".to_owned(),
+        agent_id: validated.agent_id,
+        authorization_expires_at_epoch_seconds: authorization_expires_at,
+    })
+}
+
+fn validate_agent_peer(agent_peer: PeerId, validated: &ValidatedRelayAgent) -> Result<()> {
+    let registered_peer: PeerId = validated
+        .agent_peer_id
+        .parse()
+        .context("control plane returned an invalid Agent PeerId")?;
+    if registered_peer != agent_peer {
+        bail!("Agent credential does not belong to the authenticated PeerId");
+    }
+    Ok(())
+}
+
 fn validate_grant_target(requested_agent: PeerId, validated: &ValidatedRelayGrant) -> Result<()> {
     let granted_agent: PeerId = validated
         .agent_peer_id
@@ -412,6 +522,20 @@ mod tests {
         validate_grant_target(requested_agent, &grant).unwrap();
         grant.agent_peer_id = PeerId::random().to_string();
         assert!(validate_grant_target(requested_agent, &grant).is_err());
+    }
+
+    #[test]
+    fn agent_credential_must_match_authenticated_peer() {
+        let agent_peer = PeerId::random();
+        let mut agent = ValidatedRelayAgent {
+            agent_id: "agent-id".to_owned(),
+            user_id: "user-id".to_owned(),
+            agent_peer_id: agent_peer.to_string(),
+            credential_expires_at: Some("2030-01-01T00:00:00Z".to_owned()),
+        };
+        validate_agent_peer(agent_peer, &agent).unwrap();
+        agent.agent_peer_id = PeerId::random().to_string();
+        assert!(validate_agent_peer(agent_peer, &agent).is_err());
     }
 
     #[test]

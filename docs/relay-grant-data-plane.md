@@ -13,18 +13,20 @@ Circuit Relay v2 的线上协议。
 
 当前实现采用版本化的 `/jlshell/link/relay-auth/1.0.0` 加密预授权协议：
 
-1. Connector 只从文件读取短期 Relay Grant，先与 Relay 建立 Noise 加密流并提交。
-2. Relay 在线验证 Grant，并绑定
+1. Agent 先通过 `/jlshell/link/relay-reservation-auth/1.0.0` 加密流提交节点凭据；Relay
+   在线验证后将真实源 PeerId 加入五分钟 reservation 授权租约，Agent 每两分钟刷新。
+2. Connector 只从文件读取短期 Relay Grant，先与 Relay 建立 Noise 加密流并提交。
+3. Relay 在线验证 Grant，并绑定
    `connectorPeerId + agentPeerId + grantId + expiresAt + byteLimit`。
-3. Relay behaviour 在接受 Circuit 之前同步消费一次性缓存；错误目标、缺少授权、
+4. Relay behaviour 在接受 reservation/Circuit 之前查询对应缓存；错误目标、缺少授权、
    重放、过期或额度耗尽全部在接受前拒绝。
-4. 转发循环在两个方向精确计数，额度或有效期到达时关闭 Circuit；每 10 秒及关闭时
+5. 转发循环在两个方向精确计数，额度或有效期到达时关闭 Circuit；每 10 秒及关闭时
    使用单调 sequence 向 Website 上报累计值。
-5. 公网监听强制要求控制平面和 Relay 凭据；无控制平面的未鉴权模式仅允许显式的
+6. 公网监听强制要求控制平面和 Relay 凭据；无控制平面的未鉴权模式仅允许显式的
    回环原型监听。
 
 自动测试覆盖绕过拒绝、错误目标、单次消费、重放/过期/耗尽和双向字节一致性。
 
-仍待安全发布阶段完成：Agent reservation 节点凭据预授权、控制平面持续不可用时对
-已有 Circuit 的统一 fail-closed 宽限策略，以及生产环境代码签名。当前 Relay 仍标记为
-非生产原型。
+仍待安全发布阶段完成：生产环境代码签名和更细粒度的吊销推送。控制平面持续不可用时，
+新 Circuit 立即拒绝，reservation 最多保留一个五分钟租约，已有 Circuit 则在 Grant
+到期或额度耗尽时关闭。当前 Relay 仍标记为非生产原型。

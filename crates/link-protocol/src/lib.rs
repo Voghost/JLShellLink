@@ -4,6 +4,7 @@ use thiserror::Error;
 
 pub const TCP_PROTOCOL: &str = "/jlshell/link/tcp/1.0.0";
 pub const RELAY_AUTH_PROTOCOL: &str = "/jlshell/link/relay-auth/1.0.0";
+pub const RELAY_RESERVATION_AUTH_PROTOCOL: &str = "/jlshell/link/relay-reservation-auth/1.0.0";
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const MAX_CONTROL_FRAME_SIZE: usize = 64 * 1024;
 
@@ -104,6 +105,35 @@ pub enum RelayAuthStatus {
     ControlPlaneUnavailable = 6,
 }
 
+#[derive(Clone, PartialEq, Eq, Message)]
+pub struct RelayReservationAuthRequest {
+    #[prost(string, tag = "1")]
+    pub agent_credential: String,
+}
+
+#[derive(Clone, PartialEq, Eq, Message)]
+pub struct RelayReservationAuthResponse {
+    #[prost(enumeration = "RelayReservationAuthStatus", tag = "1")]
+    pub status: i32,
+    #[prost(string, tag = "2")]
+    pub message: String,
+    #[prost(string, tag = "3")]
+    pub agent_id: String,
+    #[prost(int64, tag = "4")]
+    pub authorization_expires_at_epoch_seconds: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, prost::Enumeration)]
+#[repr(i32)]
+pub enum RelayReservationAuthStatus {
+    Unspecified = 0,
+    Ok = 1,
+    Unauthorized = 2,
+    PeerMismatch = 3,
+    BadRequest = 4,
+    ControlPlaneUnavailable = 5,
+}
+
 #[derive(Debug, Error)]
 pub enum FrameError {
     #[error("I/O error: {0}")]
@@ -188,6 +218,18 @@ mod tests {
         write_frame(&mut bytes, &request).await.unwrap();
         bytes.set_position(0);
         let decoded: RelayAuthRequest = read_frame(&mut bytes).await.unwrap();
+        assert_eq!(decoded, request);
+    }
+
+    #[tokio::test]
+    async fn round_trips_relay_reservation_auth_frame() {
+        let request = RelayReservationAuthRequest {
+            agent_credential: "opaque-agent-token".to_owned(),
+        };
+        let mut bytes = Cursor::new(Vec::new());
+        write_frame(&mut bytes, &request).await.unwrap();
+        bytes.set_position(0);
+        let decoded: RelayReservationAuthRequest = read_frame(&mut bytes).await.unwrap();
         assert_eq!(decoded, request);
     }
 

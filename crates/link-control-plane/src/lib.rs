@@ -27,6 +27,15 @@ pub struct ValidatedRelayGrant {
     pub expires_at: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ValidatedRelayAgent {
+    pub agent_id: String,
+    pub user_id: String,
+    pub agent_peer_id: String,
+    pub credential_expires_at: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RelayUsageReport<'a> {
@@ -141,6 +150,29 @@ impl ControlPlaneClient {
         .await
     }
 
+    /// Validates an Agent node credential for a Relay reservation.
+    pub async fn validate_relay_agent(
+        &self,
+        relay_credential: &str,
+        agent_credential: &str,
+    ) -> Result<ValidatedRelayAgent> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "X-Relay-Token",
+            credential_header(relay_credential, "relay credential")?,
+        );
+        headers.insert(
+            "X-Agent-Token",
+            credential_header(agent_credential, "agent credential")?,
+        );
+        self.post_json(
+            "/api/v1/link/relay-agent-validations",
+            headers,
+            &serde_json::Value::Null,
+        )
+        .await
+    }
+
     /// Reports monotonic bidirectional byte counters for an active Relay Grant.
     pub async fn report_relay_usage(
         &self,
@@ -197,7 +229,7 @@ impl ControlPlaneClient {
         body: &T,
     ) -> Result<R> {
         let request = self.client.post(self.url(path)).headers(headers);
-        let response = if path.ends_with("relay-grant-validations") {
+        let response = if path.ends_with("validations") {
             request.send().await
         } else {
             request.json(body).send().await
@@ -320,6 +352,12 @@ mod tests {
         let encoded = serde_json::to_value(report).unwrap();
         assert_eq!(encoded["uploadedBytes"], 20);
         assert_eq!(encoded["downloadedBytes"], 30);
+
+        let agent: ValidatedRelayAgent = serde_json::from_str(
+            r#"{"agentId":"agent-id","userId":"user-id","agentPeerId":"12D3KooWAgent","credentialExpiresAt":"2030-01-01T00:00:00Z"}"#,
+        )
+        .unwrap();
+        assert_eq!(agent.agent_peer_id, "12D3KooWAgent");
     }
 
     #[test]
