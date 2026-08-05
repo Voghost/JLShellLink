@@ -81,6 +81,7 @@ struct Authorization {
     authority_keys: tokio::sync::RwLock<AuthorityKeyring>,
     agent_peer_id: PeerId,
     allowed_targets: HashSet<SocketAddr>,
+    enforce_local_allowlist: bool,
     replay_cache: NonceReplayCache,
 }
 
@@ -115,14 +116,15 @@ async fn run_agent(args: Args) -> Result<()> {
         .authority_public
         .as_ref()
         .context("--authority-public is required in Agent mode")?;
-    if args.allowed_targets.is_empty() {
-        bail!("at least one --allow-target is required in Agent mode");
+    if args.allowed_targets.is_empty() && args.control_plane_url.is_none() {
+        bail!("at least one --allow-target is required without a control plane");
     }
     let authority_keys = load_authority_keyring(authority_path)?;
     let authorization = Arc::new(Authorization {
         authority_keys: tokio::sync::RwLock::new(authority_keys),
         agent_peer_id,
         allowed_targets: args.allowed_targets.iter().copied().collect(),
+        enforce_local_allowlist: !args.allowed_targets.is_empty(),
         replay_cache: NonceReplayCache::default(),
     });
     let reachable_addresses = Arc::new(tokio::sync::RwLock::new(
@@ -476,7 +478,7 @@ async fn handle_stream(
         .await
         .context("invalid open request")?;
     let target = parse_target(&request)?;
-    if !authorization.allowed_targets.contains(&target) {
+    if authorization.enforce_local_allowlist && !authorization.allowed_targets.contains(&target) {
         write_rejection(
             &mut stream,
             OpenStatus::TargetDenied,
@@ -710,4 +712,33 @@ fn validate_relay_args(args: &Args) -> Result<()> {
         bail!("--relay-address and --relay-peer must be supplied together");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn control_plane_mode_can_use_ticket_target_without_local_allowlist() {
+        let args = Args::try_parse_from([
+            "jlshell-agent",
+            "--control-plane-url",
+            "https://jlshell.example",
+            "--credential-file",
+            "agent.credential",
+        ])
+        .unwrap();
+
+        assert!(args.allowed_targets.is_empty());
+        assert!(args.control_plane_url.is_some());
+    }
+
+    #[test]
+    fn explicit_allowlist_remains_available_as_local_restriction() {
+        let args =
+            Args::try_parse_from(["jlshell-agent", "--allow-target", "192.168.31.20:22"]).unwrap();
+
+        assert_eq!(args.allowed_targets.len(), 1);
+        assert_eq!(args.allowed_targets[0].to_string(), "192.168.31.20:22");
+    }
 }
