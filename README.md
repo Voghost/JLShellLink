@@ -9,6 +9,20 @@ JLShell Link 是 JLShell 的私有商业网络组件原型，预定仓库为
 > Agent/Relay 已能通过 HTTPS 主动心跳，Agent 会在线刷新 Authority；Relay Grant
 > 对 Circuit Relay 数据面的强制执行、二进制签名和生产 Relay 运维仍未完成。
 
+## 一键安装 Agent
+
+Website 与 OSS 发布链路配置完成后，Linux x64 和 macOS ARM64 服务器可执行：
+
+```bash
+curl -fsSL https://jlshell.oomn.net/api/v1/link/agent/install.sh | sh
+```
+
+脚本会交互式隐藏读取 Website 生成的一次性注册密钥，校验 OSS Runtime 的 SHA-256，
+并把程序、身份和节点凭据安装到 `~/.jlshell-link`。Linux 使用 systemd 用户服务，
+macOS 使用 LaunchAgent；注册密钥被 Agent 消费后会立即删除。生产控制平面签发的票据
+已经绑定精确目标 IP 和端口，因此控制平面模式可以不传 `--allow-target`；需要额外收紧
+单台服务器权限时仍可显式传入一个或多个本地白名单。
+
 ## 组件
 
 - `jlshell-agent`：运行在远端服务器，只访问显式授权的精确 IP:端口。
