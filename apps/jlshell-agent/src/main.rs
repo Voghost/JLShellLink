@@ -11,7 +11,7 @@ use clap::Parser;
 use futures::{AsyncWriteExt, StreamExt};
 use libp2p::swarm::{StreamProtocol, SwarmEvent};
 use libp2p::{Multiaddr, PeerId};
-use link_control_plane::{ControlPlaneClient, read_node_credential};
+use link_control_plane::{ControlPlaneClient, read_node_credential, write_node_credential};
 use link_crypto::{
     AuthorityKeyring, NonceReplayCache, VerificationContext, load_authority_keyring,
     load_or_generate_identity, parse_authority_keyring, sign_identity_payload,
@@ -66,6 +66,9 @@ struct Args {
     /// File containing the short-lived Agent credential (0600 on Unix).
     #[arg(long, requires = "control_plane_url")]
     credential_file: Option<PathBuf>,
+    /// One-time Website enrollment token file. It is consumed on first start and then deleted.
+    #[arg(long, requires = "control_plane_url")]
+    enrollment_token_file: Option<PathBuf>,
     #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(10..=3600))]
     heartbeat_seconds: u64,
     /// Internal Windows SCM wrapper mode. Installed by the JLShell Link plugin.
@@ -99,9 +102,14 @@ async fn main() -> Result<()> {
         print_identity(&args)?;
         return Ok(());
     }
+    run_agent(args).await
+}
+
+async fn run_agent(args: Args) -> Result<()> {
     validate_relay_args(&args)?;
 
     let identity = load_or_generate_identity(&args.identity)?;
+    enroll_agent_if_requested(&args, &identity).await?;
     let agent_peer_id = identity.public().to_peer_id();
     let authority_path = args
         .authority_public
@@ -555,8 +563,8 @@ fn start_control_plane(
     reachable_addresses: Arc<tokio::sync::RwLock<BTreeSet<String>>>,
 ) -> Result<Option<AgentControlPlane>> {
     let Some(base_url) = &args.control_plane_url else {
-        if args.credential_file.is_some() {
-            bail!("--credential-file requires --control-plane-url");
+        if args.credential_file.is_some() || args.enrollment_token_file.is_some() {
+            bail!("--credential-file and --enrollment-token-file require --control-plane-url");
         }
         return Ok(None);
     };
@@ -599,6 +607,65 @@ fn start_control_plane(
         }
     });
     Ok(Some(runtime))
+}
+
+async fn enroll_agent_if_requested(
+    args: &Args,
+    identity: &libp2p::identity::Keypair,
+) -> Result<()> {
+    let Some(token_path) = args.enrollment_token_file.as_ref() else {
+        return Ok(());
+    };
+    let base_url = args
+        .control_plane_url
+        .as_deref()
+        .context("--enrollment-token-file requires --control-plane-url")?;
+    let credential_path = args
+        .credential_file
+        .as_ref()
+        .context("--credential-file is required when enrolling an Agent")?;
+    let enrollment_token =
+        read_node_credential(token_path).context("cannot read one-time Agent enrollment token")?;
+    let public_key = identity
+        .public()
+        .try_into_ed25519()
+        .context("Agent identity is not Ed25519")?;
+    let client = ControlPlaneClient::new(base_url)?;
+    let registration = client
+        .consume_agent_enrollment(
+            &enrollment_token,
+            agent_platform(),
+            agent_architecture(),
+            &URL_SAFE_NO_PAD.encode(public_key.to_bytes()),
+            env!("CARGO_PKG_VERSION"),
+        )
+        .await
+        .context("Agent enrollment failed")?;
+    write_node_credential(credential_path, &registration.credential)?;
+    std::fs::remove_file(token_path).with_context(|| {
+        format!(
+            "cannot remove consumed enrollment token {}",
+            token_path.display()
+        )
+    })?;
+    info!(credential_file = %credential_path.display(), "Agent enrollment completed; one-time token removed");
+    Ok(())
+}
+
+fn agent_platform() -> &'static str {
+    match std::env::consts::OS {
+        "macos" => "macos",
+        "windows" => "windows",
+        _ => "linux",
+    }
+}
+
+fn agent_architecture() -> &'static str {
+    match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "x64",
+        other => other,
+    }
 }
 
 async fn write_rejection(

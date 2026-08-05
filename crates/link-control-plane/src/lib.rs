@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -57,6 +57,12 @@ pub struct RelayUsageResult {
     pub closed_at: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EnrolledAgent {
+    pub credential: String,
+}
+
 impl ControlPlaneClient {
     /// Creates a control-plane client. Plain HTTP is accepted only for an explicit loopback URL.
     pub fn new(base_url: &str) -> Result<Self> {
@@ -112,6 +118,29 @@ impl ControlPlaneClient {
             "/api/v1/link/agent-heartbeats",
             headers,
             &serde_json::json!({ "version": version, "addresses": addresses }),
+        )
+        .await
+    }
+
+    /// Consumes a one-time Website enrollment token and returns the long-lived node credential.
+    pub async fn consume_agent_enrollment(
+        &self,
+        enrollment_token: &str,
+        platform: &str,
+        architecture: &str,
+        public_key: &str,
+        version: &str,
+    ) -> Result<EnrolledAgent> {
+        self.post_json(
+            "/api/v1/link/agent-enrollments/consume",
+            HeaderMap::new(),
+            &serde_json::json!({
+                "enrollmentToken": enrollment_token.trim(),
+                "platform": platform,
+                "architecture": architecture,
+                "publicKey": public_key,
+                "version": version,
+            }),
         )
         .await
     }
@@ -305,6 +334,46 @@ pub fn read_node_credential(path: &Path) -> Result<String> {
     Ok(value.to_owned())
 }
 
+/// Atomically writes a node credential and applies owner-only permissions on Unix.
+pub fn write_node_credential(path: &Path, credential: &str) -> Result<()> {
+    let credential = credential.trim();
+    if credential.is_empty()
+        || credential.len() > 512
+        || credential.chars().any(char::is_whitespace)
+    {
+        bail!("node credential is invalid");
+    }
+    let parent = path
+        .parent()
+        .context("node credential path must have a parent directory")?;
+    fs::create_dir_all(parent).with_context(|| format!("cannot create {}", parent.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("cannot secure {}", parent.display()))?;
+    }
+    let temporary = temporary_credential_path(path);
+    fs::write(&temporary, format!("{credential}\n"))
+        .with_context(|| format!("cannot write {}", temporary.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("cannot secure {}", temporary.display()))?;
+    }
+    fs::rename(&temporary, path).with_context(|| format!("cannot replace {}", path.display()))?;
+    Ok(())
+}
+
+fn temporary_credential_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("credential");
+    path.with_file_name(format!(".{file_name}.{}.tmp", std::process::id()))
+}
+
 fn enforce_owner_only(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
@@ -365,5 +434,34 @@ mod tests {
         assert!(credential_header("", "relay credential").is_err());
         assert!(credential_header("contains whitespace", "relay grant").is_err());
         assert!(credential_header("valid-token", "relay grant").is_ok());
+    }
+
+    #[test]
+    fn writes_owner_only_credentials_that_can_be_read_back() {
+        let temporary = std::env::temp_dir().join(format!(
+            "jlshell-link-control-plane-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let credential = temporary.join("state").join("agent.token");
+
+        write_node_credential(&credential, "enrolled-agent-token").unwrap();
+
+        assert_eq!(
+            read_node_credential(&credential).unwrap(),
+            "enrolled-agent-token"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&credential).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        fs::remove_dir_all(temporary).unwrap();
     }
 }
