@@ -80,6 +80,52 @@ jobs:
           --version "${GITHUB_REF_NAME#v}"
           --archives dist
           --output dist
+      - name: Add the one-command Agent installer
+        run: |
+          cp scripts/install-agent.sh dist/install-agent.sh
+          chmod 755 dist/install-agent.sh
+      - name: Upload Runtime assets through JLShell Website
+        env:
+          JLSHELL_SITE_URL: ${{ vars.JLSHELL_SITE_URL }}
+          JLSHELL_ACTION_WEBHOOK_SECRET: ${{ secrets.JLSHELL_ACTION_WEBHOOK_SECRET }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          site_url="${JLSHELL_SITE_URL:-https://jlshell.oomn.net}"
+          version="${GITHUB_REF_NAME#v}"
+          if [[ -z "$JLSHELL_ACTION_WEBHOOK_SECRET" ]]; then
+            echo "Missing required GitHub secret: JLSHELL_ACTION_WEBHOOK_SECRET" >&2
+            exit 1
+          fi
+
+          files_json='[]'
+          while IFS= read -r -d '' asset; do
+            file_name="$(basename "$asset")"
+            sha256="$(sha256sum "$asset" | awk '{print $1}')"
+            request_path="/api/v1/actions/link-runtime/${version}/${file_name}"
+            timestamp="$(date +%s)"
+            signature="sha256=$(printf '%s.%s.%s' "$timestamp" "$request_path" "$sha256" \
+              | openssl dgst -sha256 -hmac "$JLSHELL_ACTION_WEBHOOK_SECRET" -hex \
+              | awk '{print $2}')"
+            curl -fS -X PUT "${site_url%/}${request_path}" \
+              -H 'Content-Type: application/octet-stream' \
+              -H "X-JLShell-Timestamp: $timestamp" \
+              -H "X-JLShell-Signature: $signature" \
+              -H "X-JLShell-SHA256: $sha256" \
+              --data-binary "@$asset"
+            files_json="$(python3 -c 'import json,sys; files=json.loads(sys.argv[1]); files.append(sys.argv[2]); print(json.dumps(files,separators=(",",":")))' "$files_json" "$file_name")"
+          done < <(find dist -maxdepth 1 -type f -print0)
+
+          body="$(python3 -c 'import json,sys; print(json.dumps({"files":json.loads(sys.argv[1])},separators=(",",":")))' "$files_json")"
+          timestamp="$(date +%s)"
+          signature="sha256=$(printf '%s.%s' "$timestamp" "$body" \
+            | openssl dgst -sha256 -hmac "$JLSHELL_ACTION_WEBHOOK_SECRET" -hex \
+            | awk '{print $2}')"
+          curl -fS -X POST "${site_url%/}/api/v1/actions/link-runtime/${version}/publish" \
+            -H 'Content-Type: application/json' \
+            -H "X-JLShell-Timestamp: $timestamp" \
+            -H "X-JLShell-Signature: $signature" \
+            --data "$body"
       - name: Create private unsigned prototype release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
