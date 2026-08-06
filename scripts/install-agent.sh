@@ -12,6 +12,7 @@ AUTHORITY_FILE="$INSTALL_ROOT/authority.pb"
 TOKEN_FILE="$INSTALL_ROOT/enrollment.token"
 CREDENTIAL_FILE="$INSTALL_ROOT/agent.credential"
 SERVICE_NAME=jlshell-link-agent
+FORCED_PLATFORM=${JLSHELL_LINK_PLATFORM:-auto}
 
 say() {
     printf '%s\n' "$*"
@@ -45,17 +46,15 @@ trap cleanup EXIT HUP INT TERM
 require_command curl
 require_command tar
 
-case "$(uname -s)" in
-    Linux)
-        PLATFORM=linux
-        ;;
-    Darwin)
-        PLATFORM=macos
-        ;;
-    *)
-        fail "当前一键脚本仅支持 Linux 和 macOS；Windows 请使用 PowerShell 安装器"
-        ;;
-esac
+if [ "$FORCED_PLATFORM" = linux ] || [ "$FORCED_PLATFORM" = macos ]; then
+    PLATFORM=$FORCED_PLATFORM
+else
+    case "$(uname -s)" in
+        Linux) PLATFORM=linux ;;
+        Darwin) PLATFORM=macos ;;
+        *) fail "当前一键脚本仅支持 Linux 和 macOS；Windows 请使用 PowerShell 安装器" ;;
+    esac
+fi
 
 case "$(uname -m)" in
     x86_64|amd64)
