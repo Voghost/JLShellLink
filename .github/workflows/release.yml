@@ -83,7 +83,12 @@ jobs:
       - name: Add the one-command Agent installer
         run: |
           cp scripts/install-agent.sh dist/install-agent.sh
+          cp scripts/install-agent.sh dist/install-agent-linux.sh
+          sed 's/^FORCED_PLATFORM=${JLSHELL_LINK_PLATFORM:-auto}$/FORCED_PLATFORM=macos/' \
+            scripts/install-agent.sh > dist/install-agent-macos.sh
+          cp scripts/install-agent.ps1 dist/install-agent.ps1
           chmod 755 dist/install-agent.sh
+          chmod 755 dist/install-agent-linux.sh dist/install-agent-macos.sh
       - name: Upload Runtime assets through JLShell Website
         env:
           JLSHELL_SITE_URL: ${{ vars.JLSHELL_SITE_URL }}
