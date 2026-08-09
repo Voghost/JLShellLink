@@ -25,6 +25,28 @@ Windows 请在管理员 PowerShell 中执行：
 irm https://jlshell.oss-cn-guangzhou.aliyuncs.com/link-runtime/latest/install-agent.ps1 | iex
 ```
 
+## Docker Relay
+
+Release 会同步发布 `ghcr.io/voghost/jlshell-link-relay:<version>` 镜像。镜像以非 root
+用户运行，身份和 Website 凭据持久化在 `/var/lib/jlshell-link`。生产部署建议先执行一次
+幂等注册，再启动 Relay：
+
+```bash
+docker compose --profile link-relay-bootstrap \
+  -f docker-compose.yml -f docker-compose.relay.yml \
+  run --rm \
+  -e JLSHELL_RELAY_ADMIN_JWT \
+  relay-bootstrap register
+docker compose --profile link-relay \
+  -f docker-compose.yml -f docker-compose.relay.yml \
+  up -d relay
+```
+
+`JLSHELL_RELAY_ADMIN_JWT` 只传给一次性 bootstrap 容器，不要写入长期运行的 Relay
+环境文件。公网服务器需要开放 `4001/tcp` 和 `4001/udp`。首次注册所需的
+`JLSHELL_RELAY_PUBLIC_ENDPOINT` 必须是公网 IP multiaddr，例如
+`/ip4/203.0.113.10/tcp/4001`；注册成功后 credential 只保存在挂载的 state 目录中。
+
 脚本会交互式隐藏读取 Website 生成的一次性注册密钥，校验 OSS Runtime 的 SHA-256，
 并把程序、身份和节点凭据安装到 `~/.jlshell-link`（Windows 使用
 `%ProgramData%\\JLShellLink`）。Linux 使用 systemd 用户服务，macOS 使用 LaunchAgent，

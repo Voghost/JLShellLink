@@ -1,0 +1,28 @@
+FROM rust:1.97.1-bookworm AS builder
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends musl-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY . .
+RUN cargo build --release --locked --target x86_64-unknown-linux-musl -p jlshell-relay \
+    && test -x target/x86_64-unknown-linux-musl/release/jlshell-relay
+
+FROM alpine:3.22
+
+RUN apk add --no-cache ca-certificates curl jq \
+    && addgroup -S -g 10001 jlshell \
+    && adduser -S -D -H -u 10001 -G jlshell jlshell \
+    && mkdir -p /var/lib/jlshell-link \
+    && chown -R jlshell:jlshell /var/lib/jlshell-link
+
+COPY --from=builder /src/target/x86_64-unknown-linux-musl/release/jlshell-relay /usr/local/bin/jlshell-relay
+COPY docker/relay-entrypoint.sh /usr/local/bin/jlshell-relay-entrypoint
+RUN chmod 755 /usr/local/bin/jlshell-relay /usr/local/bin/jlshell-relay-entrypoint
+
+USER jlshell
+WORKDIR /var/lib/jlshell-link
+VOLUME ["/var/lib/jlshell-link"]
+ENTRYPOINT ["/usr/local/bin/jlshell-relay-entrypoint"]
+CMD ["run"]
