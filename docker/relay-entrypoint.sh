@@ -9,6 +9,7 @@ RELAY_NAME="${JLSHELL_RELAY_NAME:-official-relay}"
 RELAY_VERSION="${JLSHELL_RELAY_VERSION:-container}"
 PUBLIC_ENDPOINT="${JLSHELL_RELAY_PUBLIC_ENDPOINT:-}"
 RELAY_BIN="${JLSHELL_RELAY_BIN:-/usr/local/bin/jlshell-relay}"
+ADMIN_JWT_FILE="${JLSHELL_RELAY_ADMIN_JWT_FILE:-/run/secrets/relay_admin_jwt}"
 
 log() {
   printf '%s\n' "[jlshell-relay] $*"
@@ -35,20 +36,22 @@ identity_value() {
 }
 
 register_relay() {
-  require_command curl
-  require_command jq
-  : "${JLSHELL_RELAY_ADMIN_JWT:?首次注册必须设置 JLSHELL_RELAY_ADMIN_JWT}"
-  [ -n "$PUBLIC_ENDPOINT" ] || fail "首次注册必须设置 JLSHELL_RELAY_PUBLIC_ENDPOINT，例如 /ip4/203.0.113.10/tcp/4001"
-  case "$PUBLIC_ENDPOINT" in
-    /ip4/*/tcp/*|/ip6/*/tcp/*) ;;
-    *) fail "JLSHELL_RELAY_PUBLIC_ENDPOINT 必须是 /ip4 或 /ip6 的 TCP multiaddr" ;;
-  esac
-
   ensure_state
   if [ -s "$CREDENTIAL_FILE" ]; then
     log "Relay 已有凭据，跳过重复注册"
     return 0
   fi
+  require_command curl
+  require_command jq
+  [ -n "$PUBLIC_ENDPOINT" ] || fail "首次注册必须设置 JLSHELL_RELAY_PUBLIC_ENDPOINT，例如 /ip4/203.0.113.10/tcp/4001"
+  case "$PUBLIC_ENDPOINT" in
+    /ip4/*/tcp/*|/ip6/*/tcp/*) ;;
+    *) fail "JLSHELL_RELAY_PUBLIC_ENDPOINT 必须是 /ip4 或 /ip6 的 TCP multiaddr" ;;
+  esac
+  if [ -z "${JLSHELL_RELAY_ADMIN_JWT:-}" ] && [ -r "$ADMIN_JWT_FILE" ]; then
+    JLSHELL_RELAY_ADMIN_JWT="$(tr -d '\r\n' < "$ADMIN_JWT_FILE")"
+  fi
+  [ -n "${JLSHELL_RELAY_ADMIN_JWT:-}" ] || fail "首次注册需要管理员 JWT；请配置 JLSHELL_RELAY_ADMIN_JWT_FILE secret"
 
   public_key="$(identity_value RELAY_PUBLIC_KEY)"
   [ -n "$public_key" ] || fail "无法读取 Relay 公钥"
@@ -90,7 +93,7 @@ register_relay() {
 
 run_relay() {
   ensure_state
-  [ -s "$CREDENTIAL_FILE" ] || fail "Relay 尚未注册，请先执行 docker compose run --rm relay-bootstrap register"
+  [ -s "$CREDENTIAL_FILE" ] || fail "Relay 尚未注册，请先通过 Website compose 启动 relay-bootstrap"
   exec "$RELAY_BIN" \
     --identity "$IDENTITY_FILE" \
     --listen "${JLSHELL_RELAY_LISTEN_TCP:-/ip4/0.0.0.0/tcp/4001}" \
