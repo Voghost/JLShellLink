@@ -398,9 +398,7 @@ async fn process_reservation_auth(
 }
 
 fn validate_agent_peer(agent_peer: PeerId, validated: &ValidatedRelayAgent) -> Result<()> {
-    let registered_peer: PeerId = validated
-        .agent_peer_id
-        .parse()
+    let registered_peer = parse_control_plane_peer_id(&validated.agent_peer_id)
         .context("control plane returned an invalid Agent PeerId")?;
     if registered_peer != agent_peer {
         bail!("Agent credential does not belong to the authenticated PeerId");
@@ -409,14 +407,22 @@ fn validate_agent_peer(agent_peer: PeerId, validated: &ValidatedRelayAgent) -> R
 }
 
 fn validate_grant_target(requested_agent: PeerId, validated: &ValidatedRelayGrant) -> Result<()> {
-    let granted_agent: PeerId = validated
-        .agent_peer_id
-        .parse()
+    let granted_agent = parse_control_plane_peer_id(&validated.agent_peer_id)
         .context("control plane returned an invalid Agent PeerId")?;
     if granted_agent != requested_agent {
         bail!("Relay Grant target does not match the requested Agent");
     }
     Ok(())
+}
+
+fn parse_control_plane_peer_id(value: &str) -> Result<PeerId> {
+    if let Ok(peer_id) = value.parse::<PeerId>() {
+        return Ok(peer_id);
+    }
+    let bytes = URL_SAFE_NO_PAD
+        .decode(value)
+        .context("PeerId is neither base58 nor base64url encoded")?;
+    PeerId::from_bytes(&bytes).context("PeerId bytes are invalid")
 }
 
 fn send_usage(
@@ -533,6 +539,23 @@ mod tests {
     }
 
     #[test]
+    fn grant_target_accepts_website_base64url_peer_id() {
+        let requested_agent = PeerId::random();
+        let grant = ValidatedRelayGrant {
+            grant_id: "grant-1".to_owned(),
+            user_id: "user-1".to_owned(),
+            relay_id: "relay-1".to_owned(),
+            agent_id: "agent-1".to_owned(),
+            agent_peer_id: URL_SAFE_NO_PAD.encode(requested_agent.to_bytes()),
+            byte_limit: 1024,
+            used_bytes: 0,
+            expires_at: "2030-01-01T00:00:00Z".to_owned(),
+        };
+
+        validate_grant_target(requested_agent, &grant).unwrap();
+    }
+
+    #[test]
     fn agent_credential_must_match_authenticated_peer() {
         let agent_peer = PeerId::random();
         let mut agent = ValidatedRelayAgent {
@@ -544,6 +567,19 @@ mod tests {
         validate_agent_peer(agent_peer, &agent).unwrap();
         agent.agent_peer_id = PeerId::random().to_string();
         assert!(validate_agent_peer(agent_peer, &agent).is_err());
+    }
+
+    #[test]
+    fn agent_credential_accepts_website_base64url_peer_id() {
+        let agent_peer = PeerId::random();
+        let agent = ValidatedRelayAgent {
+            agent_id: "agent-id".to_owned(),
+            user_id: "user-id".to_owned(),
+            agent_peer_id: URL_SAFE_NO_PAD.encode(agent_peer.to_bytes()),
+            credential_expires_at: Some("2030-01-01T00:00:00Z".to_owned()),
+        };
+
+        validate_agent_peer(agent_peer, &agent).unwrap();
     }
 
     #[test]
