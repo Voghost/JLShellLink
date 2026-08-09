@@ -41,6 +41,8 @@ docker compose \
 bootstrap 容器读取，不进入长期 Relay 环境变量。公网服务器需要开放 `4001/tcp` 和
 `4001/udp`。首次注册所需的 `JLSHELL_RELAY_PUBLIC_ENDPOINT` 必须是公网 IP multiaddr，例如
 `/ip4/203.0.113.10/tcp/4001`；注册成功后 credential 只保存在挂载的 state 目录中。
+运行中的 Relay 会在认证心跳中同步该地址，因此公网 IP 变化时只需更新该环境变量并重启
+Relay；无需重新注册或更换 PeerId。
 
 脚本会交互式隐藏读取 Website 生成的一次性注册密钥，校验 OSS Runtime 的 SHA-256，
 并把程序、身份和节点凭据安装到 `~/.jlshell-link`（Windows 使用

@@ -10,6 +10,7 @@ RELAY_VERSION="${JLSHELL_RELAY_VERSION:-container}"
 PUBLIC_ENDPOINT="${JLSHELL_RELAY_PUBLIC_ENDPOINT:-}"
 RELAY_BIN="${JLSHELL_RELAY_BIN:-/usr/local/bin/jlshell-relay}"
 ADMIN_JWT_FILE="${JLSHELL_RELAY_ADMIN_JWT_FILE:-/run/secrets/relay_admin_jwt}"
+CONTROL_PLANE_RETRIES="${JLSHELL_RELAY_CONTROL_PLANE_RETRIES:-30}"
 
 log() {
   printf '%s\n' "[jlshell-relay] $*"
@@ -22,6 +23,10 @@ fail() {
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "缺少依赖命令: $1"
+}
+
+control_plane_curl() {
+  curl -fsS --retry "$CONTROL_PLANE_RETRIES" --retry-delay 2 --retry-connrefused "$@"
 }
 
 ensure_state() {
@@ -55,7 +60,7 @@ register_relay() {
 
   public_key="$(identity_value RELAY_PUBLIC_KEY)"
   [ -n "$public_key" ] || fail "无法读取 Relay 公钥"
-  challenge="$(curl -fsS --retry 3 --retry-delay 1 \
+  challenge="$(control_plane_curl \
     -X POST "$CONTROL_PLANE_URL/api/admin/relay-nodes/challenges" \
     -H "Authorization: Bearer $JLSHELL_RELAY_ADMIN_JWT" \
     -H 'Content-Type: application/json' \
@@ -69,7 +74,7 @@ register_relay() {
     | awk -F= '$1 == "RELAY_PROOF_SIGNATURE" { print substr($0, index($0, "=") + 1); exit }')"
   [ -n "$signature" ] || fail "无法生成 Relay challenge 签名"
 
-  registration="$(curl -fsS --retry 3 --retry-delay 1 \
+  registration="$(control_plane_curl \
     -X POST "$CONTROL_PLANE_URL/api/admin/relay-nodes" \
     -H "Authorization: Bearer $JLSHELL_RELAY_ADMIN_JWT" \
     -H 'Content-Type: application/json' \
@@ -88,6 +93,11 @@ register_relay() {
   printf '%s\n' "$credential" > "$temporary"
   chmod 600 "$temporary"
   mv "$temporary" "$CREDENTIAL_FILE"
+  # The one-shot bootstrap container may run as root to read a local Compose
+  # secret. Return the persisted state to the unprivileged runtime user.
+  if [ "$(id -u)" = "0" ]; then
+    chown -R jlshell:jlshell "$STATE_DIR"
+  fi
   log "Relay 注册成功，凭据已保存到 $CREDENTIAL_FILE"
 }
 
@@ -100,7 +110,8 @@ run_relay() {
     --listen "${JLSHELL_RELAY_LISTEN_QUIC:-/ip4/0.0.0.0/udp/4001/quic-v1}" \
     --allow-public-listen \
     --control-plane-url "$CONTROL_PLANE_URL" \
-    --credential-file "$CREDENTIAL_FILE"
+    --credential-file "$CREDENTIAL_FILE" \
+    --public-endpoint "$PUBLIC_ENDPOINT"
 }
 
 case "${1:-run}" in

@@ -58,7 +58,7 @@ struct Args {
     advertise_addresses: Vec<Multiaddr>,
     #[arg(long)]
     relay_address: Option<Multiaddr>,
-    #[arg(long)]
+    #[arg(long, value_parser = parse_peer_id)]
     relay_peer: Option<PeerId>,
     /// HTTPS website base URL used for heartbeats and Authority refresh.
     #[arg(long)]
@@ -75,6 +75,15 @@ struct Args {
     #[cfg(windows)]
     #[arg(long, hide = true)]
     windows_service: bool,
+}
+
+fn parse_peer_id(value: &str) -> Result<PeerId, String> {
+    value.parse::<PeerId>().or_else(|base58_error| {
+        let bytes = URL_SAFE_NO_PAD
+            .decode(value)
+            .map_err(|_| format!("invalid PeerId: {base58_error}"))?;
+        PeerId::from_bytes(&bytes).map_err(|error| format!("invalid PeerId: {error}"))
+    })
 }
 
 struct Authorization {
@@ -717,6 +726,13 @@ fn validate_relay_args(args: &Args) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_peer_id_accepts_base64url_identity_multihash() {
+        let expected = PeerId::random();
+        let encoded = URL_SAFE_NO_PAD.encode(expected.to_bytes());
+        assert_eq!(parse_peer_id(&encoded).unwrap(), expected);
+    }
 
     #[test]
     fn control_plane_mode_can_use_ticket_target_without_local_allowlist() {
