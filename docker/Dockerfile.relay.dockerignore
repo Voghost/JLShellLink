@@ -1,0 +1,12 @@
+.git
+.github
+.idea
+target
+*.key
+*.credential
+*.token
+*.ticket
+*.log
+docs
+scripts/install-agent.sh
+scripts/install-agent.ps1
