@@ -110,7 +110,8 @@ run_relay() {
     --listen "${JLSHELL_RELAY_LISTEN_QUIC:-/ip4/0.0.0.0/udp/4001/quic-v1}" \
     --allow-public-listen \
     --control-plane-url "$CONTROL_PLANE_URL" \
-    --credential-file "$CREDENTIAL_FILE"
+    --credential-file "$CREDENTIAL_FILE" \
+    --public-endpoint "$PUBLIC_ENDPOINT"
 }
 
 case "${1:-run}" in

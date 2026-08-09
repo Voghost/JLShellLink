@@ -68,6 +68,9 @@ struct Args {
     credential_file: Option<PathBuf>,
     #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(10..=3600))]
     heartbeat_seconds: u64,
+    /// Public TCP multiaddr advertised to the Website for Connector and Agent bootstrap.
+    #[arg(long)]
+    public_endpoint: Option<Multiaddr>,
 }
 
 #[tokio::main]
@@ -248,12 +251,17 @@ fn start_control_plane(args: &Args) -> Result<Option<RelayControlPlane>> {
     let seconds = args.heartbeat_seconds;
     let heartbeat_client = client.clone();
     let heartbeat_credential = credential.clone();
+    let heartbeat_endpoint = args.public_endpoint.as_ref().map(ToString::to_string);
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(seconds));
         loop {
             interval.tick().await;
             if let Err(error) = heartbeat_client
-                .relay_heartbeat(&heartbeat_credential, env!("CARGO_PKG_VERSION"))
+                .relay_heartbeat(
+                    &heartbeat_credential,
+                    env!("CARGO_PKG_VERSION"),
+                    heartbeat_endpoint.as_deref(),
+                )
                 .await
             {
                 warn!(%error, "Relay control-plane heartbeat failed");

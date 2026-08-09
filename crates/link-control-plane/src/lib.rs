@@ -145,13 +145,22 @@ impl ControlPlaneClient {
         .await
     }
 
-    /// Sends a Relay heartbeat using the short-lived node credential.
-    pub async fn relay_heartbeat(&self, credential: &str, version: &str) -> Result<()> {
-        self.heartbeat(
-            "/api/v1/link/relay-heartbeats",
+    /// Sends a Relay heartbeat and optionally synchronizes its public IP multiaddr.
+    pub async fn relay_heartbeat(
+        &self,
+        credential: &str,
+        version: &str,
+        endpoint: Option<&str>,
+    ) -> Result<()> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
             "X-Relay-Token",
-            credential,
-            version,
+            credential_header(credential, "relay credential")?,
+        );
+        self.post(
+            "/api/v1/link/relay-heartbeats",
+            headers,
+            &serde_json::json!({ "version": version, "endpoint": endpoint }),
         )
         .await
     }
@@ -214,22 +223,6 @@ impl ControlPlaneClient {
             credential_header(relay_credential, "relay credential")?,
         );
         self.post_json("/api/v1/link/relay-usage", headers, report)
-            .await
-    }
-
-    async fn heartbeat(
-        &self,
-        path: &str,
-        header: &'static str,
-        credential: &str,
-        version: &str,
-    ) -> Result<()> {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            header,
-            HeaderValue::from_str(credential.trim()).context("invalid node credential")?,
-        );
-        self.post(path, headers, &serde_json::json!({ "version": version }))
             .await
     }
 
