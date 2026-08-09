@@ -106,19 +106,26 @@ install -m 700 "$TEMP_DIR/jlshell-agent" "$BIN_DIR/jlshell-agent"
 curl -fsSL "$WEBSITE_URL/api/v1/link/ticket-authority" -o "$AUTHORITY_FILE"
 chmod 600 "$AUTHORITY_FILE"
 
-if [ ! -c /dev/tty ]; then
-    fail "无法打开交互终端读取一次性注册密钥"
+NEEDS_ENROLLMENT=1
+if [ -s "$CREDENTIAL_FILE" ]; then
+    NEEDS_ENROLLMENT=0
+    rm -f "$TOKEN_FILE"
+    say "检测到已有 Agent 凭据，将保留现有注册信息。"
+else
+    if [ ! -c /dev/tty ]; then
+        fail "无法打开交互终端读取一次性注册密钥"
+    fi
+    printf '请输入 Website 生成的一次性 Agent 注册密钥: ' >/dev/tty
+    stty -echo </dev/tty
+    TTY_HIDDEN=1
+    IFS= read -r enrollment_token </dev/tty
+    restore_tty
+    printf '\n' >/dev/tty
+    [ -n "$enrollment_token" ] || fail "注册密钥不能为空"
+    printf '%s\n' "$enrollment_token" >"$TOKEN_FILE"
+    unset enrollment_token
+    chmod 600 "$TOKEN_FILE"
 fi
-printf '请输入 Website 生成的一次性 Agent 注册密钥: ' >/dev/tty
-stty -echo </dev/tty
-TTY_HIDDEN=1
-IFS= read -r enrollment_token </dev/tty
-restore_tty
-printf '\n' >/dev/tty
-[ -n "$enrollment_token" ] || fail "注册密钥不能为空"
-printf '%s\n' "$enrollment_token" >"$TOKEN_FILE"
-unset enrollment_token
-chmod 600 "$TOKEN_FILE"
 
 relay_json=$(curl -fsSL "$WEBSITE_URL/api/v1/link/agent/bootstrap")
 relay_address=$(printf '%s' "$relay_json" | sed -n 's/.*"relayAddress"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
@@ -133,8 +140,11 @@ set -- \
     --listen /ip4/0.0.0.0/tcp/7001 \
     --listen /ip4/0.0.0.0/udp/7001/quic-v1 \
     --control-plane-url "$WEBSITE_URL" \
-    --enrollment-token-file "$TOKEN_FILE" \
     --credential-file "$CREDENTIAL_FILE"
+
+if [ "$NEEDS_ENROLLMENT" = 1 ]; then
+    set -- "$@" --enrollment-token-file "$TOKEN_FILE"
+fi
 
 set -- "$@" --relay-address "$relay_address" --relay-peer "$relay_peer"
 

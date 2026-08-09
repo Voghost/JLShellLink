@@ -40,13 +40,20 @@ try {
     Copy-Item -Force $agent (Join-Path $binDir 'jlshell-agent.exe')
     Invoke-WebRequest -UseBasicParsing -Uri "$websiteUrl/api/v1/link/ticket-authority" -OutFile $authority
 
-    $secureToken = Read-Host '请输入 Website 生成的一次性 Agent 注册密钥' -AsSecureString
-    $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureToken)
-    try { $enrollment = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) }
-    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
-    if ([string]::IsNullOrWhiteSpace($enrollment)) { Fail '注册密钥不能为空' }
-    Set-Content -Path $tokenFile -Value $enrollment -Encoding ascii -NoNewline
-    $enrollment = $null
+    $needsEnrollment = -not (Test-Path $credential) -or (Get-Item $credential).Length -eq 0
+    if ($needsEnrollment) {
+        $secureToken = Read-Host '请输入 Website 生成的一次性 Agent 注册密钥' -AsSecureString
+        $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureToken)
+        try { $enrollment = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) }
+        finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
+        if ([string]::IsNullOrWhiteSpace($enrollment)) { Fail '注册密钥不能为空' }
+        Set-Content -Path $tokenFile -Value $enrollment -Encoding ascii -NoNewline
+        $enrollment = $null
+    }
+    else {
+        Remove-Item -Force $tokenFile -ErrorAction SilentlyContinue
+        Write-Host '检测到已有 Agent 凭据，将保留现有注册信息。'
+    }
 
     $bootstrap = Invoke-RestMethod -Uri "$websiteUrl/api/v1/link/agent/bootstrap"
     if (-not $bootstrap.relayAddress -or -not $bootstrap.relayPeer) { Fail '当前没有在线的官方 Relay，请稍后重试' }
@@ -58,11 +65,13 @@ try {
         '--listen', '/ip4/0.0.0.0/tcp/7001',
         '--listen', '/ip4/0.0.0.0/udp/7001/quic-v1',
         '--control-plane-url', $websiteUrl,
-        '--enrollment-token-file', $tokenFile,
         '--credential-file', $credential,
         '--relay-address', [string]$bootstrap.relayAddress,
         '--relay-peer', [string]$bootstrap.relayPeer
     )
+    if ($needsEnrollment) {
+        $agentArgs += @('--enrollment-token-file', $tokenFile)
+    }
     $quotedArgs = ($agentArgs | ForEach-Object { '"' + ([string]$_).Replace('"', '\"') + '"' }) -join ' '
     $binPath = '"' + $agentExe + '" --windows-service ' + $quotedArgs
 

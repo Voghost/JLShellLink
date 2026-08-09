@@ -635,6 +635,14 @@ async fn enroll_agent_if_requested(
         .credential_file
         .as_ref()
         .context("--credential-file is required when enrolling an Agent")?;
+    if credential_path.exists() {
+        read_node_credential(credential_path).context("cannot read existing Agent credential")?;
+        info!(
+            credential_file = %credential_path.display(),
+            "Agent is already enrolled; skipping one-time enrollment token"
+        );
+        return Ok(());
+    }
     let enrollment_token =
         read_node_credential(token_path).context("cannot read one-time Agent enrollment token")?;
     let public_key = identity
@@ -727,11 +735,46 @@ fn validate_relay_args(args: &Args) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn temporary_test_directory(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "jlshell-agent-{name}-{}-{unique}",
+            std::process::id()
+        ))
+    }
+
     #[test]
     fn parse_peer_id_accepts_base64url_identity_multihash() {
         let expected = PeerId::random();
         let encoded = URL_SAFE_NO_PAD.encode(expected.to_bytes());
         assert_eq!(parse_peer_id(&encoded).unwrap(), expected);
+    }
+
+    #[tokio::test]
+    async fn existing_credential_does_not_require_consumed_enrollment_token() {
+        let directory = temporary_test_directory("existing-credential");
+        let credential = directory.join("agent.credential");
+        let missing_token = directory.join("enrollment.token");
+        write_node_credential(&credential, "existing-agent-credential").unwrap();
+        let args = Args::try_parse_from([
+            "jlshell-agent",
+            "--control-plane-url",
+            "https://jlshell.example",
+            "--credential-file",
+            credential.to_str().unwrap(),
+            "--enrollment-token-file",
+            missing_token.to_str().unwrap(),
+        ])
+        .unwrap();
+
+        enroll_agent_if_requested(&args, &libp2p::identity::Keypair::generate_ed25519())
+            .await
+            .unwrap();
+
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
