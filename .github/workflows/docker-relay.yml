@@ -9,7 +9,7 @@ on:
         default: edge
         type: string
   push:
-    branches: [develop, main]
+    branches: [develop, main, feature/relay-docker-orchestration]
     paths:
       - docker/**
       - Cargo.toml
