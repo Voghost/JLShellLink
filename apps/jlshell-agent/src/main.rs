@@ -30,6 +30,8 @@ use tokio::net::TcpStream;
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 use tracing::{debug, info, warn};
 
+const MAX_ADVERTISED_ADDRESSES: usize = 16;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "jlshell-agent",
@@ -136,17 +138,9 @@ async fn run_agent(args: Args) -> Result<()> {
         enforce_local_allowlist: !args.allowed_targets.is_empty(),
         replay_cache: NonceReplayCache::default(),
     });
-    let reachable_addresses = Arc::new(tokio::sync::RwLock::new(
-        args.advertise_addresses
-            .iter()
-            .map(|address| {
-                if !is_advertisable_agent_address(address) {
-                    bail!("--advertise must be an exact IP TCP or QUIC multiaddr");
-                }
-                Ok(address.to_string())
-            })
-            .collect::<Result<BTreeSet<_>>>()?,
-    ));
+    let reachable_addresses = Arc::new(tokio::sync::RwLock::new(configured_reachable_addresses(
+        &args,
+    )?));
 
     let mut swarm = link_transport::build_client_swarm(identity)?;
     let mut incoming = swarm
@@ -192,9 +186,6 @@ async fn run_agent(args: Args) -> Result<()> {
                 debug!(?event, "agent swarm event");
                 match event {
                     SwarmEvent::NewListenAddr { address, .. } => {
-                        if is_advertisable_agent_address(&address) {
-                            reachable_addresses.write().await.insert(address.to_string());
-                        }
                         println!("LISTEN_ADDRESS={address}");
                     }
                     SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
@@ -731,6 +722,21 @@ fn validate_relay_args(args: &Args) -> Result<()> {
     Ok(())
 }
 
+fn configured_reachable_addresses(args: &Args) -> Result<BTreeSet<String>> {
+    if args.advertise_addresses.len() > MAX_ADVERTISED_ADDRESSES {
+        bail!("at most {MAX_ADVERTISED_ADDRESSES} --advertise addresses are allowed");
+    }
+    args.advertise_addresses
+        .iter()
+        .map(|address| {
+            if !is_advertisable_agent_address(address) {
+                bail!("--advertise must be an exact IP TCP or QUIC multiaddr");
+            }
+            Ok(address.to_string())
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -790,6 +796,32 @@ mod tests {
 
         assert!(args.allowed_targets.is_empty());
         assert!(args.control_plane_url.is_some());
+    }
+
+    #[test]
+    fn listener_addresses_are_not_implicitly_advertised() {
+        let args = Args::try_parse_from([
+            "jlshell-agent",
+            "--listen",
+            "/ip4/0.0.0.0/tcp/7001",
+            "--listen",
+            "/ip4/0.0.0.0/udp/7001/quic-v1",
+        ])
+        .unwrap();
+
+        assert!(configured_reachable_addresses(&args).unwrap().is_empty());
+    }
+
+    #[test]
+    fn explicit_advertisements_follow_control_plane_limit() {
+        let mut arguments = vec!["jlshell-agent".to_owned()];
+        for host in 1..=MAX_ADVERTISED_ADDRESSES + 1 {
+            arguments.push("--advertise".to_owned());
+            arguments.push(format!("/ip4/192.0.2.{host}/tcp/7001"));
+        }
+        let args = Args::try_parse_from(arguments).unwrap();
+
+        assert!(configured_reachable_addresses(&args).is_err());
     }
 
     #[test]

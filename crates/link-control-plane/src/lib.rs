@@ -7,6 +7,7 @@ use reqwest::header::{HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 
 const MAX_RESPONSE_BYTES: usize = 256 * 1024;
+const MAX_ERROR_RESPONSE_BYTES: u64 = 4 * 1024;
 
 #[derive(Clone)]
 pub struct ControlPlaneClient {
@@ -235,12 +236,7 @@ impl ControlPlaneClient {
             .send()
             .await
             .context("control-plane heartbeat failed")?;
-        if !response.status().is_success() {
-            bail!(
-                "control-plane heartbeat returned HTTP {}",
-                response.status()
-            );
-        }
+        ensure_success(response, "control-plane heartbeat").await?;
         Ok(())
     }
 
@@ -257,9 +253,7 @@ impl ControlPlaneClient {
             request.json(body).send().await
         }
         .context("control-plane request failed")?;
-        if !response.status().is_success() {
-            bail!("control-plane request returned HTTP {}", response.status());
-        }
+        let response = ensure_success(response, "control-plane request").await?;
         if response
             .content_length()
             .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
@@ -283,9 +277,7 @@ impl ControlPlaneClient {
             .send()
             .await
             .context("control-plane request failed")?;
-        if !response.status().is_success() {
-            bail!("control-plane request returned HTTP {}", response.status());
-        }
+        let response = ensure_success(response, "control-plane request").await?;
         if response
             .content_length()
             .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
@@ -305,6 +297,29 @@ impl ControlPlaneClient {
     fn url(&self, path: &str) -> String {
         format!("{}{}", self.base_url, path)
     }
+}
+
+async fn ensure_success(response: reqwest::Response, operation: &str) -> Result<reqwest::Response> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+    let detail = if response
+        .content_length()
+        .is_some_and(|length| length <= MAX_ERROR_RESPONSE_BYTES)
+    {
+        response
+            .text()
+            .await
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+    } else {
+        None
+    };
+    if let Some(detail) = detail {
+        bail!("{operation} returned HTTP {status}: {detail}");
+    }
+    bail!("{operation} returned HTTP {status}")
 }
 
 fn credential_header(value: &str, name: &str) -> Result<HeaderValue> {
