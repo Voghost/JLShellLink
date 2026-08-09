@@ -158,7 +158,6 @@ if [ "$PLATFORM" = linux ] && command -v systemctl >/dev/null 2>&1; then
         printf '%s\n' 'RestartSec=5'
         printf '%s\n' 'UMask=0077'
         printf '%s\n' 'NoNewPrivileges=true'
-        printf '%s\n' 'PrivateTmp=true'
         printf '\n%s\n' '[Install]'
         printf '%s\n' 'WantedBy=default.target'
     } >"$UNIT_FILE"
