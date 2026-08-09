@@ -88,6 +88,11 @@ register_relay() {
   printf '%s\n' "$credential" > "$temporary"
   chmod 600 "$temporary"
   mv "$temporary" "$CREDENTIAL_FILE"
+  # The one-shot bootstrap container may run as root to read a local Compose
+  # secret. Return the persisted state to the unprivileged runtime user.
+  if [ "$(id -u)" = "0" ]; then
+    chown -R jlshell:jlshell "$STATE_DIR"
+  fi
   log "Relay 注册成功，凭据已保存到 $CREDENTIAL_FILE"
 }
 
