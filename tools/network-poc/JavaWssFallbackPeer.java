@@ -31,7 +31,7 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.TrustManagerFactory;
 
-/** Real-network direct timeout then WSS + inner mTLS echo diagnostic. */
+/** Real-network direct timeout then WSS + inner mTLS diagnostic. */
 public final class JavaWssFallbackPeer {
     private static final int DIRECT_BUDGET_MS = 2_000;
 
@@ -57,9 +57,17 @@ public final class JavaWssFallbackPeer {
 
     private static InetSocketAddress candidate(DatagramSocket udp, String role,
             String host, int stunPort, int signalPort, String token) throws Exception {
-        InetSocketAddress mapped = JavaUdpPathProbe.mapping(udp, host, stunPort);
+        String stunHost = System.getProperty("jlshell.p0.stunHost", host);
+        InetSocketAddress mapped = JavaUdpPathProbe.mapping(udp, stunHost, stunPort);
+        String override = System.getProperty("jlshell.p0.advertise");
+        if (override != null) {
+            String[] parts = override.split(":", 2);
+            if (parts.length != 2) throw new IllegalArgumentException("Invalid advertised candidate");
+            mapped = new InetSocketAddress(InetAddress.getByName(parts[0]), Integer.parseInt(parts[1]));
+        }
+        System.out.println("CANDIDATE " + role + " " + mapped);
         try (Socket signal = new Socket(host, signalPort)) {
-            signal.setSoTimeout(10_000);
+            signal.setSoTimeout(90_000);
             signal.getOutputStream().write(("JLSHELL-P0 " + role + " " + token + "\n"
                     + "MAPPED " + mapped.getAddress().getHostAddress() + " " + mapped.getPort() + "\n")
                     .getBytes(StandardCharsets.US_ASCII));
@@ -80,31 +88,48 @@ public final class JavaWssFallbackPeer {
         }
     }
 
-    private static void directTimeout(DatagramSocket udp, InetSocketAddress peer, String token)
+    private static boolean directAttempt(DatagramSocket udp, InetSocketAddress peer, String token,
+            boolean expectSuccess, boolean allowOsDeny)
             throws Exception {
         udp.setSoTimeout(100);
         byte[] message = ("PUNCH A " + token).getBytes(StandardCharsets.US_ASCII);
         byte[] received = new byte[1500];
         long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(DIRECT_BUDGET_MS);
         int sent = 0;
+        int denied = 0;
         while (System.nanoTime() < deadline) {
-            udp.send(new DatagramPacket(message, message.length, peer));
-            sent++;
+            try {
+                udp.send(new DatagramPacket(message, message.length, peer));
+                sent++;
+            } catch (SocketException failure) {
+                if (!allowOsDeny || !"Operation not permitted".equals(failure.getMessage())) {
+                    throw failure;
+                }
+                denied++;
+            }
             try {
                 DatagramPacket packet = new DatagramPacket(received, received.length);
                 udp.receive(packet);
                 String answer = new String(packet.getData(), 0, packet.getLength(), StandardCharsets.US_ASCII);
                 if (answer.equals("ACK C " + token)) {
-                    throw new IllegalStateException("Direct path unexpectedly succeeded during drop test");
+                    if (!expectSuccess) {
+                        throw new IllegalStateException("Direct path unexpectedly succeeded during drop test");
+                    }
+                    System.out.println("DIRECT_BASELINE_VERIFIED packets=" + sent);
+                    return true;
                 }
             } catch (java.net.SocketTimeoutException ignored) {
                 // Deliberately bounded direct attempt.
             }
         }
-        System.out.println("DIRECT_TIMEOUT budget_ms=" + DIRECT_BUDGET_MS + " packets=" + sent);
+        if (expectSuccess) throw new IOException("Direct baseline did not succeed");
+        System.out.println("DIRECT_TIMEOUT budget_ms=" + DIRECT_BUDGET_MS + " packets=" + sent
+                + " os_denied=" + denied);
+        return false;
     }
 
-    private static Thread dropDirect(DatagramSocket udp, String token, AtomicInteger dropped) {
+    private static Thread receiveDirect(DatagramSocket udp, InetSocketAddress peer, String token,
+            AtomicInteger receivedCount, boolean reply) {
         return Thread.ofVirtual().start(() -> {
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
             byte[] bytes = new byte[1500];
@@ -112,11 +137,19 @@ public final class JavaWssFallbackPeer {
                 udp.setSoTimeout(100);
                 while (System.nanoTime() < deadline) {
                     try {
+                        if (reply) {
+                            byte[] punch = ("PUNCH C " + token).getBytes(StandardCharsets.US_ASCII);
+                            udp.send(new DatagramPacket(punch, punch.length, peer));
+                        }
                         DatagramPacket packet = new DatagramPacket(bytes, bytes.length);
                         udp.receive(packet);
                         if (new String(packet.getData(), 0, packet.getLength(), StandardCharsets.US_ASCII)
                                 .equals("PUNCH A " + token)) {
-                            dropped.incrementAndGet();
+                            receivedCount.incrementAndGet();
+                            if (reply) {
+                                byte[] ack = ("ACK C " + token).getBytes(StandardCharsets.US_ASCII);
+                                udp.send(new DatagramPacket(ack, ack.length, packet.getSocketAddress()));
+                            }
                         }
                     } catch (java.net.SocketTimeoutException ignored) {
                         // Keep the same socket and mapping open during the direct budget.
@@ -279,25 +312,43 @@ public final class JavaWssFallbackPeer {
     }
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 9 || !(args[0].equals("A") || args[0].equals("C"))) {
+        if ((args.length != 9 && args.length != 11)
+                || !(args[0].equals("A") || args[0].equals("C"))) {
             throw new IllegalArgumentException("Usage: JavaWssFallbackPeer <A|C> <B-host> <stun-port>"
-                    + " <signal-port> <wss-port> <workdir> <token> <session> <storepass>");
+                    + " <signal-port> <wss-port> <workdir> <token> <session> <storepass>"
+                    + " [<echo|http2> <app-drop|os-block|os-baseline>]");
         }
         String role = args[0];
         String host = args[1];
         Path directory = Path.of(args[5]);
         String token = args[6];
         char[] password = args[8].toCharArray();
-        try (DatagramSocket udp = new DatagramSocket()) {
+        String protocol = args.length == 11 ? args[9] : "echo";
+        String dropMode = args.length == 11 ? args[10] : "app-drop";
+        if (!(protocol.equals("echo") || protocol.equals("http2"))
+                || !(dropMode.equals("app-drop") || dropMode.equals("os-block")
+                        || dropMode.equals("os-baseline"))) {
+            throw new IllegalArgumentException("Unknown protocol or drop mode");
+        }
+        try (DatagramSocket udp = new DatagramSocket(
+                Integer.getInteger("jlshell.p0.udpPort", 0))) {
             InetSocketAddress peer = candidate(udp, role, host, Integer.parseInt(args[2]),
                     Integer.parseInt(args[3]), token);
             AtomicInteger dropped = new AtomicInteger();
             Thread dropper = null;
             if (role.equals("A")) {
-                directTimeout(udp, peer, token);
+                directAttempt(udp, peer, token, dropMode.equals("os-baseline"),
+                        dropMode.equals("os-block"));
+                if (dropMode.equals("os-baseline")) return;
                 System.out.println("RELAY_ATTEMPTS 1");
             } else {
-                dropper = dropDirect(udp, token, dropped);
+                dropper = receiveDirect(udp, peer, token, dropped, !dropMode.equals("app-drop"));
+                if (dropMode.equals("os-baseline")) {
+                    dropper.join(6_000);
+                    System.out.println("DIRECT_BASELINE_RECEIVED " + dropped.get());
+                    if (dropped.get() == 0) throw new IOException("C received no baseline UDP");
+                    return;
+                }
             }
             SSLContext outer = context(null, directory.resolve("B-trust.p12"), password);
             HttpClient client = HttpClient.newBuilder().sslContext(outer)
@@ -320,15 +371,28 @@ public final class JavaWssFallbackPeer {
                 if (role.equals("A")) {
                     var parameters = secure.getSSLParameters();
                     parameters.setEndpointIdentificationAlgorithm("HTTPS");
+                    if (protocol.equals("http2")) parameters.setApplicationProtocols(new String[] {"h2"});
                     secure.setSSLParameters(parameters);
                 } else {
                     secure.setNeedClientAuth(true);
+                    if (protocol.equals("http2")) {
+                        var parameters = secure.getSSLParameters();
+                        parameters.setApplicationProtocols(new String[] {"h2"});
+                        secure.setSSLParameters(parameters);
+                    }
                 }
                 secure.startHandshake();
                 System.out.println("INNER_TLS " + role + " " + secure.getSession().getProtocol());
-                DataInputStream input = new DataInputStream(secure.getInputStream());
-                DataOutputStream output = new DataOutputStream(secure.getOutputStream());
-                if (role.equals("A")) {
+                if (protocol.equals("http2")) {
+                    if (!secure.getApplicationProtocol().equals("h2")) {
+                        throw new IOException("Inner TLS did not negotiate h2 ALPN");
+                    }
+                    System.out.println("INNER_ALPN h2");
+                    if (role.equals("A")) JavaHttp2ConnectProbe.client(secure);
+                    else JavaHttp2ConnectProbe.server(secure);
+                } else if (role.equals("A")) {
+                    DataInputStream input = new DataInputStream(secure.getInputStream());
+                    DataOutputStream output = new DataOutputStream(secure.getOutputStream());
                     byte[] message = new byte[4096];
                     byte[] marker = "JLSHELL-P0-SECRET-PAYLOAD".getBytes(StandardCharsets.US_ASCII);
                     System.arraycopy(marker, 0, message, 0, marker.length);
@@ -344,6 +408,8 @@ public final class JavaWssFallbackPeer {
                     }
                     System.out.println("WSS_ECHO_VERIFIED bytes=" + length);
                 } else {
+                    DataInputStream input = new DataInputStream(secure.getInputStream());
+                    DataOutputStream output = new DataOutputStream(secure.getOutputStream());
                     int length = input.readInt();
                     if (length != 4096) {
                         throw new IOException("Unexpected WSS echo size");
@@ -361,8 +427,9 @@ public final class JavaWssFallbackPeer {
             }
             if (dropper != null) {
                 dropper.join(6_000);
-                System.out.println("DIRECT_DROPPED " + dropped.get());
-                if (dropped.get() == 0) {
+                System.out.println((dropMode.equals("app-drop") ? "DIRECT_DROPPED " : "DIRECT_RECEIVED ")
+                        + dropped.get());
+                if (dropMode.equals("app-drop") && dropped.get() == 0) {
                     throw new IllegalStateException("C did not observe direct UDP packets to drop");
                 }
             }

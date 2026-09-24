@@ -46,15 +46,17 @@ JavaUdpPathProbe <A|C> <stun-host> <stun-port> <B-host> <B-tcp-port> <same-token
 
 ## 真实网络 WSS 降级诊断
 
-`JavaWssRelayProbe` 在 B 的独立目录中提供短时 TLS 1.3 WebSocket 配对；`JavaWssFallbackPeer` 在 C 上受控丢弃本次直连 UDP 探测包，让 A 的 2 秒直连预算真实超时后只连接一次 WSS。A/C 在 WSS 二进制帧之上再建立双向证书 TLS 1.3，并验证 4096 字节往返。这个实验**不修改主机防火墙**，也不等于 OS 防火墙级 UDP 阻断验收。
+`JavaWssRelayProbe` 在 B 的独立目录中提供短时 TLS 1.3 WebSocket 配对；`JavaWssFallbackPeer` 在 C 上受控丢弃本次直连 UDP 探测包，让 A 的 2 秒直连预算真实超时后只连接一次 WSS。A/C 在 WSS 二进制帧之上再建立双向证书 TLS 1.3，并验证 4096 字节往返。选择 `http2` 模式时，内层 TLS 协商 `h2` ALPN，`JavaHttp2ConnectProbe` 使用一条 HTTP/2 CONNECT 流访问 C 的 `127.0.0.1:13779` 临时 TCP echo 目标，验证 4096 字节回显与半关闭。该探针只编码和解析此测试所需的少量 HTTP/2/HPACK 帧；生产实现应使用完整协议栈。
 
-编译时额外包含 `JavaWssRelayProbe.java`、`JavaWssFallbackPeer.java` 和 `JavaUdpPathProbe.java`。在同一个短期工作目录中生成三份测试身份：B 的外层证书需包含 `<B-host>` 的 DNS SAN，A/C 的内层证书分别只交给本端；A/C 都需要 `B-trust.p12`，A 需要 `A-trust.p12` 信任 C，C 需要 `C-trust.p12` 信任 A。测试身份与信任库只在该目录存在，结束后删除。
+编译时额外包含 `JavaWssRelayProbe.java`、`JavaWssFallbackPeer.java`、`JavaHttp2ConnectProbe.java` 和 `JavaUdpPathProbe.java`。在同一个短期工作目录中生成三份测试身份：B 的外层证书需包含 `<B-host>` 的 DNS SAN，A/C 的内层证书分别只交给本端；A/C 都需要 `B-trust.p12`，A 需要 `A-trust.p12` 信任 C，C 需要 `C-trust.p12` 信任 A。测试身份与信任库只在该目录存在，结束后删除。
 
 先在 B 的三个空闲测试端口分别运行 `JavaStunServer`、`JavaTcpRelay` 和 `JavaWssRelayProbe`；然后启动 C，最后启动 A：
 
 ```text
 JavaWssRelayProbe <wss-port> <B.p12> <storepass> <same-token> <session> 180
-JavaWssFallbackPeer <A|C> <B-host> <stun-port> <signal-port> <wss-port> <workdir> <same-token> <session> <storepass>
+JavaWssFallbackPeer <A|C> <B-host> <stun-port> <signal-port> <wss-port> <workdir> <same-token> <session> <storepass> [<echo|http2> <app-drop|os-block|os-baseline>]
 ```
 
-成功时 A 输出 `DIRECT_TIMEOUT`、`RELAY_ATTEMPTS 1`、`WSS_CONNECTED A`、`INNER_TLS A TLSv1.3` 和 `WSS_ECHO_VERIFIED bytes=4096`；C 输出 `DIRECT_DROPPED` 且计数大于零；B 输出 `WSS_PAIR_READY`、双向转发字节和 `PLAINTEXT_SEEN false`。此探针使用一次性测试令牌，未实现产品票据、配额、HTTP/2 CONNECT 或生产 Relay 的资源约束。
+默认模式成功时 A 输出 `DIRECT_TIMEOUT`、`RELAY_ATTEMPTS 1`、`WSS_CONNECTED A`、`INNER_TLS A TLSv1.3` 和 `WSS_ECHO_VERIFIED bytes=4096`；C 输出 `DIRECT_DROPPED` 且计数大于零；B 输出 `WSS_PAIR_READY`、双向转发字节和 `PLAINTEXT_SEEN false`。`http2` 模式另输出 `INNER_ALPN h2`、`HTTP2_CONNECT_ECHO_VERIFIED bytes=4096` 与 `HTTP2_CONNECT_TARGET_C`。此探针使用一次性测试令牌，未实现产品票据、配额或生产 Relay 的资源约束。
+
+OS 级阻断诊断使用 B 上**独立 Docker bridge 网络命名空间**中的 A' 和远端 C。先以 `os-baseline` 模式确认直连成功，再仅在 A' 容器网络命名空间中用 `iptables OUTPUT` 丢弃对端 UDP，运行 `os-block` 模式。A' 需固定 UDP 本地端口并公布 Docker 映射端口：`-Djlshell.p0.udpPort=<port>`、`-Djlshell.p0.advertise=<B-public-ip>:<port>`；若 A' 的 STUN 服务器不同于 B 控制/中继入口，可用 `-Djlshell.p0.stunHost=<host>` 指定。`os-block` 下内核可能使 UDP `send` 返回 `Operation not permitted`，探针将其计入 `os_denied` 并在 2 秒预算后回退。只对一次性容器执行 `nsenter`，不要改宿主机规则；结束后删除容器及测试目录。2026-09-24 的远端对照与回退结果见 `docs/java-network-spike.md`。A' 与 B 同物理主机，不替代正式 ICE/KCP 或原 macOS A 的 OS 级测试。
