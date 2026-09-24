@@ -1,9 +1,9 @@
 # Java 网络原型记录
 
 - 日期：2026-09-24
-- 分支：`feature/java-link-poc`；B UDP 入口复测分支：`feature/java-link-b-stun-poc`
+- 分支：原始 POC 为 `feature/java-link-poc`，P0 收尾为 `feature/java-link-p0-completion`
 - Java 基线：Java 21；本机当前默认运行时为 OpenJDK 26.0.1，Maven 3.9.16
-- 状态：POC-01 本机 socket 原型通过；POC-02 已验证同机 LAN ICE nomination、KCP 丢包/重排恢复、低速接收者背压与关闭取消、TLS/HTTP2 CONNECT 和半关闭；POC-03 在本机 WSS 配对管道上验证了内层 mTLS 1.3、HTTP/2 CONNECT 到本机 TCP echo 目标和半关闭，并覆盖有界慢消费者队列。当前 11 项 Java 测试及 Linux/macOS/Windows Java 21 CI 均通过，Windows hosted runner 因没有 ice4j 可用候选而通过 `JLSHELL_LINK_ICE_TEST_ENABLED=false` 跳过 ICE 集成测试；该测试在其他环境默认启用。真实 A/C 间已验证 B 自托管 STUN 辅助的 UDP 双向打洞、受控丢弃直连 UDP 后一次 WSS 降级，以及远程 WSS 上的内层 mTLS、HTTP/2 CONNECT、目标 TCP 回显与半关闭。另在 B 上独立 Docker 网络命名空间中的 A' 与远端 C 之间完成直连对照，再用容器内核防火墙阻断 UDP 并验证 WSS 回退。跨 NAT 的 ICE/KCP/TLS/HTTP2 直连整链路和正式资源限制仍未验证；不得据此宣称已具备产品 P2P 或生产中继。
+- 状态：P0 **原型门槛通过**。真实不同出口 A/C 经公网 B 的 STUN 和信令完成 ICE 候选选定，在同一 UDP socket 上以 KCP、双向 TLS 1.3、`h2` 和 HTTP/2 CONNECT 访问 C 的 TCP echo 目标；4096 字节回显及半关闭通过。`auto` 模式真实跨 NAT 直连通过；B 上两个独立容器网络命名空间先直连，再在 A' 内核阻断业务 UDP，`auto` 于 2 秒后只回退一次 WSS，并完成内层 mTLS/CONNECT。精简 KCP 传递依赖后，真实跨 NAT 整链路复跑通过。本机 11 项 Java 测试通过；此前 Linux/macOS/Windows Java 21 CI 通过，本分支的 CI 待 PR 检查。Windows hosted runner 因缺少可用 ICE 候选跳过该项，不能宣称 Windows ICE 已验收。原型不能直接部署为生产 P2P/Relay，正式鉴权、限额和容量在后续阶段实现。
 
 ## 真实 A/B/C 主机联调（2026-09-24）
 
@@ -22,15 +22,27 @@
 | WSS 上的远程 HTTP/2 CONNECT（真实 A/B/C） | A 在 2 秒直连预算内发送 20 个 UDP 包，C 在应用层丢弃 20 包；A 只发起一次 WSS 回退。A/C 内层双向证书 TLS 1.3 协商 `h2` ALPN，HTTP/2 CONNECT `:authority=127.0.0.1:13779` 获得 `:status 200`，C 打开回环 TCP echo 目标；4096 字节 DATA 完整往返，END_STREAM 与目标 TCP 输出半关闭对应。 | 验证远程 WSS/内层 mTLS 可以承载实际 HTTP/2 帧及 CONNECT 到 C 的目标。此探针只实现固定的一条流和有限 HPACK 帧格式，**不是**通用 HTTP/2 栈或产品协议实现；该轮 UDP 失败仍是应用层丢弃。 |
 | 容器网络命名空间的 OS 级 UDP 阻断（A'—B—C） | A' 是 B 上单独 Docker bridge 网络命名空间中的 Java 21 客户端，C 仍是远端主机。阻断前同一 A'—C 路径 `DIRECT_BASELINE_VERIFIED packets=2`，C 收到 2 个探测包。只在 A' 的网络命名空间加入 `iptables OUTPUT` UDP 丢弃规则后，规则计数 39 包 / 2067 字节；A' 记录 `DIRECT_TIMEOUT budget_ms=2000 packets=0 os_denied=39`、`RELAY_ATTEMPTS 1`，C 记录 `DIRECT_RECEIVED 0`。随后双方经 B 的 WSS/内层 mTLS `h2` CONNECT 完成 4096 字节回显与半关闭。B 转发 A'→C 7180 字节（44 帧）、C→A' 8126 字节（48 帧），`PLAINTEXT_SEEN false`。 | **内核防火墙阻断与直连对照、一次回退均成立**；规则仅存在于一次性容器网络命名空间，未更改 B/C 宿主机防火墙。A' 与 B 共用物理云主机但网络命名空间独立，故这不替代 macOS A 上的 OS 防火墙测试，也不证明正式 ICE/KCP 协议栈的回退。 |
 
-下一步要把已证明可行的 B 自托管 STUN 与跨 NAT UDP 候选路径接入 ice4j 的真实 ICE checks、KCP、mTLS、HTTP/2 CONNECT，并把 B 的候选交换替换为带鉴权的控制平面协议；随后做产品协议栈的受限网络回退与资源限制验收。当前只保持现有 Rust 运行时代码，不据此开始退役。
+### P0 收尾：同栈跨 NAT 与受限网络实验
+
+下表为可提交到仓库的脱敏证据。完整 IP:端口记录只保存在聚合工作区根目录的私有 `docs/jlshell-link-p0-network-evidence-private.md`，不包含凭据。
+
+| 实验 | STUN 映射与最终候选对 | 耗时、数据路径及结果 |
+|---|---|---|
+| 真实 A(macOS)↔C(Arch)，公网 B 辅助 | A/C 均收集到 `srflx` 公网映射；最终 A `prflx` ↔ C `srflx`，C 视角为 `host` ↔ A `prflx`。两端网段和出口不同。 | ICE A/C 为 197/165 ms；A—C 直接 UDP 上 KCP → mTLS 1.3 → `h2` → CONNECT；4096 字节回显和半关闭通过。B 仅转发候选信令 161/162 字节并回答两次 STUN Binding，无业务数据中继。 |
+| 真实 A↔C 的 `auto` | 同类公网候选对 | 2 秒预算内选对 A/C 为 299/245 ms；直接路径的 mTLS、`h2`、CONNECT、4096 字节及半关闭通过。 |
+| A'/C' 独立容器命名空间直连对照 | 两侧 `host` 候选对 | 选对 89/76 ms；同栈 KCP/mTLS/CONNECT 成功。 |
+| 仅在 A' 容器内核阻断业务 UDP | A' 内核丢弃计数 7 包/1032 字节；无可用 ICE 对 | A'/C' 均在 2 秒后选择 `RELAY`；A' 发起一次 WSS。内层 mTLS、`h2`、CONNECT、4096 字节与半关闭通过；B 只见密文帧，未发现测试明文。规则仅存在于一次性容器命名空间。 |
+| 排除 `netty-all` 后重跑真实 A↔C | A/C 仍收集 `srflx`；最终 A `prflx` ↔ C `srflx` | ICE A/C 为 122/124 ms；KCP/mTLS/`h2`/CONNECT、4096 字节和半关闭再次通过，两端进程退出码 0。 |
+
+依赖集从 81 个 JAR / 29.7 MB 降至 41 个 JAR / 15.3 MB，压缩包约 13.9 MB。`kcp-fec` 虽名为 FEC，底层 `Kcp.encodeSeg` 实际依赖其 `Snmp` 类，不能移除；只排除 `netty-all`。P0 结论仅准许进入 CORE 协议和身份开发；正式 B 信令鉴权、会话授权、慢连接队列/配额、长时运行和 Windows ICE 仍未交付。旧 Rust 运行时保持原状，按迁移计划后续退役。
 
 ## 依赖候选
 
 | 组件 | 固定候选 | 许可证 | 当前决策 |
 |---|---|---|---|
-| Netty | `4.2.18.Final` | Apache-2.0 | 原型 BOM 固定。Netty 官方将此列为当前稳定推荐版；产品依赖目前只列出 transport/buffer，不直接配置 native transport。KCP 候选的传递依赖树会解析到更多 Netty/native 模块，进入生产依赖前必须缩减并复测。 |
-| ice4j | `org.jitsi:ice4j:3.2-17-geea6cd3` | Apache-2.0 | 固定待评估版本，只在测试 profile。`Component.getSocket()` 提供应用数据 socket；`CandidatePair` 的 UDP socket API 已弃用，且返回 `DatagramSocket` 包装器。同机 LAN 候选检查和 nomination 已通过；跨 NAT 仍需实测。额外 Jitsi/Kotlin 依赖仍需评估。 |
-| Java KCP | `com.github.l42111996:kcp-base:1.6`（Central 可见版本）；上游 README 另列 `1.6.2` | Apache-2.0 | 只放在默认启用的 Maven 测试候选 profile，不加入产品运行依赖。高层 `KcpClient` 会创建自己的 `NioDatagramChannel`；底层 `Kcp` 支持自定义输出，可由应用接到 ICE 已选 socket。候选 POM 引入 `netty-all`，当前 BOM 会解析到大量 Netty 模块及平台 native 包，依赖缩减、长时可靠性和维护风险仍未通过。 |
+| Netty | `4.2.18.Final` | Apache-2.0 | 原型 BOM 固定；正式使用前继续检查目标平台与许可证清单。KCP 间接引入的 `netty-all` 已排除并完成真实跨 NAT 复跑。 |
+| ice4j | `org.jitsi:ice4j:3.2-17-geea6cd3` | Apache-2.0 | 固定在测试候选 profile；`Component.getSocket()` 的同 socket 数据面经跨 NAT ICE/KCP/CONNECT 验证。Windows 真网卡 ICE 与长期运行仍待验收。 |
+| Java KCP | `com.github.l42111996:kcp-base:1.6` | Apache-2.0 | 仍是测试候选，不进入生产运行依赖；底层 `Kcp` 接入 ICE 已选 socket。`kcp-fec` 提供其必需 `Snmp` 类，不能排除；`netty-all` 已排除，依赖从 81 JAR 降至 41 JAR，跨 NAT 复跑通过。维护风险留到 NET 阶段审查。 |
 | JDK API | Java 21 NIO DatagramChannel | 当前 POC 直接持有单个 UDP socket，并验证 STUN/Link 数据报分流与本地端口保持；未实现 STUN 完整解析或 KCP。 |
 
 参考来源： [Netty 官方下载页](https://netty.io/downloads.html)、[Maven Central ice4j](https://central.sonatype.com/artifact/org.jitsi/ice4j)、[java-Kcp 上游 README](https://github.com/l42111996/java-Kcp/blob/master/README.en.md)、[Maven Central kcp-base](https://central.sonatype.com/artifact/com.github.l42111996/kcp-base)。版本与维护状况在进入正式依赖前重新核对。
@@ -51,8 +63,8 @@
 - 结果：成功；当前 11 个 POC 测试通过，包含路径选择器单测和 ICE/KCP/TLS/HTTP2 完整集成测试。
 - 实际 JVM：OpenJDK 26.0.1；该命令限制了 Java 21 API 编译级别，但并非在 JDK 21 运行。GitHub Actions 上 Linux/macOS/Windows Java 21 job 均通过。
 - 机器：macOS ARM64；Linux x64 和 Windows x64 由 Java 21 CI 覆盖。Windows runner 没有 ice4j 所需的可用非回环 IPv4 地址，ICE 网络集成测试在该环境跳过，其他 Java POC 测试仍执行。
-- 候选依赖树：ice4j 引入 JNA、Kotlin/Jitsi utilities 和 weupnp；KCP 1.6 的 kcp-fec POM 引入 `netty-all`。需要核对只使用 KCP core 所需的最小 Netty 模块并排除未用 native 包，再运行 KCP 回归。
-- 当前可关闭范围：POC-01 的最小 socket 分流、同 socket KCP 接线和本机资源回收子项已完成。仍需审核候选依赖的完整许可证/平台兼容信息；POC-01 整体保持进行中。
+- 候选依赖树：ice4j 引入 JNA、Kotlin/Jitsi utilities 和 weupnp；KCP 1.6 的 kcp-fec POM 引入 `netty-all`，现已在 `link-transport/pom.xml` 排除该聚合包并复跑本机测试与真实跨 NAT 整链路。`kcp-fec` 本身不能排除。
+- POC-01 的 socket 分流、同 socket KCP 接线和本机资源回收已完成。正式制品的最终许可与平台清单在 NET 阶段锁定。
 
 ## POC-02：ICE 与端到端直连进展
 
@@ -65,28 +77,11 @@
 
 Java 21 CI 发现 JSSE 应用缓冲区低于 `SSLSession.getApplicationBufferSize()` 时 `unwrap` 返回 `BUFFER_OVERFLOW`。现已让 TLS 握手和应用数据共用持久的 `TlsEndpoint`，并按 session 容量分配应用缓冲区；macOS ARM64 本机 `mvn verify` 与整链路测试通过，Linux/macOS/Windows Java 21 CI 均通过（Windows ICE 网络集成因 runner 网卡条件跳过）。新增路径选择器集成测试：模拟直连预算超时只触发一次回退，然后建立真实本机 WSS A/C 配对并传输完整二进制数据；权限拒绝和 TLS 身份错误不进入回退。该测试不代替网络级 UDP 阻断。WSS 客户端侧队列限制为 4 条消息，暂停消费时停止申请新消息，恢复读取后按序完整收齐 8 条 4 KiB 负载。最新版 PR 的所有检查均通过。
 
-下一步仍需完成：
+## P0 放行与后续边界
 
-- 将已有公网 UDP 候选探测换成 ice4j ICE checks 与 KCP 数据流，记录映射地址、候选对、建连耗时及实际路径。
-- 等待 Java 21 Linux/macOS 完整 ICE 链路和 Windows 可运行测试的 CI 结果；Windows hosted runner 当前无法提供 ICE 所需网卡条件。
-- 在跨 NAT 的 ICE/KCP 直连上连接 TLS 1.3 双向校验、HTTP/2 CONNECT 和目标 TCP 服务，并记录 B 不转发直连业务字节的证据。
-
-## 尚未完成的 POC-02/03 门槛
-
-- 跨 NAT 候选协商；同机/同 LAN 测试和 UDP echo 不算跨 NAT 通过。
-- 可靠有序双向通道已在同机 LAN 覆盖二进制往返、两个初始数据报丢弃、数据报重排、低速接收者下 4 块应用队列上限、取消、TCP/HTTP2 半关闭与资源回收；本机 WSS 客户端侧也覆盖 4 条消息上限、暂停取数与恢复后的有序完整传输。生产 Relay 慢连接下的排队和资源限额仍待验证。
-- A—C TLS 1.3 + HTTP/2 CONNECT 到 TCP echo 目标已在同机 LAN、本机 WSS 中继及真实 A/B/C 远程 WSS 上分别通过；跨 NAT 的 ICE/KCP 直连整链路尚未验证。A' 容器与远端 C 的 WSS 回退中，relay 捕获帧不包含测试明文。
-- 本机 WSS 测试已验证 A/C 主动出站、Bearer 凭据拒绝、二进制双向转发和孤立/断线配对清理。同一配对管道现承载 A—C 内层 TLS 1.3 双向证书认证与 HTTP/2 CONNECT 到本机 TCP echo 目标的 1 KiB DATA/END_STREAM；测试捕获的 relay 帧不含 CONNECT 明文负载。客户端慢消费者队列有界并可恢复；模拟直连超时后已在真实本机 WSS 配对上传输二进制数据。另有上表的远程 WSS/HTTP2 与 A' 容器内核 UDP 阻断证据；生产 Relay 慢连接资源限额和正式 ICE/KCP 栈的受限网络回退仍未验收。认证或授权失败不能回退放行。
-- Linux x64、macOS ARM64、Windows x64 的依赖和关闭行为。
-- 每项记录库版本、许可证、传递依赖、抓取到的本地端口、实际路径、环境和脱敏证据。
-
-POC-03 已有本机 WSS 完整协议链路、真实 A/B/C 的远程 WSS/HTTP2 CONNECT，以及 A' 容器网络命名空间与远端 C 的 OS 级 UDP 阻断对照；仍是测试范围原型。仍需验证正式 ICE/KCP 栈的受限网络回退和生产 Relay 的有界排队。
-
-## POC 阶段选型结论
-
-- Java 21 + Maven 的运行与编译链路可行；Linux x64、macOS ARM64、Windows x64 上的 Java/WSS/KCP 测试均通过。Windows hosted runner 没有可用 ICE host candidate，ICE 集成测试在 CI 明确跳过，不能据此宣称 Windows ICE 已验证。
-- Netty `4.2.18.Final` 暂保留为 HTTP/2 编解码候选；目前只进入原型依赖，尚未用于正式产品传输模块。
-- ice4j `3.2-17-geea6cd3` 暂保留为 ICE API 候选。同机 LAN host candidate nomination 及 socket 复用已验证；真实 NAT 映射、跨出口连通性、Windows ICE 和许可/传递依赖审查仍未完成。
-- Java KCP `kcp-base:1.6` 仅用于原型测试，不加入产品运行依赖。自定义 `Kcp` 引擎可绑定 ICE 已选 socket并通过确定性丢包/重排及背压用例；`kcp-base` 的 `netty-all` 传递树、长时间可靠性和维护状态未达到生产准入条件。
-- 本机 WSS 证明 A/C 主动出站、配对认证、转发内层加密字节以及 TLS/HTTP2/CONNECT 接线可行；真实 A/B/C 探针进一步证明应用层丢弃直连 UDP 后的一次 WSS/mTLS/HTTP2 CONNECT 降级可传输数据。A' 容器网络命名空间与远端 C 的 OS 级阻断对照也已通过。正式 Relay 服务、跨 NAT 完整 ICE/KCP 协议链、产品栈受限网络回退和慢网络容量限制尚未验证。
-- 阶段决策：保留上述候选用于 POC 后续实验，不将它们视为已批准的生产技术栈。Java 数据面方向目前没有被本机验证否决，但 P0 仍未通过，不能开始切换产品运行时或退役 Rust。
+- POC-02：真实不同出口 A/C 的 ICE nomination、KCP、双向 TLS 1.3、HTTP/2 CONNECT、4096 字节回显和半关闭通过；B 只传递 STUN 与候选信令。STUN 映射、选定候选对与耗时见上方脱敏表，精确地址保存在工作区私有记录。
+- POC-03：真实 A/C 的 `auto` 直连通过；独立命名空间内 OS 级 UDP 阻断后的同栈一次 WSS 回退通过；原型内层 mTLS 和 CONNECT 通过，资源释放及进程退出通过。
+- 原型代码和短时测试凭据不具备生产授权、配额及多租户边界。它们只证明 Java 技术路线可行，正式产品实现从 CORE-01/02 的版本化契约与身份授权开始。
+- Java 21 的新 CI 检查、Windows 真正可用网络下的 ICE、长时间网络与慢 Relay 容量仍需后续验证。Windows hosted runner 的 ICE 跳过不能当作通过。
+- 依赖许可证按上游候选记录；`kcp-fec` 是运行时必需类来源，已排除其无用的 `netty-all` 传递包。正式引入运行时依赖前继续核对维护状态和最终制品许可清单。
+- Rust 运行时在迁移及恢复演练完成前保留，不因 P0 原型放行而删除。

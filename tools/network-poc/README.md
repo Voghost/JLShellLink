@@ -60,3 +60,22 @@ JavaWssFallbackPeer <A|C> <B-host> <stun-port> <signal-port> <wss-port> <workdir
 默认模式成功时 A 输出 `DIRECT_TIMEOUT`、`RELAY_ATTEMPTS 1`、`WSS_CONNECTED A`、`INNER_TLS A TLSv1.3` 和 `WSS_ECHO_VERIFIED bytes=4096`；C 输出 `DIRECT_DROPPED` 且计数大于零；B 输出 `WSS_PAIR_READY`、双向转发字节和 `PLAINTEXT_SEEN false`。`http2` 模式另输出 `INNER_ALPN h2`、`HTTP2_CONNECT_ECHO_VERIFIED bytes=4096` 与 `HTTP2_CONNECT_TARGET_C`。此探针使用一次性测试令牌，未实现产品票据、配额或生产 Relay 的资源约束。
 
 OS 级阻断诊断使用 B 上**独立 Docker bridge 网络命名空间**中的 A' 和远端 C。先以 `os-baseline` 模式确认直连成功，再仅在 A' 容器网络命名空间中用 `iptables OUTPUT` 丢弃对端 UDP，运行 `os-block` 模式。A' 需固定 UDP 本地端口并公布 Docker 映射端口：`-Djlshell.p0.udpPort=<port>`、`-Djlshell.p0.advertise=<B-public-ip>:<port>`；若 A' 的 STUN 服务器不同于 B 控制/中继入口，可用 `-Djlshell.p0.stunHost=<host>` 指定。`os-block` 下内核可能使 UDP `send` 返回 `Operation not permitted`，探针将其计入 `os_denied` 并在 2 秒预算后回退。只对一次性容器执行 `nsenter`，不要改宿主机规则；结束后删除容器及测试目录。2026-09-24 的远端对照与回退结果见 `docs/java-network-spike.md`。A' 与 B 同物理主机，不替代正式 ICE/KCP 或原 macOS A 的 OS 级测试。
+
+## ICE/KCP/mTLS/HTTP2 跨 NAT 原型
+
+`JavaIceKcpHttp2Peer` 是 P0 的单会话诊断程序。它使用 ice4j 从 B 的 IPv4 STUN 收集 `srflx`，经 B 的 TCP 探针交换 ICE 凭据和候选，执行 ICE checks/nomination，然后把同一 ICE socket 接到 KCP，承载双向 TLS 1.3、`h2` 与固定一条流的 HTTP/2 CONNECT。`auto` 给 ICE 2 秒预算；双方通过 B 协调路径后，若任一方不能直连，则释放 ICE 并经 WSS 只回退一次。使用自测生成的短期身份；**没有生产鉴权或多租户能力**。
+
+在 Link 仓库运行下面脚本，把 Java 21 字节码和全部探针依赖编译到一个权限受限的专用目录；输出的 `classes/`、`lib/` 可复制到 A/C 各自临时目录。远端运行需 JDK 21 或更新版本；B 可继续用一次性 Java 21 容器。
+
+```bash
+umask 077
+bash tools/network-poc/build-ice-poc.sh /private/tmp/jlshell-link-p0-example
+```
+
+使用上文生成的 A/C 身份与信任库。先在 B 的空闲端口运行 `JavaStunServer` 和 `JavaTcpRelay`，`auto` 还要运行 `JavaWssRelayProbe`；再启动 C，最后启动 A。三端均使用各自专用工作目录，`token` 和 `storepass` 仅用于本次短时探针，不要写入仓库或公开日志。
+
+```text
+JavaIceKcpHttp2Peer <A|C> <interface> <B-IPv4-or-name> <stun-port> <signal-port> <workdir> <token> <storepass> <ice|full|auto> [<wss-port> <session>]
+```
+
+`ice` 只验证候选选定；`full` 运行直连整链路；`auto` 执行直连优先及 WSS 降级。成功日志包括 `POC_CANDIDATE`（STUN 映射）、`POC_ICE_SELECTED`（最终候选对与耗时）、`POC_DIRECT_TLS` 或 `POC_ICE_FALLBACK`、`HTTP2_CONNECT_ECHO_VERIFIED bytes=4096` 和 `POC_RESOURCES_RELEASED agent_over=true`。A/C 进程退出码须为 0。提交证据时隐藏精确 IP:端口及凭据；工作区私有记录可保留精确候选值。原型中的 HTTP/2 编解码只覆盖这一条测试流，正式栈需独立实现授权、边界和容量控制。
