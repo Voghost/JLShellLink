@@ -3,7 +3,7 @@
 - 日期：2026-09-24
 - 分支：`feature/java-link-poc`
 - Java 基线：Java 21；本机当前默认运行时为 OpenJDK 26.0.1，Maven 3.9.16
-- 状态：POC-01 本机 socket 原型通过；POC-02 已验证同机 LAN ICE nomination、KCP 丢包/重排恢复、低速接收者背压与关闭取消、TLS/HTTP2 CONNECT 和半关闭；POC-03 已在本机 WSS 配对管道上验证内层 mTLS 1.3、HTTP/2 CONNECT 到本机 TCP echo 目标和半关闭，并覆盖有界慢消费者队列。Java 21 Linux/macOS/Windows CI 均通过，Windows hosted runner 因没有 ice4j 可用候选而通过 `JLSHELL_LINK_ICE_TEST_ENABLED=false` 跳过 ICE 集成测试；该测试在其他环境默认启用。跨 NAT 和真实 UDP 阻断后的自动回退仍未验证；不得据此宣称已具备 P2P 或生产中继。
+- 状态：POC-01 本机 socket 原型通过；POC-02 已验证同机 LAN ICE nomination、KCP 丢包/重排恢复、低速接收者背压与关闭取消、TLS/HTTP2 CONNECT 和半关闭；POC-03 已在本机 WSS 配对管道上验证内层 mTLS 1.3、HTTP/2 CONNECT 到本机 TCP echo 目标和半关闭，并覆盖有界慢消费者队列。当前 11 项 Java 测试及 Linux/macOS/Windows Java 21 CI 均通过，Windows hosted runner 因没有 ice4j 可用候选而通过 `JLSHELL_LINK_ICE_TEST_ENABLED=false` 跳过 ICE 集成测试；该测试在其他环境默认启用。跨 NAT 和真实 UDP 阻断后的自动回退仍未验证；不得据此宣称已具备 P2P 或生产中继。
 
 ## 依赖候选
 
@@ -44,7 +44,7 @@
 - 完成同机整链路：ICE → KCP → TLS 1.3 mTLS → Netty HTTP/2 CONNECT → 本机 TCP echo 目标。HTTP/2 CONNECT 的 1 KiB 二进制 DATA 通过 TCP 目标完整往返；客户端 HTTP/2 END_STREAM 映射为目标 TCP 输出半关闭，回程 EOF 映射为响应 END_STREAM。HTTP/2 目前只在测试 profile 引入 `netty-codec-http2`；此集成证明本机编解码和接线，不是多网段性能或公网部署证据。
 - ice4j 默认会探测 AWS 映射 harvester；该测试通过 `ice4j.harvest.mapping.aws.enabled=false` 关闭了无关探测，初始化从数秒降至亚秒。产品配置仍需明确决定是否启用云厂商专属 harvester。
 
-Java 21 CI 发现 JSSE 应用缓冲区低于 `SSLSession.getApplicationBufferSize()` 时 `unwrap` 返回 `BUFFER_OVERFLOW`。现已让 TLS 握手和应用数据共用持久的 `TlsEndpoint`，并按 session 容量分配应用缓冲区；macOS ARM64 本机 `mvn verify` 与整链路测试通过，Linux/macOS/Windows Java 21 CI 均通过（Windows ICE 网络集成因 runner 网卡条件跳过）。新增路径选择器集成测试：模拟直连预算超时只触发一次回退，然后建立真实本机 WSS A/C 配对并传输完整二进制数据；权限拒绝和 TLS 身份错误不进入回退。该测试不代替网络级 UDP 阻断。WSS 客户端侧队列限制为 4 条消息，暂停消费时停止申请新消息，恢复读取后按序完整收齐 8 条 4 KiB 负载。该集成测试最新修改尚待 Java 21 CI 重跑。
+Java 21 CI 发现 JSSE 应用缓冲区低于 `SSLSession.getApplicationBufferSize()` 时 `unwrap` 返回 `BUFFER_OVERFLOW`。现已让 TLS 握手和应用数据共用持久的 `TlsEndpoint`，并按 session 容量分配应用缓冲区；macOS ARM64 本机 `mvn verify` 与整链路测试通过，Linux/macOS/Windows Java 21 CI 均通过（Windows ICE 网络集成因 runner 网卡条件跳过）。新增路径选择器集成测试：模拟直连预算超时只触发一次回退，然后建立真实本机 WSS A/C 配对并传输完整二进制数据；权限拒绝和 TLS 身份错误不进入回退。该测试不代替网络级 UDP 阻断。WSS 客户端侧队列限制为 4 条消息，暂停消费时停止申请新消息，恢复读取后按序完整收齐 8 条 4 KiB 负载。最新版 PR 的所有检查均通过。
 
 下一步仍需完成：
 
