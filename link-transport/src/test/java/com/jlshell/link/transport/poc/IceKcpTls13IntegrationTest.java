@@ -77,6 +77,8 @@ import org.junit.jupiter.api.Test;
 class IceKcpTls13IntegrationTest {
     @Test
     void gathersCandidatesAndNominatesAReachableLanPair() throws Exception {
+        assumeTrue(!System.getProperty("os.name").toLowerCase().contains("win"),
+                "Hosted Windows runner exposes no usable non-loopback IPv4 interface to ice4j");
         String activeIpv4Interface = Collections.list(NetworkInterface.getNetworkInterfaces()).stream()
                 .filter(networkInterface -> {
                     try {
@@ -187,23 +189,25 @@ class IceKcpTls13IntegrationTest {
                     configureTls13(tlsClient, true);
                     SSLEngine tlsServer = identities.serverContext().createSSLEngine();
                     configureTls13(tlsServer, false);
-                    completeHandshake(tlsClient, tlsServer, peerA, peerC);
+                    TlsEndpoint clientTls = new TlsEndpoint(tlsClient, peerA);
+                    TlsEndpoint serverTls = new TlsEndpoint(tlsServer, peerC);
+                    completeHandshake(clientTls, serverTls);
                     assertTrue("TLSv1.3".equals(tlsClient.getSession().getProtocol()));
                     assertTrue("TLSv1.3".equals(tlsServer.getSession().getProtocol()));
 
                     byte[] securePayload = "mutual TLS 1.3 over ICE/KCP".getBytes(StandardCharsets.UTF_8);
                     sendTlsApplicationData(tlsClient, peerA, securePayload);
-                    assertArrayEquals(securePayload, receiveTlsApplicationData(tlsServer, peerC, securePayload.length));
+                    assertArrayEquals(securePayload, receiveTlsApplicationData(serverTls, securePayload.length));
 
                     try (TcpEchoTarget target = new TcpEchoTarget();
                             Http2ConnectSession h2 = new Http2ConnectSession(target.port())) {
-                        transferClientH2ToServer(tlsClient, peerA, tlsServer, peerC, h2);
-                        transferServerH2ToClient(tlsClient, peerA, tlsServer, peerC, h2);
-                        transferClientH2ToServer(tlsClient, peerA, tlsServer, peerC, h2);
+                        transferClientH2ToServer(clientTls, serverTls, h2);
+                        transferServerH2ToClient(clientTls, serverTls, h2);
+                        transferClientH2ToServer(clientTls, serverTls, h2);
 
                         h2.openConnect();
-                        transferClientH2ToServer(tlsClient, peerA, tlsServer, peerC, h2);
-                        transferServerH2ToClient(tlsClient, peerA, tlsServer, peerC, h2);
+                        transferClientH2ToServer(clientTls, serverTls, h2);
+                        transferServerH2ToClient(clientTls, serverTls, h2);
                         assertTrue(h2.connectAccepted(), "HTTP/2 CONNECT was not accepted");
                         assertEquals(200, h2.responseStatus.poll(2, TimeUnit.SECONDS));
 
@@ -212,8 +216,8 @@ class IceKcpTls13IntegrationTest {
                             connectData[i] = (byte) (i * 7 + 3);
                         }
                         h2.sendData(connectData, true);
-                        transferClientH2ToServer(tlsClient, peerA, tlsServer, peerC, h2);
-                        transferServerH2ToClient(tlsClient, peerA, tlsServer, peerC, h2);
+                        transferClientH2ToServer(clientTls, serverTls, h2);
+                        transferServerH2ToClient(clientTls, serverTls, h2);
                         assertArrayEquals(connectData, h2.echoedData.poll(2, TimeUnit.SECONDS),
                                 "HTTP/2 CONNECT data did not reach the TCP target and return");
                         assertTrue(h2.responseEnded.get(),
@@ -225,7 +229,7 @@ class IceKcpTls13IntegrationTest {
                     SSLEngine secondServer = identities.serverContext().createSSLEngine();
                     configureTls13(secondServer, false);
                     assertThrows(SSLException.class, () -> completeHandshake(
-                            untrustedClient, secondServer, peerA, peerC),
+                            new TlsEndpoint(untrustedClient, peerA), new TlsEndpoint(secondServer, peerC)),
                             "server accepted a client certificate outside its test trust store");
                 }
 
@@ -255,27 +259,19 @@ class IceKcpTls13IntegrationTest {
     }
 
     private static void transferClientH2ToServer(
-            SSLEngine tlsClient,
-            IceKcpPeer peerA,
-            SSLEngine tlsServer,
-            IceKcpPeer peerC,
-            Http2ConnectSession h2) throws Exception {
+            TlsEndpoint clientTls, TlsEndpoint serverTls, Http2ConnectSession h2) throws Exception {
         byte[] encodedFrames = h2.drainClientOutbound();
         assertTrue(encodedFrames.length > 0, "HTTP/2 client produced no wire bytes");
-        sendTlsApplicationData(tlsClient, peerA, encodedFrames);
-        h2.receiveAtServer(receiveTlsApplicationData(tlsServer, peerC, encodedFrames.length));
+        sendTlsApplicationData(clientTls.engine, clientTls.peer, encodedFrames);
+        h2.receiveAtServer(receiveTlsApplicationData(serverTls, encodedFrames.length));
     }
 
     private static void transferServerH2ToClient(
-            SSLEngine tlsClient,
-            IceKcpPeer peerA,
-            SSLEngine tlsServer,
-            IceKcpPeer peerC,
-            Http2ConnectSession h2) throws Exception {
+            TlsEndpoint clientTls, TlsEndpoint serverTls, Http2ConnectSession h2) throws Exception {
         byte[] encodedFrames = h2.drainServerOutbound();
         assertTrue(encodedFrames.length > 0, "HTTP/2 server produced no wire bytes");
-        sendTlsApplicationData(tlsServer, peerC, encodedFrames);
-        h2.receiveAtClient(receiveTlsApplicationData(tlsClient, peerA, encodedFrames.length));
+        sendTlsApplicationData(serverTls.engine, serverTls.peer, encodedFrames);
+        h2.receiveAtClient(receiveTlsApplicationData(clientTls, encodedFrames.length));
     }
 
     private static final class TcpEchoTarget implements AutoCloseable {
@@ -474,13 +470,11 @@ class IceKcpTls13IntegrationTest {
         engine.setSSLParameters(parameters);
     }
 
-    private static void completeHandshake(
-            SSLEngine clientEngine, SSLEngine serverEngine, IceKcpPeer clientPeer, IceKcpPeer serverPeer)
-            throws Exception {
+    private static void completeHandshake(TlsEndpoint client, TlsEndpoint server) throws Exception {
+        SSLEngine clientEngine = client.engine;
+        SSLEngine serverEngine = server.engine;
         clientEngine.beginHandshake();
         serverEngine.beginHandshake();
-        TlsEndpoint client = new TlsEndpoint(clientEngine, clientPeer);
-        TlsEndpoint server = new TlsEndpoint(serverEngine, serverPeer);
         long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
         while (System.nanoTime() < deadline) {
             driveHandshake(client);
@@ -561,9 +555,9 @@ class IceKcpTls13IntegrationTest {
         }
     }
 
-    private static byte[] receiveTlsApplicationData(SSLEngine engine, IceKcpPeer peer, int expectedBytes)
-            throws Exception {
-        TlsEndpoint endpoint = new TlsEndpoint(engine, peer);
+    private static byte[] receiveTlsApplicationData(TlsEndpoint endpoint, int expectedBytes) throws Exception {
+        SSLEngine engine = endpoint.engine;
+        IceKcpPeer peer = endpoint.peer;
         ByteBuffer plaintext = ByteBuffer.allocate(expectedBytes + 1_024);
         long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
         while (plaintext.position() < expectedBytes && System.nanoTime() < deadline) {
