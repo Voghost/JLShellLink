@@ -43,3 +43,18 @@ JavaUdpPathProbe <A|C> <stun-host> <stun-port> <B-host> <B-tcp-port> <same-token
 ```
 
 两端输出 `DIRECT_BIDIRECTIONAL` 表示带本次令牌的 UDP 报文与确认都抵达对端。B 的 TCP 探针只转发各一行候选地址；其 UDP 探针只回答 Binding 请求。正式实现仍需自己的授权、候选信令与可靠的 UDP 协调服务。
+
+## 真实网络 WSS 降级诊断
+
+`JavaWssRelayProbe` 在 B 的独立目录中提供短时 TLS 1.3 WebSocket 配对；`JavaWssFallbackPeer` 在 C 上受控丢弃本次直连 UDP 探测包，让 A 的 2 秒直连预算真实超时后只连接一次 WSS。A/C 在 WSS 二进制帧之上再建立双向证书 TLS 1.3，并验证 4096 字节往返。这个实验**不修改主机防火墙**，也不等于 OS 防火墙级 UDP 阻断验收。
+
+编译时额外包含 `JavaWssRelayProbe.java`、`JavaWssFallbackPeer.java` 和 `JavaUdpPathProbe.java`。在同一个短期工作目录中生成三份测试身份：B 的外层证书需包含 `<B-host>` 的 DNS SAN，A/C 的内层证书分别只交给本端；A/C 都需要 `B-trust.p12`，A 需要 `A-trust.p12` 信任 C，C 需要 `C-trust.p12` 信任 A。测试身份与信任库只在该目录存在，结束后删除。
+
+先在 B 的三个空闲测试端口分别运行 `JavaStunServer`、`JavaTcpRelay` 和 `JavaWssRelayProbe`；然后启动 C，最后启动 A：
+
+```text
+JavaWssRelayProbe <wss-port> <B.p12> <storepass> <same-token> <session> 180
+JavaWssFallbackPeer <A|C> <B-host> <stun-port> <signal-port> <wss-port> <workdir> <same-token> <session> <storepass>
+```
+
+成功时 A 输出 `DIRECT_TIMEOUT`、`RELAY_ATTEMPTS 1`、`WSS_CONNECTED A`、`INNER_TLS A TLSv1.3` 和 `WSS_ECHO_VERIFIED bytes=4096`；C 输出 `DIRECT_DROPPED` 且计数大于零；B 输出 `WSS_PAIR_READY`、双向转发字节和 `PLAINTEXT_SEEN false`。此探针使用一次性测试令牌，未实现产品票据、配额、HTTP/2 CONNECT 或生产 Relay 的资源约束。

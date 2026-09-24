@@ -16,7 +16,7 @@ import java.util.Arrays;
 public final class JavaUdpPathProbe {
     private static final int MAGIC = 0x2112A442;
 
-    private static InetSocketAddress mapping(DatagramSocket socket, String host, int port) throws Exception {
+    static InetSocketAddress mapping(DatagramSocket socket, String host, int port) throws Exception {
         byte[] transaction = new byte[12];
         new SecureRandom().nextBytes(transaction);
         ByteBuffer request = ByteBuffer.allocate(20);

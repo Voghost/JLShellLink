@@ -3,7 +3,7 @@
 - 日期：2026-09-24
 - 分支：`feature/java-link-poc`；B UDP 入口复测分支：`feature/java-link-b-stun-poc`
 - Java 基线：Java 21；本机当前默认运行时为 OpenJDK 26.0.1，Maven 3.9.16
-- 状态：POC-01 本机 socket 原型通过；POC-02 已验证同机 LAN ICE nomination、KCP 丢包/重排恢复、低速接收者背压与关闭取消、TLS/HTTP2 CONNECT 和半关闭；POC-03 已在本机 WSS 配对管道上验证内层 mTLS 1.3、HTTP/2 CONNECT 到本机 TCP echo 目标和半关闭，并覆盖有界慢消费者队列。当前 11 项 Java 测试及 Linux/macOS/Windows Java 21 CI 均通过，Windows hosted runner 因没有 ice4j 可用候选而通过 `JLSHELL_LINK_ICE_TEST_ENABLED=false` 跳过 ICE 集成测试；该测试在其他环境默认启用。真实 A/C 间已验证 B 自托管 STUN 辅助交换候选后的 UDP 双向打洞及 B 上 Java TCP 透明转发，但跨 NAT 的 ICE/KCP/TLS/HTTP2 整链路和真实 UDP 阻断后的 WSS 自动回退仍未验证；不得据此宣称已具备产品 P2P 或生产中继。
+- 状态：POC-01 本机 socket 原型通过；POC-02 已验证同机 LAN ICE nomination、KCP 丢包/重排恢复、低速接收者背压与关闭取消、TLS/HTTP2 CONNECT 和半关闭；POC-03 在本机 WSS 配对管道上验证了内层 mTLS 1.3、HTTP/2 CONNECT 到本机 TCP echo 目标和半关闭，并覆盖有界慢消费者队列。当前 11 项 Java 测试及 Linux/macOS/Windows Java 21 CI 均通过，Windows hosted runner 因没有 ice4j 可用候选而通过 `JLSHELL_LINK_ICE_TEST_ENABLED=false` 跳过 ICE 集成测试；该测试在其他环境默认启用。真实 A/C 间已验证 B 自托管 STUN 辅助的 UDP 双向打洞、B 上 Java TCP 透明转发，以及受控丢弃直连 UDP 后一次 WSS 降级、内层 TLS 1.3 和二进制往返。跨 NAT 的 ICE/KCP/TLS/HTTP2 整链路、OS 防火墙级 UDP 阻断回退和正式资源限制仍未验证；不得据此宣称已具备产品 P2P 或生产中继。
 
 ## 真实 A/B/C 主机联调（2026-09-24）
 
@@ -18,8 +18,9 @@
 | 三端 Java 加密转发 | B 使用现有 Java 21 镜像中的一次性只读容器，在空闲 TCP 13577 上运行仓库 `tools/network-poc/JavaTcpRelay.java`；A/C 运行 `JavaTlsPeer.java`。双向证书 TLS 1.3 协商成功，4096 字节二进制往返一致；B 记录 A→C 5179 字节、C→A 5753 字节，所见缓冲中未检出测试明文标记。容器自动退出 | 证明三端 Java 基本部署和端到端加密在该真实 TCP 路径上可行。该探针是原始 TCP 转发，仍缺 WSS、HTTP/2 CONNECT、票据鉴权、生产流控、ICE/KCP 和真实自动回退；不能标记 P0 完成。 |
 | 跨 NAT UDP 候选探测（放通前） | A/C 分别通过 [Cloudflare 公共 STUN](https://developers.cloudflare.com/realtime/turn/) 的 UDP 3478 获取各自映射地址，使用同一个本地 UDP socket 保持映射。B 在 TCP 13578 上运行一次性 Java 21 容器，只转发候选地址；随后 A/C 都收到对方的 `PUNCH`/`ACK` 并输出 `DIRECT_BIDIRECTIONAL`。B 只转发了 A→C 26 字节、C→A 27 字节的候选行 | 这是两端真实不同出口网络上的 UDP 打洞可行性证据，业务 UDP 没经过 B。诊断使用外部 STUN 和自定义探针，尚未用 ice4j 建立 ICE candidate pair，也没有 KCP、TLS、HTTP/2 CONNECT 或产品信令鉴权；**不等于 POC-02 整链路通过**。该轮测试时 B 自身的 UDP 入口尚不可达。 |
 | B 自托管 UDP 复测（用户放通后） | B 使用已缓存的 Java 21 镜像在 UDP 13575 上运行一次性 `JavaStunServer`，对 A/C 共回答 4 次 Binding 请求；双方都拿到公网映射。B 的 `JavaTcpRelay` 在 TCP 13578 交换候选，各转发 27 字节。A/C 在原 UDP socket 上都输出 `DIRECT_BIDIRECTIONAL` | **B 的测试 UDP 入口已可达，A—C 经 B 辅助完成真实双向 UDP 打洞**。探针仅实现 Binding 与短报文；尚未跑跨 NAT 的 ice4j ICE checks、KCP、mTLS、HTTP/2 CONNECT。两个一次性容器退出后端口已释放。 |
+| WSS 降级（真实 A/B/C） | B 在空闲 TCP 13579 上运行短时 Java TLS 1.3 WebSocket 配对探针，同时运行自托管 STUN 与 TCP 候选交换。C 保持同一 UDP socket，但主动丢弃收到的 20 个直连探测包；A 在 2 秒预算内发出 20 包且未收到 ACK，只发起一次 WSS 降级。A/C 均主动连到 B，建立内层双向证书 TLS 1.3，4096 字节二进制数据完整往返。B 转发 A→C 5170 字节（9 帧）、C→A 5677 字节（10 帧），其所见 WSS 帧未检出测试明文标记 | 证明真实不同出口网络上，**受控应用层丢包后的 WSS 传输与内层 mTLS 可用**。未修改系统防火墙；这不是 OS 防火墙级 UDP 阻断，也尚未在该远程探针上承载 HTTP/2 CONNECT、生产票据/配额或多连接背压。短时容器、证书和测试目录均已清理，不能标记 P0 完成。 |
 
-下一步要把已证明可行的 B 自托管 STUN 与跨 NAT UDP 候选路径接入 ice4j 的真实 ICE checks、KCP、mTLS、HTTP/2 CONNECT，并把 B 的候选交换替换为带鉴权的控制平面协议；随后受控阻断直连 UDP 并验证 WSS 自动降级。当前只保持现有 Rust 运行时代码，不据此开始退役。
+下一步要把已证明可行的 B 自托管 STUN 与跨 NAT UDP 候选路径接入 ice4j 的真实 ICE checks、KCP、mTLS、HTTP/2 CONNECT，并把 B 的候选交换替换为带鉴权的控制平面协议；随后在隔离网络环境中做 OS 防火墙级 UDP 阻断、远程 WSS 上的 HTTP/2 CONNECT 与资源限制验收。当前只保持现有 Rust 运行时代码，不据此开始退役。
 
 ## 依赖候选
 
@@ -77,7 +78,7 @@ Java 21 CI 发现 JSSE 应用缓冲区低于 `SSLSession.getApplicationBufferSiz
 - Linux x64、macOS ARM64、Windows x64 的依赖和关闭行为。
 - 每项记录库版本、许可证、传递依赖、抓取到的本地端口、实际路径、环境和脱敏证据。
 
-POC-03 仍是测试范围的本机 WSS 配对原型；多平台基础行为和客户端慢消费者边界已覆盖。仍需验证生产 Relay 的有界排队、真实 UDP 阻断回退，以及不同出口网络的 NAT 穿透。
+POC-03 已有本机 WSS 完整协议链路和真实 A/B/C 上受控应用层丢包后的 WSS/mTLS 往返证据；仍是测试范围原型。仍需验证生产 Relay 的有界排队、OS 防火墙级 UDP 阻断回退和远程 WSS 上的 HTTP/2 CONNECT。
 
 ## POC 阶段选型结论
 
@@ -85,5 +86,5 @@ POC-03 仍是测试范围的本机 WSS 配对原型；多平台基础行为和�
 - Netty `4.2.18.Final` 暂保留为 HTTP/2 编解码候选；目前只进入原型依赖，尚未用于正式产品传输模块。
 - ice4j `3.2-17-geea6cd3` 暂保留为 ICE API 候选。同机 LAN host candidate nomination 及 socket 复用已验证；真实 NAT 映射、跨出口连通性、Windows ICE 和许可/传递依赖审查仍未完成。
 - Java KCP `kcp-base:1.6` 仅用于原型测试，不加入产品运行依赖。自定义 `Kcp` 引擎可绑定 ICE 已选 socket并通过确定性丢包/重排及背压用例；`kcp-base` 的 `netty-all` 传递树、长时间可靠性和维护状态未达到生产准入条件。
-- 本机 WSS 证明 A/C 主动出站、配对认证、转发内层加密字节以及 TLS/HTTP2/CONNECT 接线可行；Relay 服务实现、真实 UDP 阻断下的选路、跨 NAT 和慢网络容量限制尚未验证。
+- 本机 WSS 证明 A/C 主动出站、配对认证、转发内层加密字节以及 TLS/HTTP2/CONNECT 接线可行；真实 A/B/C 探针进一步证明应用层丢弃直连 UDP 后的一次 WSS/mTLS 降级可传输数据。正式 Relay 服务、OS 防火墙级 UDP 阻断、跨 NAT 完整 ICE/KCP 协议链和慢网络容量限制尚未验证。
 - 阶段决策：保留上述候选用于 POC 后续实验，不将它们视为已批准的生产技术栈。Java 数据面方向目前没有被本机验证否决，但 P0 仍未通过，不能开始切换产品运行时或退役 Rust。
