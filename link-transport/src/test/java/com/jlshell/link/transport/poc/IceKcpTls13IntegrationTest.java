@@ -1,6 +1,7 @@
 package com.jlshell.link.transport.poc;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -9,8 +10,26 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInitializer;
+import io.netty.channel.SimpleChannelInboundHandler;
+import io.netty.channel.embedded.EmbeddedChannel;
+import io.netty.handler.codec.http2.DefaultHttp2DataFrame;
+import io.netty.handler.codec.http2.DefaultHttp2Headers;
+import io.netty.handler.codec.http2.DefaultHttp2HeadersFrame;
+import io.netty.handler.codec.http2.Http2DataFrame;
+import io.netty.handler.codec.http2.Http2Frame;
+import io.netty.handler.codec.http2.Http2FrameCodecBuilder;
+import io.netty.handler.codec.http2.Http2Headers;
+import io.netty.handler.codec.http2.Http2HeadersFrame;
+import io.netty.handler.codec.http2.Http2MultiplexHandler;
+import io.netty.handler.codec.http2.Http2StreamChannel;
+import io.netty.handler.codec.http2.Http2StreamChannelBootstrap;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.net.DatagramSocket;
@@ -27,9 +46,11 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import javax.net.ssl.KeyManagerFactory;
@@ -150,6 +171,29 @@ class IceKcpTls13IntegrationTest {
                     sendTlsApplicationData(tlsClient, peerA, securePayload);
                     assertArrayEquals(securePayload, receiveTlsApplicationData(tlsServer, peerC, securePayload.length));
 
+                    try (TcpEchoTarget target = new TcpEchoTarget();
+                            Http2ConnectSession h2 = new Http2ConnectSession(target.port())) {
+                        transferClientH2ToServer(tlsClient, peerA, tlsServer, peerC, h2);
+                        transferServerH2ToClient(tlsClient, peerA, tlsServer, peerC, h2);
+                        transferClientH2ToServer(tlsClient, peerA, tlsServer, peerC, h2);
+
+                        h2.openConnect();
+                        transferClientH2ToServer(tlsClient, peerA, tlsServer, peerC, h2);
+                        transferServerH2ToClient(tlsClient, peerA, tlsServer, peerC, h2);
+                        assertTrue(h2.connectAccepted(), "HTTP/2 CONNECT was not accepted");
+                        assertEquals(200, h2.responseStatus.poll(2, TimeUnit.SECONDS));
+
+                        byte[] connectData = new byte[1_024];
+                        for (int i = 0; i < connectData.length; i++) {
+                            connectData[i] = (byte) (i * 7 + 3);
+                        }
+                        h2.sendData(connectData);
+                        transferClientH2ToServer(tlsClient, peerA, tlsServer, peerC, h2);
+                        transferServerH2ToClient(tlsClient, peerA, tlsServer, peerC, h2);
+                        assertArrayEquals(connectData, h2.echoedData.poll(2, TimeUnit.SECONDS),
+                                "HTTP/2 CONNECT data did not reach the TCP target and return");
+                    }
+
                     SSLEngine untrustedClient = identities.untrustedClientContext().createSSLEngine("localhost", 443);
                     configureTls13(untrustedClient, true);
                     SSLEngine secondServer = identities.serverContext().createSSLEngine();
@@ -165,6 +209,208 @@ class IceKcpTls13IntegrationTest {
         }
         assertTrue(agentA.isOver(), "ICE A did not release its sockets");
         assertTrue(agentC.isOver(), "ICE C did not release its sockets");
+    }
+
+    private static void transferClientH2ToServer(
+            SSLEngine tlsClient,
+            IceKcpPeer peerA,
+            SSLEngine tlsServer,
+            IceKcpPeer peerC,
+            Http2ConnectSession h2) throws Exception {
+        byte[] encodedFrames = h2.drainClientOutbound();
+        assertTrue(encodedFrames.length > 0, "HTTP/2 client produced no wire bytes");
+        sendTlsApplicationData(tlsClient, peerA, encodedFrames);
+        h2.receiveAtServer(receiveTlsApplicationData(tlsServer, peerC, encodedFrames.length));
+    }
+
+    private static void transferServerH2ToClient(
+            SSLEngine tlsClient,
+            IceKcpPeer peerA,
+            SSLEngine tlsServer,
+            IceKcpPeer peerC,
+            Http2ConnectSession h2) throws Exception {
+        byte[] encodedFrames = h2.drainServerOutbound();
+        assertTrue(encodedFrames.length > 0, "HTTP/2 server produced no wire bytes");
+        sendTlsApplicationData(tlsServer, peerC, encodedFrames);
+        h2.receiveAtClient(receiveTlsApplicationData(tlsClient, peerA, encodedFrames.length));
+    }
+
+    private static final class TcpEchoTarget implements AutoCloseable {
+        private final ServerSocket listener;
+        private final AtomicReference<Socket> acceptedSocket = new AtomicReference<>();
+        private final Thread serverThread;
+
+        private TcpEchoTarget() throws IOException {
+            listener = new ServerSocket(0, 1, InetAddress.getLoopbackAddress());
+            serverThread = Thread.ofVirtual().start(() -> {
+                try (Socket socket = listener.accept()) {
+                    acceptedSocket.set(socket);
+                    byte[] buffer = new byte[2_048];
+                    int count;
+                    while ((count = socket.getInputStream().read(buffer)) >= 0) {
+                        socket.getOutputStream().write(buffer, 0, count);
+                        socket.getOutputStream().flush();
+                    }
+                } catch (IOException ignored) {
+                    // Closing the POC target ends the echo loop.
+                }
+            });
+        }
+
+        private int port() {
+            return listener.getLocalPort();
+        }
+
+        @Override
+        public void close() throws Exception {
+            listener.close();
+            Socket socket = acceptedSocket.get();
+            if (socket != null) {
+                socket.close();
+            }
+            serverThread.join(1_000);
+            if (serverThread.isAlive()) {
+                throw new IOException("TCP echo target did not stop");
+            }
+        }
+    }
+
+    private static final class Http2ConnectSession implements AutoCloseable {
+        private final AtomicReference<Http2Headers> connectRequest = new AtomicReference<>();
+        private final AtomicReference<Socket> targetSocket = new AtomicReference<>();
+        private final LinkedBlockingQueue<Integer> responseStatus = new LinkedBlockingQueue<>();
+        private final LinkedBlockingQueue<byte[]> echoedData = new LinkedBlockingQueue<>();
+        private final EmbeddedChannel client;
+        private final EmbeddedChannel server;
+        private final int targetPort;
+        private Http2StreamChannel clientStream;
+
+        private Http2ConnectSession(int targetPort) {
+            this.targetPort = targetPort;
+            client = new EmbeddedChannel(
+                    Http2FrameCodecBuilder.forClient().build(),
+                    new Http2MultiplexHandler(new SimpleChannelInboundHandler<Http2Frame>() {
+                        @Override
+                        protected void channelRead0(ChannelHandlerContext ctx, Http2Frame frame) {
+                            // Client-initiated streams are opened through Http2StreamChannelBootstrap.
+                        }
+                    }));
+            server = new EmbeddedChannel(
+                    Http2FrameCodecBuilder.forServer().build(),
+                    new Http2MultiplexHandler(new ChannelInitializer<Http2StreamChannel>() {
+                        @Override
+                        protected void initChannel(Http2StreamChannel stream) {
+                            stream.pipeline().addLast(new SimpleChannelInboundHandler<Http2Frame>() {
+                                @Override
+                                protected void channelRead0(ChannelHandlerContext ctx, Http2Frame frame)
+                                        throws Exception {
+                                    if (frame instanceof Http2HeadersFrame headersFrame) {
+                                        Http2Headers headers = headersFrame.headers();
+                                        if ("CONNECT".contentEquals(headers.method())) {
+                                            connectRequest.set(new DefaultHttp2Headers().add(headers));
+                                            Socket socket = new Socket(InetAddress.getLoopbackAddress(), targetPort);
+                                            targetSocket.set(socket);
+                                            ctx.writeAndFlush(new DefaultHttp2HeadersFrame(
+                                                    new DefaultHttp2Headers().status("200")));
+                                        }
+                                    } else if (frame instanceof Http2DataFrame dataFrame) {
+                                        Socket socket = targetSocket.get();
+                                        if (socket == null) {
+                                            throw new IOException("CONNECT target socket is not open");
+                                        }
+                                        byte[] request = new byte[dataFrame.content().readableBytes()];
+                                        dataFrame.content().getBytes(dataFrame.content().readerIndex(), request);
+                                        socket.getOutputStream().write(request);
+                                        socket.getOutputStream().flush();
+                                        byte[] response = socket.getInputStream().readNBytes(request.length);
+                                        if (response.length != request.length) {
+                                            throw new IOException("TCP target returned a truncated response");
+                                        }
+                                        ctx.writeAndFlush(new DefaultHttp2DataFrame(
+                                                Unpooled.wrappedBuffer(response), dataFrame.isEndStream()));
+                                    }
+                                }
+                            });
+                        }
+                    }));
+        }
+
+        private void openConnect() throws Exception {
+            clientStream = new Http2StreamChannelBootstrap(client)
+                    .handler(new SimpleChannelInboundHandler<Http2Frame>() {
+                        @Override
+                        protected void channelRead0(ChannelHandlerContext ctx, Http2Frame frame) {
+                            if (frame instanceof Http2HeadersFrame headersFrame) {
+                                responseStatus.offer(Integer.parseInt(headersFrame.headers().status().toString()));
+                            } else if (frame instanceof Http2DataFrame dataFrame) {
+                                byte[] bytes = new byte[dataFrame.content().readableBytes()];
+                                dataFrame.content().getBytes(dataFrame.content().readerIndex(), bytes);
+                                echoedData.offer(bytes);
+                            }
+                        }
+                    })
+                    .open()
+                    .syncUninterruptibly()
+                    .getNow();
+            clientStream.writeAndFlush(new DefaultHttp2HeadersFrame(
+                    new DefaultHttp2Headers().method("CONNECT").authority("127.0.0.1:" + targetPort)));
+            client.runPendingTasks();
+        }
+
+        private boolean connectAccepted() {
+            Http2Headers headers = connectRequest.get();
+            return headers != null
+                    && "CONNECT".contentEquals(headers.method())
+                    && ("127.0.0.1:" + targetPort).contentEquals(headers.authority());
+        }
+
+        private void sendData(byte[] payload) {
+            clientStream.writeAndFlush(new DefaultHttp2DataFrame(Unpooled.wrappedBuffer(payload.clone()), false));
+            client.runPendingTasks();
+        }
+
+        private byte[] drainClientOutbound() {
+            return drainOutbound(client);
+        }
+
+        private byte[] drainServerOutbound() {
+            return drainOutbound(server);
+        }
+
+        private void receiveAtServer(byte[] bytes) {
+            server.writeInbound(Unpooled.wrappedBuffer(bytes));
+            server.runPendingTasks();
+        }
+
+        private void receiveAtClient(byte[] bytes) {
+            client.writeInbound(Unpooled.wrappedBuffer(bytes));
+            client.runPendingTasks();
+        }
+
+        private static byte[] drainOutbound(EmbeddedChannel channel) {
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            Object message;
+            while ((message = channel.readOutbound()) != null) {
+                if (!(message instanceof ByteBuf bytes)) {
+                    throw new IllegalStateException("Unexpected HTTP/2 outbound message: " + message.getClass());
+                }
+                byte[] chunk = new byte[bytes.readableBytes()];
+                bytes.readBytes(chunk);
+                output.writeBytes(chunk);
+                bytes.release();
+            }
+            return output.toByteArray();
+        }
+
+        @Override
+        public void close() throws Exception {
+            Socket socket = targetSocket.get();
+            if (socket != null) {
+                socket.close();
+            }
+            client.finishAndReleaseAll();
+            server.finishAndReleaseAll();
+        }
     }
 
     private static void configureTls13(SSLEngine engine, boolean client) {
