@@ -11,7 +11,14 @@
 - `main` 只接收 GitHub 上的 `develop -> main` Pull Request，不得直接推送开发提交。
 - 发布标签只从 `main` 创建。
 
-## 技术与边界
+## 当前状态与后续方向
+
+- 当前 `develop` 上仍是 Rust 2024 实现；它是待迁移的历史运行时代码，不代表新的开发目标。
+- 后续产品运行时按 `../docs/jlshell-link-java-architecture.md` 全部改为 Java 21；实施顺序按 `../docs/jlshell-link-java-implementation-plan.md`。
+- Java POC 阶段不删除 Rust 代码或现有制品；只有迁移和恢复演练完成后，才按计划退役活跃 Rust 实现。
+- 以下 Rust 专项限制只约束现存 Rust 代码，除非同一安全边界也适用于 Java 实现。
+
+## 现存 Rust 代码约束
 
 - Rust 1.97.1、2024 edition，workspace 内所有 crate 禁止发布到 crates.io。
 - 网络协议 ID 为 `/jlshell/link/tcp/1.0.0`；破坏性协议变更必须使用新版本 ID。
@@ -29,7 +36,7 @@
   Connector/Agent 和逐文件 SHA-256 清单；更改文件名或清单 schema 时必须同步修改
   JLShellLinkPlugin 的内置运行时加载器。
 
-## 验证
+## 现存 Rust 验证
 
 ```bash
 cargo fmt --all -- --check
@@ -39,3 +46,12 @@ cargo test --workspace
 
 网络行为变更还应分别验证 `direct-only`、`relay-only` 和 `auto` 回退，并确认
 二进制数据双向完整、半关闭正常、进程退出后监听端口释放。
+
+## Java 实施约束
+
+- Java 工程使用 Java 21 和 Maven；Link 模块按已批准的 Java 架构与实施计划建立。
+- P0 网络验证通过前，不把 ICE、可靠 UDP、TLS 和 HTTP/2 组合标记为生产可用。
+- 新增 Java 依赖需固定版本并记录许可证、来源、传递依赖与平台支持；不引入 JNI 或 Rust sidecar。
+- 安全默认拒绝；认证或授权失败不能通过直连/中继回退绕过。
+- 不提交私钥、票据、账号令牌、目标设备数据或未脱敏网络日志。
+- Java 改动使用 `mvn verify`；若环境没有 JDK 21，需在报告中记录实际运行时并安排 JDK 21 CI 验证。

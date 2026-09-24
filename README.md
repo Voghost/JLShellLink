@@ -1,5 +1,7 @@
 # JLShell Link
 
+> 后续产品运行时将按 [全 Java 架构方案](../docs/jlshell-link-java-architecture.md) 迁移到 Java 21。实施记录见 [Java 迁移基线](docs/java-migration-baseline.md) 与 [网络原型记录](docs/java-network-spike.md)。当前发布流程和生产运行时仍是下方所述 Rust 原型；Rust 将在迁移与恢复演练完成后退役。
+
 JLShell Link 是 JLShell 的私有商业网络组件原型，预定仓库为
 `Voghost/JLShellLink`。它通过 rust-libp2p 在本机 Connector 与远端 Agent
 之间建立加密 TCP 隧道，优先直连，并可通过 Circuit Relay v2 回退。
