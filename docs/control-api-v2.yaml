@@ -178,32 +178,35 @@ paths:
   /api/v2/link/control-credentials:
     post:
       operationId: issueControlCredential
+      responses:
+        '201':
+          description: Short-lived credential bound to the account, device ID and device key fingerprint
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShortCredential' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [deviceId, nodeKeyFingerprint]
+              required: [deviceId, clientKeyFingerprint]
               properties:
                 deviceId: { type: string, format: uuid }
-                nodeKeyFingerprint: { $ref: '#/components/schemas/Fingerprint' }
-      responses:
-        '200':
-          description: Short-lived credential scoped to the control channel
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ShortCredential' }
+                clientKeyFingerprint: { $ref: '#/components/schemas/Fingerprint' }
   /api/v2/link/access-requests:
     post:
       operationId: requestAccess
+      security:
+        - linkControlCredential: []
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: '#/components/schemas/AccessRequest' }
       responses:
-        '200':
+        '201':
           description: Authorized session and target grant
           content:
             application/json:
@@ -213,7 +216,7 @@ paths:
     post:
       operationId: renewAuthorizationLease
       security:
-        - nodeCredential: []
+        - linkControlCredential: []
       parameters:
         - name: sessionId
           in: path
@@ -225,10 +228,9 @@ paths:
           application/json:
             schema:
               type: object
-              required: [tunnelId, nodeKeyFingerprint]
+              required: [tunnelId]
               properties:
                 tunnelId: { type: string, format: uuid }
-                nodeKeyFingerprint: { $ref: '#/components/schemas/Fingerprint' }
       responses:
         '200':
           description: Renewed bounded authorization lease
@@ -236,6 +238,52 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AuthorizationLease' }
         '403': { $ref: '#/components/responses/Denied' }
+  /api/v2/link/sessions/{sessionId}/relay-activation:
+    post:
+      operationId: activateRelay
+      security:
+        - linkControlCredential: []
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Relay quota reserved atomically at the point Relay is enabled
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RelayReservation' }
+        '429': { $ref: '#/components/responses/QuotaExceeded' }
+  /api/v2/link/sessions/{sessionId}/close:
+    post:
+      operationId: closeSession
+      security:
+        - linkControlCredential: []
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: Session closed and unused Relay reservation released }
+  /api/v2/link/agent-revocations:
+    get:
+      operationId: listAgentRevocationEvents
+      security:
+        - agentCredential: []
+      parameters:
+        - name: after
+          in: query
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: Ordered revocation events for the authenticated Agent
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/RevocationEvent' }
 components:
   securitySchemes:
     accountBearer:
@@ -250,6 +298,10 @@ components:
       type: apiKey
       in: header
       name: X-Agent-Token
+    linkControlCredential:
+      type: apiKey
+      in: header
+      name: X-Link-Control-Credential
   parameters:
     DeviceId:
       name: deviceId
@@ -267,6 +319,7 @@ components:
     Consumed: { description: One-time value was already consumed }
     IdentityConflict: { description: Key fingerprint is already bound to another node }
     Denied: { description: Stable authorization or policy denial; must not trigger path fallback }
+    QuotaExceeded: { description: Account Relay concurrency or monthly byte quota exceeded }
   schemas:
     Fingerprint:
       type: string
@@ -416,29 +469,54 @@ components:
         port: { type: integer, minimum: 1, maximum: 65535 }
     AccessRequest:
       type: object
-      required: [deviceId, clientKeyFingerprint, agentId, target, connectPolicy, protocolVersion]
+      required: [agentId, targetIp, targetPort, connectPolicy]
       properties:
-        deviceId: { type: string, format: uuid }
-        clientKeyFingerprint: { $ref: '#/components/schemas/Fingerprint' }
+        sessionId: { type: string, format: uuid, description: Reuse an existing account/device/Agent carrier session when present. }
         agentId: { type: string, format: uuid }
-        target: { $ref: '#/components/schemas/TargetEndpoint' }
+        targetIp: { type: string, description: Canonical numeric IPv4 or IPv6; DNS names are rejected. }
+        targetPort: { type: integer, minimum: 1, maximum: 65535 }
         connectPolicy: { enum: [AUTO, DIRECT_ONLY, RELAY_ONLY] }
-        protocolVersion: { const: link-v2 }
     AccessResponse:
       type: object
-      required: [sessionId, tunnelId, agentKeyFingerprint, accessTicket, ticketExpiresAt]
+      required: [sessionId, tunnelId, agentId, agentKeyFingerprint, targetIp, targetPort, connectPolicy, state, accessTicket, ticketExpiresAt, authorizationLeaseExpiresAt, policyVersion, relayPrepared]
       properties:
         sessionId: { type: string, format: uuid }
         tunnelId: { type: string, format: uuid }
+        agentId: { type: string, format: uuid }
         agentKeyFingerprint: { $ref: '#/components/schemas/Fingerprint' }
+        targetIp: { type: string }
+        targetPort: { type: integer, minimum: 1, maximum: 65535 }
+        connectPolicy: { enum: [AUTO, DIRECT_ONLY, RELAY_ONLY] }
+        state: { enum: [AUTHORIZED, RELAY_PREPARED, RELAY_ACTIVE, CLOSED, REVOKED, EXPIRED] }
         accessTicket: { type: string, writeOnly: true }
         ticketExpiresAt: { type: string, format: date-time }
+        authorizationLeaseExpiresAt: { type: string, format: date-time }
+        policyVersion: { type: integer, minimum: 1 }
         relayPrepared: { type: boolean }
     AuthorizationLease:
       type: object
-      required: [sessionId, tunnelId, policyVersion, validUntil]
+      required: [sessionId, tunnelId, policyVersion, authorizationLeaseExpiresAt]
       properties:
         sessionId: { type: string, format: uuid }
         tunnelId: { type: string, format: uuid }
         policyVersion: { type: integer, minimum: 1 }
-        validUntil: { type: string, format: date-time }
+        authorizationLeaseExpiresAt: { type: string, format: date-time }
+    RelayReservation:
+      type: object
+      required: [reservationId, sessionId, state, byteLimit, usedBytes, expiresAt]
+      properties:
+        reservationId: { type: string, format: uuid }
+        sessionId: { type: string, format: uuid }
+        state: { enum: [PREPARED, ACTIVE, CLOSED, EXPIRED] }
+        byteLimit: { type: integer, minimum: 0 }
+        usedBytes: { type: integer, minimum: 0 }
+        expiresAt: { type: string, format: date-time }
+    RevocationEvent:
+      type: object
+      required: [sequence, agentId, policyVersion, reason, createdAt]
+      properties:
+        sequence: { type: integer, minimum: 1 }
+        agentId: { type: string, format: uuid }
+        policyVersion: { type: integer, minimum: 1 }
+        reason: { type: string }
+        createdAt: { type: string, format: date-time }
