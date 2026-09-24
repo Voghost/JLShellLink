@@ -25,6 +25,8 @@ jobs:
           cache: maven
           cache-dependency-path: pom.xml
       - name: Verify Java Link POC
+        env:
+          JLSHELL_LINK_ICE_TEST_ENABLED: ${{ matrix.runner != 'windows-2025' }}
         run: mvn -B -ntp verify
 
   quality:

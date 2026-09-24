@@ -77,8 +77,8 @@ import org.junit.jupiter.api.Test;
 class IceKcpTls13IntegrationTest {
     @Test
     void gathersCandidatesAndNominatesAReachableLanPair() throws Exception {
-        assumeTrue(!System.getProperty("os.name").toLowerCase().contains("win"),
-                "Hosted Windows runner exposes no usable non-loopback IPv4 interface to ice4j");
+        assumeTrue(Boolean.parseBoolean(System.getenv().getOrDefault("JLSHELL_LINK_ICE_TEST_ENABLED", "true")),
+                "ICE integration disabled because this runner does not expose a usable host candidate");
         String activeIpv4Interface = Collections.list(NetworkInterface.getNetworkInterfaces()).stream()
                 .filter(networkInterface -> {
                     try {
