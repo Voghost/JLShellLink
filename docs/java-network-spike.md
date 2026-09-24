@@ -3,14 +3,14 @@
 - 日期：2026-09-24
 - 分支：`feature/java-link-poc`
 - Java 基线：Java 21；本机当前默认运行时为 OpenJDK 26.0.1，Maven 3.9.16
-- 状态：POC-01 本机 socket 适配通过；POC-02/03 未开始；不得据此宣称已具备 P2P 或生产中继
+- 状态：POC-01 本机 socket 原型通过；POC-02 已验证同机 LAN ICE nomination 和 KCP over ICE；跨 NAT、TLS/HTTP2 未验证；POC-03 未开始；不得据此宣称已具备 P2P 或生产中继
 
 ## 依赖候选
 
 | 组件 | 固定候选 | 许可证 | 当前决策 |
 |---|---|---|---|
 | Netty | `4.2.18.Final` | Apache-2.0 | 原型 BOM 固定。Netty 官方将此列为当前稳定推荐版；产品依赖目前只列出 transport/buffer，不直接配置 native transport。KCP 候选的传递依赖树会解析到更多 Netty/native 模块，进入生产依赖前必须缩减并复测。 |
-| ice4j | `org.jitsi:ice4j:3.2-17-geea6cd3` | Apache-2.0 | 固定待评估版本，暂不加入运行依赖。其 Maven Central POM 带有额外 Jitsi/Kotlin 依赖；需在 POC-02 核对实际 ICE socket API 和依赖图。 |
+| ice4j | `org.jitsi:ice4j:3.2-17-geea6cd3` | Apache-2.0 | 固定待评估版本，只在测试 profile。`Component.getSocket()` 提供应用数据 socket；`CandidatePair` 的 UDP socket API 已弃用，且返回 `DatagramSocket` 包装器。同机 LAN 候选检查和 nomination 已通过；跨 NAT 仍需实测。额外 Jitsi/Kotlin 依赖仍需评估。 |
 | Java KCP | `com.github.l42111996:kcp-base:1.6`（Central 可见版本）；上游 README 另列 `1.6.2` | Apache-2.0 | 只放在默认启用的 Maven 测试候选 profile，不加入产品运行依赖。高层 `KcpClient` 会创建自己的 `NioDatagramChannel`；底层 `Kcp` 支持自定义输出，可由应用接到 ICE 已选 socket。候选 POM 引入 `netty-all`，当前 BOM 会解析到大量 Netty 模块及平台 native 包，依赖缩减、长时可靠性和维护风险仍未通过。 |
 | JDK API | Java 21 NIO DatagramChannel | 当前 POC 直接持有单个 UDP socket，并验证 STUN/Link 数据报分流与本地端口保持；未实现 STUN 完整解析或 KCP。 |
 
@@ -35,11 +35,26 @@
 - 候选依赖树：ice4j 引入 JNA、Kotlin/Jitsi utilities 和 weupnp；KCP 1.6 的 kcp-fec POM 引入 `netty-all`。需要核对只使用 KCP core 所需的最小 Netty 模块并排除未用 native 包，再运行 KCP 回归。
 - 当前可关闭范围：POC-01 的最小 socket 分流、同 socket KCP 接线和本机资源回收子项已完成。仍需在 Java 21 运行时重跑，并审核候选依赖的完整许可证/平台兼容信息；POC-01 整体保持进行中。
 
-## POC-02/03 尚需的门槛
+## POC-02：ICE 与端到端直连进展
 
-- 完整 ICE 候选收集与跨 NAT connectivity checks；本机回环和 UDP echo 不算通过。
+- 增加 `Ice4jCandidateGatherTest`，调用固定候选版本的 Agent、Stream、Component API，在本机活动的非点对点 IPv4 网卡收集候选、交换 ICE 凭据并完成 nomination；再把底层 KCP 引擎连接到 ICE `Component.getSocket()`，通过选中的候选对往返二进制数据，并确认释放 KCP 与 ICE 后资源关闭。
+- 源码检查确认应用数据面应从 `Component.getSocket()` 读写；ICE/STUN 由其内部多路复用。现有 NIO channel dispatcher 不能直接代替该接口，所以新增 `IceComponentDatagramAdapter` 原型，使用由 ICE 组件拥有的 `DatagramSocket` 收发 Link 数据，适配器不关闭 ICE socket。
+- 本机同一局域网 ICE connectivity checks 已完成并选出 host candidate pair，随后 KCP 经 ICE 组件 socket 互通。这证明候选 API、凭据交换、nomination、ICE socket 复用和 LAN KCP 接线可工作；因为两端在同一主机和同一局域网，不构成跨 NAT 或 P2P 可用性证据。
+- ice4j 默认会探测 AWS 映射 harvester；该测试通过 `ice4j.harvest.mapping.aws.enabled=false` 关闭了无关探测，初始化从数秒降至亚秒。产品配置仍需明确决定是否启用云厂商专属 harvester。
+
+下一步仍需完成：
+
+- 通过公网两端执行跨 NAT 实验，记录映射地址、候选对、建连耗时及实际路径。
+- 为 KCP over ICE 补可靠、有序、丢包/乱序、背压、半关闭和取消测试，并比较选中 ICE 本地候选端口与组件 application socket 实际本地端口。
+- 连接 TLS 1.3 双向校验、HTTP/2 CONNECT 和目标 TCP 服务，并记录 B 不可见业务明文的证据。
+
+## 尚未完成的 POC-02/03 门槛
+
+- 跨 NAT 候选协商；同机/同 LAN 测试和 UDP echo 不算跨 NAT 通过。
 - 可靠有序双向通道、丢包/乱序、背压、取消、半关闭和资源回收。
 - A—C TLS 1.3 + HTTP/2 CONNECT 端到端目标访问，B 不可见明文。
 - 阻断 UDP 后经 WSS B 中继完成同一安全链路；认证或授权失败不能回退放行。
 - Linux x64、macOS ARM64、Windows x64 的依赖和关闭行为。
 - 每项记录库版本、许可证、传递依赖、抓取到的本地端口、实际路径、环境和脱敏证据。
+
+POC-03 中继尚未开始：仍需实现 B 的测试 WSS 配对管道、UDP 阻断回退、认证失败拒绝、半开配对清理、慢消费者与断线回收。
