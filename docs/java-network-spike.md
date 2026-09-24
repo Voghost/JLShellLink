@@ -3,7 +3,7 @@
 - 日期：2026-09-24
 - 分支：`feature/java-link-poc`
 - Java 基线：Java 21；本机当前默认运行时为 OpenJDK 26.0.1，Maven 3.9.16
-- 状态：POC-01 本机 socket 原型通过；POC-02 已验证同机 LAN ICE nomination、KCP 丢包/重排恢复、低速接收者背压与关闭取消、TLS/HTTP2 CONNECT 和半关闭；POC-03 已在本机 WSS 配对管道上验证内层 mTLS 1.3、HTTP/2 CONNECT 到本机 TCP echo 目标和半关闭，并覆盖有界慢消费者队列。修复 Java 21 下 JSSE 应用缓冲区不足后，Linux/macOS/Windows Java 21 CI 均通过；Windows hosted runner 缺少 ice4j 所需的可用非回环 IPv4 地址，因此该 runner 仅跳过 ICE 网络集成测试。跨 NAT 和真实 UDP 阻断后的自动回退仍未验证；不得据此宣称已具备 P2P 或生产中继。
+- 状态：POC-01 本机 socket 原型通过；POC-02 已验证同机 LAN ICE nomination、KCP 丢包/重排恢复、低速接收者背压与关闭取消、TLS/HTTP2 CONNECT 和半关闭；POC-03 已在本机 WSS 配对管道上验证内层 mTLS 1.3、HTTP/2 CONNECT 到本机 TCP echo 目标和半关闭，并覆盖有界慢消费者队列。Java 21 Linux/macOS/Windows CI 均通过，Windows hosted runner 因没有 ice4j 可用候选而通过 `JLSHELL_LINK_ICE_TEST_ENABLED=false` 跳过 ICE 集成测试；该测试在其他环境默认启用。跨 NAT 和真实 UDP 阻断后的自动回退仍未验证；不得据此宣称已具备 P2P 或生产中继。
 
 ## 依赖候选
 
