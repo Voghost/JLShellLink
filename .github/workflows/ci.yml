@@ -10,6 +10,19 @@ permissions:
   checks: write
 
 jobs:
+  java-poc:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: pom.xml
+      - name: Verify Java Link POC
+        run: mvn -B -ntp verify
+
   quality:
     runs-on: ubuntu-24.04
     steps:
