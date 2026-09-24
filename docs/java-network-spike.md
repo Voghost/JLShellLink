@@ -3,7 +3,7 @@
 - 日期：2026-09-24
 - 分支：`feature/java-link-poc`
 - Java 基线：Java 21；本机当前默认运行时为 OpenJDK 26.0.1，Maven 3.9.16
-- 状态：POC-01 本机 socket 原型通过；POC-02 已验证同机 LAN ICE nomination、KCP 丢包/重排恢复、低速接收者背压与关闭取消、TLS/HTTP2 CONNECT 和半关闭；POC-03 已在本机 WSS 配对管道上验证内层 mTLS 1.3、HTTP/2 CONNECT 到本机 TCP echo 目标和半关闭；跨 NAT、直连失败后自动回退、WSS 中继慢消费者未验证；不得据此宣称已具备 P2P 或生产中继
+- 状态：POC-01 本机 socket 原型通过；POC-02 已验证同机 LAN ICE nomination、KCP 丢包/重排恢复、低速接收者背压与关闭取消、TLS/HTTP2 CONNECT 和半关闭；POC-03 已在本机 WSS 配对管道上验证内层 mTLS 1.3、HTTP/2 CONNECT 到本机 TCP echo 目标和半关闭。修复 Java 21 下 JSSE 应用缓冲区不足后，Linux/macOS/Windows Java 21 CI 均通过；Windows hosted runner 缺少 ice4j 所需的可用非回环 IPv4 地址，因此该 runner 仅跳过 ICE 网络集成测试。跨 NAT、直连失败后自动回退、WSS 中继慢消费者未验证；不得据此宣称已具备 P2P 或生产中继。
 
 ## 依赖候选
 
@@ -29,25 +29,27 @@
 ### 本机验证记录
 
 - 命令：`mvn -B -ntp verify`
-- 结果：成功；`link-core`、`link-transport` 按 `--release 21` 编译，3 个 POC 测试通过。
-- 实际 JVM：OpenJDK 26.0.1；该命令限制了 Java 21 API 编译级别，但并非在 JDK 21 运行。后续 CI/复核需用 JDK 21 重跑。
-- 机器：macOS ARM64；Linux x64 和 Windows x64 尚未运行。
+- 结果：成功；当前 10 个 POC 测试通过，ICE/KCP/TLS/HTTP2 完整集成测试通过。
+- 实际 JVM：OpenJDK 26.0.1；该命令限制了 Java 21 API 编译级别，但并非在 JDK 21 运行。GitHub Actions 上 Linux/macOS/Windows Java 21 job 均通过。
+- 机器：macOS ARM64；Linux x64 和 Windows x64 由 Java 21 CI 覆盖。Windows runner 没有 ice4j 所需的可用非回环 IPv4 地址，ICE 网络集成测试在该环境跳过，其他 Java POC 测试仍执行。
 - 候选依赖树：ice4j 引入 JNA、Kotlin/Jitsi utilities 和 weupnp；KCP 1.6 的 kcp-fec POM 引入 `netty-all`。需要核对只使用 KCP core 所需的最小 Netty 模块并排除未用 native 包，再运行 KCP 回归。
-- 当前可关闭范围：POC-01 的最小 socket 分流、同 socket KCP 接线和本机资源回收子项已完成。仍需在 Java 21 运行时重跑，并审核候选依赖的完整许可证/平台兼容信息；POC-01 整体保持进行中。
+- 当前可关闭范围：POC-01 的最小 socket 分流、同 socket KCP 接线和本机资源回收子项已完成。仍需审核候选依赖的完整许可证/平台兼容信息；POC-01 整体保持进行中。
 
 ## POC-02：ICE 与端到端直连进展
 
 - 增加 `IceKcpTls13IntegrationTest`，调用固定候选版本的 Agent、Stream、Component API，在本机活动的非点对点 IPv4 网卡收集候选、交换 ICE 凭据并完成 nomination；再把底层 KCP 引擎连接到 ICE `Component.getSocket()`，通过选中的候选对往返二进制数据，并确认释放 KCP 与 ICE 后资源关闭。
 - 源码检查确认应用数据面应从 `Component.getSocket()` 读写；ICE/STUN 由其内部多路复用。现有 NIO channel dispatcher 不能直接代替该接口，所以新增 `IceComponentDatagramAdapter` 原型，使用由 ICE 组件拥有的 `DatagramSocket` 收发 Link 数据，适配器不关闭 ICE socket。
-- 本机同一局域网 ICE connectivity checks 已完成并选出 host candidate pair，随后 KCP 经 ICE 组件 socket 双向传输二进制流。测试确定性丢弃两个初始 KCP 数据报并重排后续一对数据报，仍重传恢复 4 KiB 数据；同时断言 ICE host candidate 与组件 application socket 的本地地址一致，并覆盖 Agent/KCP 资源回收。这证明候选 API、凭据交换、nomination、ICE socket 复用和 LAN KCP 接线可工作；因为两端在同一主机和同一局域网，不构成跨 NAT 或 P2P 可用性证据。低速接收者背压和取消仍待验证。
+- 本机同一局域网 ICE connectivity checks 已完成并选出 host candidate pair，随后 KCP 经 ICE 组件 socket 双向传输二进制流。测试确定性丢弃两个初始 KCP 数据报并重排后续一对数据报，仍重传恢复 4 KiB 数据；同时断言 ICE host candidate 与组件 application socket 的本地地址一致，并覆盖 Agent/KCP 资源回收。这证明候选 API、凭据交换、nomination、ICE socket 复用和 LAN KCP 接线可工作；因为两端在同一主机和同一局域网，不构成跨 NAT 或 P2P 可用性证据。低速接收者背压以四块上限队列消费 256 KiB 流并确认完整恢复；关闭测试确认传输关闭可取消阻塞读取，适配器不关闭 ICE 所有的 socket。
 - 通过临时 JDK `keytool` 证书在 KCP 字节流上完成 JSSE TLS 1.3 双向身份校验及加密应用数据传输；使用未受信的客户端证书时，服务端拒绝握手。测试证书、私钥和信任库只存在系统临时目录，测试退出时删除。
 - 完成同机整链路：ICE → KCP → TLS 1.3 mTLS → Netty HTTP/2 CONNECT → 本机 TCP echo 目标。HTTP/2 CONNECT 的 1 KiB 二进制 DATA 通过 TCP 目标完整往返；客户端 HTTP/2 END_STREAM 映射为目标 TCP 输出半关闭，回程 EOF 映射为响应 END_STREAM。HTTP/2 目前只在测试 profile 引入 `netty-codec-http2`；此集成证明本机编解码和接线，不是多网段性能或公网部署证据。
 - ice4j 默认会探测 AWS 映射 harvester；该测试通过 `ice4j.harvest.mapping.aws.enabled=false` 关闭了无关探测，初始化从数秒降至亚秒。产品配置仍需明确决定是否启用云厂商专属 harvester。
 
+Java 21 CI 发现 JSSE 应用缓冲区低于 `SSLSession.getApplicationBufferSize()` 时 `unwrap` 返回 `BUFFER_OVERFLOW`。现已让 TLS 握手和应用数据共用持久的 `TlsEndpoint`，并按 session 容量分配应用缓冲区；macOS ARM64 本机 `mvn verify` 与整链路测试通过，Linux/macOS/Windows Java 21 CI 均通过（Windows ICE 网络集成因 runner 网卡条件跳过）。
+
 下一步仍需完成：
 
 - 通过公网两端执行跨 NAT 实验，记录映射地址、候选对、建连耗时及实际路径。
-- 将完整链路测试移至 Java 21 运行时重跑。
+- 等待 Java 21 Linux/macOS 完整 ICE 链路和 Windows 可运行测试的 CI 结果；Windows hosted runner 当前无法提供 ICE 所需网卡条件。
 - 连接 TLS 1.3 双向校验、HTTP/2 CONNECT 和目标 TCP 服务，并记录 B 不可见业务明文的证据。
 
 ## 尚未完成的 POC-02/03 门槛
