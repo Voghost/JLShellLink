@@ -29,11 +29,16 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.ConnectException;
+import java.net.NoRouteToHostException;
+import java.net.PortUnreachableException;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketAddress;
 import java.net.SocketException;
+import java.net.SocketTimeoutException;
 import java.net.URI;
+import java.net.UnknownHostException;
 import java.net.http.HttpClient;
 import java.net.http.WebSocket;
 import java.nio.ByteBuffer;
@@ -54,18 +59,101 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLServerSocket;
 import javax.net.ssl.SSLServerSocketFactory;
 import javax.net.ssl.SSLSocket;
+import javax.net.ssl.SSLHandshakeException;
 import javax.net.ssl.TrustManagerFactory;
 import org.junit.jupiter.api.Test;
 
 /** Local WSS pairing proof only; production relay authentication remains a Website contract. */
 class WssRelayPairingTest {
     private static final String RELAY_CREDENTIAL = "poc-relay-credential";
+
+    @Test
+    void fallsBackOnceAfterDirectTimeoutButNeverAfterAuthorizationFailure() throws Exception {
+        AtomicInteger directAttempts = new AtomicInteger();
+        AtomicInteger relayAttempts = new AtomicInteger();
+        CompletableFuture<String> direct = new CompletableFuture<>();
+        String selected = connectWithRelayFallback(
+                        () -> {
+                            directAttempts.incrementAndGet();
+                            return direct;
+                        },
+                        () -> {
+                            relayAttempts.incrementAndGet();
+                            return CompletableFuture.completedFuture("relay");
+                        },
+                        Duration.ofMillis(50))
+                .get(2, TimeUnit.SECONDS);
+        assertEquals("relay", selected);
+        assertEquals(1, directAttempts.get());
+        assertEquals(1, relayAttempts.get());
+
+        AtomicInteger deniedRelayAttempts = new AtomicInteger();
+        CompletableFuture<String> denied = connectWithRelayFallback(
+                () -> CompletableFuture.failedFuture(new SecurityException("access denied")),
+                () -> {
+                    deniedRelayAttempts.incrementAndGet();
+                    return CompletableFuture.completedFuture("relay");
+                },
+                Duration.ofMillis(50));
+        assertThrows(ExecutionException.class, () -> denied.get(1, TimeUnit.SECONDS));
+        assertEquals(0, deniedRelayAttempts.get(), "authorization failure must not trigger relay fallback");
+
+        CompletableFuture<String> invalidCertificate = connectWithRelayFallback(
+                () -> CompletableFuture.failedFuture(new SSLHandshakeException("invalid peer identity")),
+                () -> {
+                    deniedRelayAttempts.incrementAndGet();
+                    return CompletableFuture.completedFuture("relay");
+                },
+                Duration.ofMillis(50));
+        assertThrows(ExecutionException.class, () -> invalidCertificate.get(1, TimeUnit.SECONDS));
+        assertEquals(0, deniedRelayAttempts.get(), "TLS identity failure must not trigger relay fallback");
+    }
+
+    private static <T> CompletableFuture<T> connectWithRelayFallback(
+            Supplier<CompletableFuture<T>> directAttempt,
+            Supplier<CompletableFuture<T>> relayAttempt,
+            Duration directBudget) {
+        CompletableFuture<T> direct;
+        try {
+            direct = directAttempt.get();
+        } catch (RuntimeException error) {
+            direct = CompletableFuture.failedFuture(error);
+        }
+        return direct.orTimeout(directBudget.toMillis(), TimeUnit.MILLISECONDS)
+                .handle((value, failure) -> {
+                    if (failure == null) {
+                        return CompletableFuture.completedFuture(value);
+                    }
+                    Throwable cause = failure;
+                    while (cause instanceof java.util.concurrent.CompletionException
+                            || cause instanceof ExecutionException) {
+                        cause = cause.getCause();
+                    }
+                    if (cause instanceof TimeoutException
+                            || cause instanceof ConnectException
+                            || cause instanceof NoRouteToHostException
+                            || cause instanceof PortUnreachableException
+                            || cause instanceof SocketTimeoutException
+                            || cause instanceof UnknownHostException) {
+                        try {
+                            return relayAttempt.get();
+                        } catch (RuntimeException error) {
+                            return CompletableFuture.<T>failedFuture(error);
+                        }
+                    }
+                    return CompletableFuture.<T>failedFuture(cause);
+                })
+                .thenCompose(stage -> stage);
+    }
 
     @Test
     void pairsOutboundClientsRelaysBinaryFramesAndCleansHalfOpenSessions() throws Exception {

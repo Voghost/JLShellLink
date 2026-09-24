@@ -29,7 +29,7 @@
 ### 本机验证记录
 
 - 命令：`mvn -B -ntp verify`
-- 结果：成功；当前 10 个 POC 测试通过，ICE/KCP/TLS/HTTP2 完整集成测试通过。
+- 结果：成功；当前 11 个 POC 测试通过，包含路径选择器单测和 ICE/KCP/TLS/HTTP2 完整集成测试。
 - 实际 JVM：OpenJDK 26.0.1；该命令限制了 Java 21 API 编译级别，但并非在 JDK 21 运行。GitHub Actions 上 Linux/macOS/Windows Java 21 job 均通过。
 - 机器：macOS ARM64；Linux x64 和 Windows x64 由 Java 21 CI 覆盖。Windows runner 没有 ice4j 所需的可用非回环 IPv4 地址，ICE 网络集成测试在该环境跳过，其他 Java POC 测试仍执行。
 - 候选依赖树：ice4j 引入 JNA、Kotlin/Jitsi utilities 和 weupnp；KCP 1.6 的 kcp-fec POM 引入 `netty-all`。需要核对只使用 KCP core 所需的最小 Netty 模块并排除未用 native 包，再运行 KCP 回归。
@@ -44,7 +44,7 @@
 - 完成同机整链路：ICE → KCP → TLS 1.3 mTLS → Netty HTTP/2 CONNECT → 本机 TCP echo 目标。HTTP/2 CONNECT 的 1 KiB 二进制 DATA 通过 TCP 目标完整往返；客户端 HTTP/2 END_STREAM 映射为目标 TCP 输出半关闭，回程 EOF 映射为响应 END_STREAM。HTTP/2 目前只在测试 profile 引入 `netty-codec-http2`；此集成证明本机编解码和接线，不是多网段性能或公网部署证据。
 - ice4j 默认会探测 AWS 映射 harvester；该测试通过 `ice4j.harvest.mapping.aws.enabled=false` 关闭了无关探测，初始化从数秒降至亚秒。产品配置仍需明确决定是否启用云厂商专属 harvester。
 
-Java 21 CI 发现 JSSE 应用缓冲区低于 `SSLSession.getApplicationBufferSize()` 时 `unwrap` 返回 `BUFFER_OVERFLOW`。现已让 TLS 握手和应用数据共用持久的 `TlsEndpoint`，并按 session 容量分配应用缓冲区；macOS ARM64 本机 `mvn verify` 与整链路测试通过，Linux/macOS/Windows Java 21 CI 均通过（Windows ICE 网络集成因 runner 网卡条件跳过）。
+Java 21 CI 发现 JSSE 应用缓冲区低于 `SSLSession.getApplicationBufferSize()` 时 `unwrap` 返回 `BUFFER_OVERFLOW`。现已让 TLS 握手和应用数据共用持久的 `TlsEndpoint`，并按 session 容量分配应用缓冲区；macOS ARM64 本机 `mvn verify` 与整链路测试通过，先前版本的 Linux/macOS/Windows Java 21 CI 均通过（Windows ICE 网络集成因 runner 网卡条件跳过）。最新新增路径选择器单测在本机通过，尚待 Java 21 CI 重跑。
 
 下一步仍需完成：
 
