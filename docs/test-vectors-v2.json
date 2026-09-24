@@ -1,0 +1,36 @@
+{
+  "description": "Public, non-production Link v2 verification vectors derived from RFC 8032 test vector 1. No private key is included.",
+  "protocolVersion": "link-v2",
+  "ed25519": {
+    "kid": "vector-ed25519-1",
+    "publicKeyX509Base64": "MCowBQYDK2VwAyEA11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=",
+    "publicKeyFingerprintSha256": "06e3fd8fda29bb60ab59557de61edb0aecdb231134be30e75b455f8e1b792fa9"
+  },
+  "accessGrant": {
+    "issuer": "https://link.example.test",
+    "audience": "jlshell-link-agent",
+    "accountId": "11111111-1111-1111-1111-111111111111",
+    "clientKeyFingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+    "agentId": "22222222-2222-2222-2222-222222222222",
+    "agentKeyFingerprint": "2222222222222222222222222222222222222222222222222222222222222222",
+    "targetIp": "192.168.31.20",
+    "targetPort": 22,
+    "capabilities": ["tcp-connect"],
+    "policyVersion": 7,
+    "jti": "vector-ticket-1",
+    "iat": "2026-09-24T08:00:00Z",
+    "nbf": "2026-09-24T07:59:59Z",
+    "exp": "2026-09-24T08:01:00Z",
+    "compactJws": "eyJraWQiOiJ2ZWN0b3ItZWQyNTUxOS0xIiwidHlwIjoiSldUIiwiYWxnIjoiRWQyNTUxOSJ9.eyJwb2xpY3lWZXJzaW9uIjo3LCJhZ2VudElkIjoiMjIyMjIyMjItMjIyMi0yMjIyLTIyMjItMjIyMjIyMjIyMjIyIiwiYWdlbnRLZXlGaW5nZXJwcmludCI6IjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIiLCJjYXBhYmlsaXRpZXMiOlsidGNwLWNvbm5lY3QiXSwiY2xpZW50S2V5RmluZ2VycHJpbnQiOiIxMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTExIiwiaXNzIjoiaHR0cHM6Ly9saW5rLmV4YW1wbGUudGVzdCIsInRhcmdldFBvcnQiOjIyLCJ0YXJnZXRJcCI6IjE5Mi4xNjguMzEuMjAiLCJhdWQiOiJqbHNoZWxsLWxpbmstYWdlbnQiLCJhY2NvdW50SWQiOiIxMTExMTExMS0xMTExLTExMTEtMTExMS0xMTExMTExMTExMTEiLCJuYmYiOjE3OTAyMzY3OTksInByb3RvY29sVmVyc2lvbiI6ImxpbmstdjIiLCJleHAiOjE3OTAyMzY4NjAsImlhdCI6MTc5MDIzNjgwMCwianRpIjoidmVjdG9yLXRpY2tldC0xIn0.mgSOcjr3EYygSbl5yqFYuygMIeOyV4tNEANgvd2hHb8VwloCNe1m9fLz_6rJ9KVEy55FG1ZOCSNAJY4tUj_KBg"
+  },
+  "acl": {
+    "allow": {"effect": "ALLOW", "cidr": "192.168.31.0/24", "ports": [22, 443]},
+    "deny": {"effect": "DENY", "cidr": "192.168.31.9/32", "ports": []},
+    "expected": {
+      "192.168.31.8:22": true,
+      "192.168.31.8:80": false,
+      "192.168.31.9:22": false,
+      "127.0.0.1:22": false
+    }
+  }
+}
