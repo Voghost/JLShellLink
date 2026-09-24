@@ -3,7 +3,7 @@
 - 日期：2026-09-24
 - 分支：`feature/java-link-poc`
 - Java 基线：Java 21；本机当前默认运行时为 OpenJDK 26.0.1，Maven 3.9.16
-- 状态：POC-01 本机 socket 原型通过；POC-02 已验证同机 LAN ICE nomination、KCP 丢包/重排恢复、低速接收者背压与关闭取消、TLS/HTTP2 CONNECT 和半关闭；POC-03 已在本机 WSS 配对管道上验证内层 mTLS 1.3、HTTP/2 CONNECT 到本机 TCP echo 目标和半关闭，并覆盖有界慢消费者队列。当前 11 项 Java 测试及 Linux/macOS/Windows Java 21 CI 均通过，Windows hosted runner 因没有 ice4j 可用候选而通过 `JLSHELL_LINK_ICE_TEST_ENABLED=false` 跳过 ICE 集成测试；该测试在其他环境默认启用。跨 NAT 和真实 UDP 阻断后的自动回退仍未验证；不得据此宣称已具备 P2P 或生产中继。
+- 状态：POC-01 本机 socket 原型通过；POC-02 已验证同机 LAN ICE nomination、KCP 丢包/重排恢复、低速接收者背压与关闭取消、TLS/HTTP2 CONNECT 和半关闭；POC-03 已在本机 WSS 配对管道上验证内层 mTLS 1.3、HTTP/2 CONNECT 到本机 TCP echo 目标和半关闭，并覆盖有界慢消费者队列。当前 11 项 Java 测试及 Linux/macOS/Windows Java 21 CI 均通过，Windows hosted runner 因没有 ice4j 可用候选而通过 `JLSHELL_LINK_ICE_TEST_ENABLED=false` 跳过 ICE 集成测试；该测试在其他环境默认启用。真实 A/C 间已验证 B 辅助交换候选后的 UDP 双向打洞及 B 上 Java TCP 透明转发，但跨 NAT 的 ICE/KCP/TLS/HTTP2 整链路和真实 UDP 阻断后的 WSS 自动回退仍未验证；不得据此宣称已具备产品 P2P 或生产中继。
 
 ## 真实 A/B/C 主机联调（2026-09-24）
 
@@ -11,12 +11,14 @@
 
 | 检查 | 结果 | 证据边界 |
 | --- | --- | --- |
-| 运行时 | A 为 OpenJDK 26.0.1；C 为 OpenJDK 27；B 没有 `java` 命令，但有 Python 3.12 与 Docker | A/C 探针以 `javac --release 21` 编译；真实主机尚未使用 JDK 21 执行，也没有部署 Java B 服务。 |
+| 运行时 | A 为 OpenJDK 26.0.1；C 为 OpenJDK 27；B 宿主机没有 `java` 命令，但已缓存 `bitnamilegacy/java:21` 镜像，其 Java 21.0.7 在只读、无网络的一次性容器中运行成功 | A/C 探针以 `javac --release 21` 编译；A/C 真实主机尚未以 JDK 21 执行，B 未安装系统 Java。 |
 | B 的 UDP 协调 | 临时 Python 探针分别监听 UDP 34673 和 13575；A/C 均发出 `HELLO`，B 没收到。对 13575 的 B `eth0` 定向抓包为 0 包 | 13575 在 B 本机 UFW 的已允许范围内且无端口冲突。报文没有到达 B 的网卡，可能是云侧入口策略或前段网络路径；**不能据此判定 A—C P2P 失败或成功**。未改安全组/UFW。 |
 | B 的 TCP 入口 | B 临时监听 TCP 13575；A、C 都收到固定探针应答 | 证明两端可主动出站到 B 的空闲 TCP 端口；不是 WSS/Website 服务验收。 |
 | A—B—C 加密转发 | B 在空闲 TCP 13576 上运行一次性 Python 原始字节转发器，A/C 运行 Java 21 字节码探针，内层双向证书 TLS 1.3 握手成功，4096 字节二进制负载往返完全一致。B 记录 A→C 5178 字节、C→A 5751 字节，转发缓冲中未发现测试明文标记 | 证实真实不同出口网络上的透明 TCP 中继可承载 Java mTLS 数据。B 仍是 Python 测试夹具；本次未运行生产 Java Relay、WSS、HTTP/2 CONNECT、票据授权、ICE/KCP 或真实 UDP 失败后的自动回退，不能标记 P0 完成。 |
+| 三端 Java 加密转发 | B 使用现有 Java 21 镜像中的一次性只读容器，在空闲 TCP 13577 上运行仓库 `tools/network-poc/JavaTcpRelay.java`；A/C 运行 `JavaTlsPeer.java`。双向证书 TLS 1.3 协商成功，4096 字节二进制往返一致；B 记录 A→C 5179 字节、C→A 5753 字节，所见缓冲中未检出测试明文标记。容器自动退出 | 证明三端 Java 基本部署和端到端加密在该真实 TCP 路径上可行。该探针是原始 TCP 转发，仍缺 WSS、HTTP/2 CONNECT、票据鉴权、生产流控、ICE/KCP 和真实自动回退；不能标记 P0 完成。 |
+| 跨 NAT UDP 候选探测 | A/C 分别通过 [Cloudflare 公共 STUN](https://developers.cloudflare.com/realtime/turn/) 的 UDP 3478 获取各自映射地址，使用同一个本地 UDP socket 保持映射。B 在 TCP 13578 上运行一次性 Java 21 容器，只转发候选地址；随后 A/C 都收到对方的 `PUNCH`/`ACK` 并输出 `DIRECT_BIDIRECTIONAL`。B 只转发了 A→C 26 字节、C→A 27 字节的候选行 | 这是两端真实不同出口网络上的 UDP 打洞可行性证据，业务 UDP 没经过 B。诊断使用外部 STUN 和自定义探针，尚未用 ice4j 建立 ICE candidate pair，也没有 KCP、TLS、HTTP/2 CONNECT 或产品信令鉴权；**不等于 POC-02 整链路通过**。B 自身的测试 UDP 入口仍不可达。 |
 
-下一步要在不占用现有业务端口的前提下，为测试 B 明确一个可从 A/C 到达的 UDP 入口（需核对云侧安全组或公网映射），再部署可独立运行的 Java 信令/中继 POC，完成实际 ICE 候选交换、KCP、mTLS、HTTP/2 CONNECT 的跨 NAT 直连；随后对该测试入口做受控 UDP 阻断并验证 WSS 自动降级。当前只保持现有 Rust 运行时代码，不据此开始退役。
+下一步要把已证明可行的跨 NAT UDP 候选路径接入 ice4j 的真实 ICE checks、KCP、mTLS、HTTP/2 CONNECT，并把 B 的候选交换替换为带鉴权的控制平面协议；为自托管 B 的 STUN/ICE 服务还需在不占用现有业务端口的前提下明确可从 A/C 到达的 UDP 入口（核对云侧安全组或公网映射）。随后受控阻断直连 UDP 并验证 WSS 自动降级。当前只保持现有 Rust 运行时代码，不据此开始退役。
 
 ## 依赖候选
 
