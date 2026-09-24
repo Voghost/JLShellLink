@@ -15,12 +15,13 @@ import java.net.NetworkInterface;
 import java.net.SocketAddress;
 import java.net.SocketException;
 import java.net.SocketTimeoutException;
-import java.util.Collections;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import kcp.IKcp;
@@ -101,14 +102,25 @@ class Ice4jCandidateGatherTest {
 
             try (IceKcpPeer peerA = new IceKcpPeer(
                             componentA.getSocket(),
-                            componentA.getSelectedPair().getRemoteCandidate().getTransportAddress());
+                            componentA.getSelectedPair().getRemoteCandidate().getTransportAddress(), true);
                     IceKcpPeer peerC = new IceKcpPeer(
                             componentC.getSocket(),
-                            componentC.getSelectedPair().getRemoteCandidate().getTransportAddress())) {
-                byte[] payload = new byte[] {0x4a, 0x4c, 0, (byte) 0xff};
+                            componentC.getSelectedPair().getRemoteCandidate().getTransportAddress(), false)) {
+                byte[] payload = new byte[4_096];
+                for (int i = 0; i < payload.length; i++) {
+                    payload[i] = (byte) (i * 31 + (i >>> 3));
+                }
                 peerA.send(payload);
-                assertArrayEquals(payload, peerC.received.poll(5, TimeUnit.SECONDS),
-                        "KCP did not deliver data over the ICE component sockets");
+                assertArrayEquals(payload, peerC.receiveExactly(payload.length),
+                        "KCP did not recover dropped data over the ICE component sockets");
+                assertTrue(peerA.droppedPackets.get() == 1, "KCP loss injection did not run");
+                byte[] response = new byte[777];
+                for (int i = 0; i < response.length; i++) {
+                    response[i] = (byte) (255 - i * 13);
+                }
+                peerC.send(response);
+                assertArrayEquals(response, peerA.receiveExactly(response.length),
+                        "KCP reverse stream did not preserve binary data");
             }
         } finally {
             agentA.free();
@@ -123,13 +135,19 @@ class Ice4jCandidateGatherTest {
         private final IceComponentDatagramAdapter adapter;
         private final Kcp engine;
         private final ArrayBlockingQueue<byte[]> received = new ArrayBlockingQueue<>(4);
+        private final boolean dropFirstPacket;
+        private final AtomicInteger droppedPackets = new AtomicInteger();
         private final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor(
                 Thread.ofPlatform().name("ice-kcp-poc-timer-", 0).factory());
         private final AtomicBoolean closed = new AtomicBoolean();
         private final Thread receiver;
 
-        private IceKcpPeer(DatagramSocket iceSocket, SocketAddress remote) throws SocketException {
+        private IceKcpPeer(
+                DatagramSocket iceSocket,
+                SocketAddress remote,
+                boolean dropFirstPacket) throws SocketException {
             this.iceSocket = iceSocket;
+            this.dropFirstPacket = dropFirstPacket;
             this.iceSocket.setSoTimeout(100);
             this.adapter = new IceComponentDatagramAdapter(iceSocket, remote, this::receiveSegment);
             this.engine = new Kcp(0x4A4C5348, this::sendSegment);
@@ -154,10 +172,29 @@ class Ice4jCandidateGatherTest {
             }
         }
 
+        private byte[] receiveExactly(int length) throws InterruptedException {
+            byte[] result = new byte[length];
+            int offset = 0;
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (offset < length && System.nanoTime() < deadline) {
+                byte[] chunk = received.poll(100, TimeUnit.MILLISECONDS);
+                if (chunk == null) {
+                    continue;
+                }
+                int copyLength = Math.min(chunk.length, length - offset);
+                System.arraycopy(chunk, 0, result, offset, copyLength);
+                offset += copyLength;
+            }
+            return offset == length ? result : java.util.Arrays.copyOf(result, offset);
+        }
+
         private void sendSegment(ByteBuf segment, IKcp ignored) {
             try {
                 byte[] datagram = new byte[segment.readableBytes()];
                 segment.getBytes(segment.readerIndex(), datagram);
+                if (dropFirstPacket && droppedPackets.compareAndSet(0, 1)) {
+                    return;
+                }
                 adapter.send(datagram);
             } catch (IOException e) {
                 throw new IllegalStateException("Unable to send KCP datagram over ICE socket", e);
@@ -169,17 +206,20 @@ class Ice4jCandidateGatherTest {
         private void receiveSegment(byte[] datagram) {
             synchronized (engine) {
                 engine.input(Unpooled.wrappedBuffer(datagram), true, System.currentTimeMillis());
-                List<ByteBuf> completeMessages = new ArrayList<>();
-                engine.recv(completeMessages);
-                for (ByteBuf message : completeMessages) {
-                    try {
-                        byte[] payload = new byte[message.readableBytes()];
-                        message.readBytes(payload);
-                        received.offer(payload);
-                    } finally {
-                        message.release();
+                int readable;
+                do {
+                    List<ByteBuf> completeMessages = new ArrayList<>();
+                    readable = engine.recv(completeMessages);
+                    for (ByteBuf message : completeMessages) {
+                        try {
+                            byte[] payload = new byte[message.readableBytes()];
+                            message.readBytes(payload);
+                            received.offer(payload);
+                        } finally {
+                            message.release();
+                        }
                     }
-                }
+                } while (readable > 0);
                 if (engine.checkFlush()) {
                     engine.flush(false, System.currentTimeMillis());
                 }

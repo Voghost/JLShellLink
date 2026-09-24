@@ -39,7 +39,7 @@
 
 - 增加 `Ice4jCandidateGatherTest`，调用固定候选版本的 Agent、Stream、Component API，在本机活动的非点对点 IPv4 网卡收集候选、交换 ICE 凭据并完成 nomination；再把底层 KCP 引擎连接到 ICE `Component.getSocket()`，通过选中的候选对往返二进制数据，并确认释放 KCP 与 ICE 后资源关闭。
 - 源码检查确认应用数据面应从 `Component.getSocket()` 读写；ICE/STUN 由其内部多路复用。现有 NIO channel dispatcher 不能直接代替该接口，所以新增 `IceComponentDatagramAdapter` 原型，使用由 ICE 组件拥有的 `DatagramSocket` 收发 Link 数据，适配器不关闭 ICE socket。
-- 本机同一局域网 ICE connectivity checks 已完成并选出 host candidate pair，随后 KCP 经 ICE 组件 socket 互通。这证明候选 API、凭据交换、nomination、ICE socket 复用和 LAN KCP 接线可工作；因为两端在同一主机和同一局域网，不构成跨 NAT 或 P2P 可用性证据。
+- 本机同一局域网 ICE connectivity checks 已完成并选出 host candidate pair，随后 KCP 经 ICE 组件 socket 双向传输二进制流。测试丢弃一个 KCP 出站数据报后仍重传恢复 4 KiB 数据；并覆盖 Agent/KCP 资源回收。这证明候选 API、凭据交换、nomination、ICE socket 复用和 LAN KCP 接线可工作；因为两端在同一主机和同一局域网，不构成跨 NAT 或 P2P 可用性证据。乱序、持续丢包、背压和半关闭仍待验证。
 - ice4j 默认会探测 AWS 映射 harvester；该测试通过 `ice4j.harvest.mapping.aws.enabled=false` 关闭了无关探测，初始化从数秒降至亚秒。产品配置仍需明确决定是否启用云厂商专属 harvester。
 
 下一步仍需完成：
