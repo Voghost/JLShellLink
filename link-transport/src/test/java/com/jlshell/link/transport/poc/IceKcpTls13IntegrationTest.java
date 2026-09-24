@@ -46,6 +46,9 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -167,6 +170,18 @@ class IceKcpTls13IntegrationTest {
                 assertArrayEquals(response, peerA.receiveExactly(response.length),
                         "KCP reverse stream did not preserve binary data");
 
+                byte[] slowPayload = new byte[256 * 1_024];
+                for (int i = 0; i < slowPayload.length; i++) {
+                    slowPayload[i] = (byte) (i * 23 + (i >>> 4));
+                }
+                peerA.send(slowPayload);
+                assertArrayEquals(slowPayload, peerC.receiveExactly(slowPayload.length, true),
+                        "KCP stream failed while the application consumed slowly");
+                assertTrue(peerC.maxQueuedChunks.get() <= 4,
+                        "application queue exceeded the configured four-chunk bound");
+                assertTrue(peerC.deferredReads.get() > 0,
+                        "slow application consumer did not defer reads from KCP");
+
                 try (TlsTestIdentities identities = TlsTestIdentities.create()) {
                     SSLEngine tlsClient = identities.clientContext().createSSLEngine("localhost", 443);
                     configureTls13(tlsClient, true);
@@ -213,6 +228,23 @@ class IceKcpTls13IntegrationTest {
                             untrustedClient, secondServer, peerA, peerC),
                             "server accepted a client certificate outside its test trust store");
                 }
+
+                CompletableFuture<byte[]> blockedRead = CompletableFuture.supplyAsync(() -> {
+                    try {
+                        return peerC.receiveExactly(1, false);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new java.util.concurrent.CompletionException(e);
+                    }
+                });
+                Thread.sleep(50);
+                peerC.close();
+                ExecutionException cancelled = assertThrows(ExecutionException.class,
+                        () -> blockedRead.get(2, TimeUnit.SECONDS));
+                assertTrue(cancelled.getCause() instanceof CancellationException,
+                        "closed ICE/KCP receive did not surface cancellation");
+                assertFalse(componentC.getSocket().isClosed(),
+                        "KCP adapter closed the ICE-owned application socket");
             }
         } finally {
             agentA.free();
@@ -700,6 +732,8 @@ class IceKcpTls13IntegrationTest {
         private final IceComponentDatagramAdapter adapter;
         private final Kcp engine;
         private final ArrayBlockingQueue<byte[]> received = new ArrayBlockingQueue<>(4);
+        private final AtomicInteger maxQueuedChunks = new AtomicInteger();
+        private final AtomicInteger deferredReads = new AtomicInteger();
         private final int dropFirstPackets;
         private final boolean reorderFirstPair;
         private final AtomicInteger outboundPackets = new AtomicInteger();
@@ -744,10 +778,17 @@ class IceKcpTls13IntegrationTest {
         }
 
         private byte[] receiveExactly(int length) throws InterruptedException {
+            return receiveExactly(length, false);
+        }
+
+        private byte[] receiveExactly(int length, boolean slowConsumer) throws InterruptedException {
             byte[] result = new byte[length];
             int offset = 0;
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
             while (offset < length && System.nanoTime() < deadline) {
+                if (closed.get()) {
+                    throw new CancellationException("ICE/KCP receive cancelled because the peer closed");
+                }
                 byte[] chunk = received.poll(100, TimeUnit.MILLISECONDS);
                 if (chunk == null) {
                     continue;
@@ -755,6 +796,15 @@ class IceKcpTls13IntegrationTest {
                 int copyLength = Math.min(chunk.length, length - offset);
                 System.arraycopy(chunk, 0, result, offset, copyLength);
                 offset += copyLength;
+                if (slowConsumer) {
+                    Thread.sleep(1);
+                }
+                synchronized (engine) {
+                    drainKcpToApplicationQueue();
+                    if (engine.checkFlush()) {
+                        engine.flush(false, System.currentTimeMillis());
+                    }
+                }
             }
             return offset == length ? result : java.util.Arrays.copyOf(result, offset);
         }
@@ -789,23 +839,35 @@ class IceKcpTls13IntegrationTest {
         private void receiveSegment(byte[] datagram) {
             synchronized (engine) {
                 engine.input(Unpooled.wrappedBuffer(datagram), true, System.currentTimeMillis());
-                int readable;
-                do {
-                    List<ByteBuf> completeMessages = new ArrayList<>();
-                    readable = engine.recv(completeMessages);
-                    for (ByteBuf message : completeMessages) {
-                        try {
-                            byte[] payload = new byte[message.readableBytes()];
-                            message.readBytes(payload);
-                            received.offer(payload);
-                        } finally {
-                            message.release();
-                        }
-                    }
-                } while (readable > 0);
+                drainKcpToApplicationQueue();
                 if (engine.checkFlush()) {
                     engine.flush(false, System.currentTimeMillis());
                 }
+            }
+        }
+
+        private void drainKcpToApplicationQueue() {
+            while (received.remainingCapacity() > 0) {
+                List<ByteBuf> completeMessages = new ArrayList<>(1);
+                int readable = engine.recv(completeMessages);
+                if (readable <= 0) {
+                    break;
+                }
+                for (ByteBuf message : completeMessages) {
+                    try {
+                        byte[] payload = new byte[message.readableBytes()];
+                        message.readBytes(payload);
+                        if (!received.offer(payload)) {
+                            throw new IllegalStateException("bounded application queue rejected a KCP chunk");
+                        }
+                        maxQueuedChunks.accumulateAndGet(received.size(), Math::max);
+                    } finally {
+                        message.release();
+                    }
+                }
+            }
+            if (received.remainingCapacity() == 0 && engine.canRecv()) {
+                deferredReads.incrementAndGet();
             }
         }
 
@@ -833,7 +895,9 @@ class IceKcpTls13IntegrationTest {
 
         @Override
         public void close() throws Exception {
-            closed.set(true);
+            if (!closed.compareAndSet(false, true)) {
+                return;
+            }
             timer.shutdownNow();
             if (!timer.awaitTermination(1, TimeUnit.SECONDS)) {
                 throw new IOException("KCP timer did not stop");
