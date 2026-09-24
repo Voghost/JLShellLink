@@ -80,23 +80,56 @@ class WssRelayPairingTest {
 
     @Test
     void fallsBackOnceAfterDirectTimeoutButNeverAfterAuthorizationFailure() throws Exception {
-        AtomicInteger directAttempts = new AtomicInteger();
-        AtomicInteger relayAttempts = new AtomicInteger();
-        CompletableFuture<String> direct = new CompletableFuture<>();
-        String selected = connectWithRelayFallback(
-                        () -> {
-                            directAttempts.incrementAndGet();
-                            return direct;
-                        },
-                        () -> {
-                            relayAttempts.incrementAndGet();
-                            return CompletableFuture.completedFuture("relay");
-                        },
-                        Duration.ofMillis(50))
-                .get(2, TimeUnit.SECONDS);
-        assertEquals("relay", selected);
-        assertEquals(1, directAttempts.get());
-        assertEquals(1, relayAttempts.get());
+        try (TestIdentity identity = TestIdentity.create();
+                WssRelayServer relay = new WssRelayServer(identity.serverContext(), RELAY_CREDENTIAL)) {
+            HttpClient client = HttpClient.newBuilder()
+                    .sslContext(identity.clientContext())
+                    .connectTimeout(Duration.ofSeconds(3))
+                    .build();
+            URI endpoint = URI.create("wss://localhost:" + relay.port() + "/link/v2/relay");
+            AtomicInteger directAttempts = new AtomicInteger();
+            AtomicInteger relayAttempts = new AtomicInteger();
+            CompletableFuture<String> direct = new CompletableFuture<>();
+            CompletableFuture<byte[]> receivedAtC = new CompletableFuture<>();
+            BinaryListener listenerC = new BinaryListener(receivedAtC);
+            byte[] payload = payload(2_048, 29);
+            String selected = connectWithRelayFallback(
+                            () -> {
+                                directAttempts.incrementAndGet();
+                                return direct;
+                            },
+                            () -> {
+                                relayAttempts.incrementAndGet();
+                                return CompletableFuture.supplyAsync(() -> {
+                                    try {
+                                        WebSocket peerA = connect(client, endpoint, "fallback-session", "A",
+                                                RELAY_CREDENTIAL, new BinaryListener());
+                                        WebSocket peerC = connect(client, endpoint, "fallback-session", "C",
+                                                RELAY_CREDENTIAL, listenerC);
+                                        if (!relay.awaitPaired("fallback-session", Duration.ofSeconds(2))) {
+                                            throw new IOException("WSS peers failed to pair after direct timeout");
+                                        }
+                                        peerA.sendBinary(ByteBuffer.wrap(payload), true)
+                                                .get(2, TimeUnit.SECONDS);
+                                        if (!java.util.Arrays.equals(payload, receivedAtC.get(3, TimeUnit.SECONDS))) {
+                                            throw new IOException("WSS fallback corrupted tunnel data");
+                                        }
+                                        peerA.sendClose(WebSocket.NORMAL_CLOSURE, "done")
+                                                .get(2, TimeUnit.SECONDS);
+                                        peerC.abort();
+                                        return "relay";
+                                    } catch (Exception e) {
+                                        throw new java.util.concurrent.CompletionException(e);
+                                    }
+                                });
+                            },
+                            Duration.ofMillis(50))
+                    .get(5, TimeUnit.SECONDS);
+            assertEquals("relay", selected);
+            assertEquals(1, directAttempts.get());
+            assertEquals(1, relayAttempts.get());
+            assertArrayEquals(payload, receivedAtC.get(1, TimeUnit.SECONDS));
+        }
 
         AtomicInteger deniedRelayAttempts = new AtomicInteger();
         CompletableFuture<String> denied = connectWithRelayFallback(

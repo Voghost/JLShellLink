@@ -44,7 +44,7 @@
 - 完成同机整链路：ICE → KCP → TLS 1.3 mTLS → Netty HTTP/2 CONNECT → 本机 TCP echo 目标。HTTP/2 CONNECT 的 1 KiB 二进制 DATA 通过 TCP 目标完整往返；客户端 HTTP/2 END_STREAM 映射为目标 TCP 输出半关闭，回程 EOF 映射为响应 END_STREAM。HTTP/2 目前只在测试 profile 引入 `netty-codec-http2`；此集成证明本机编解码和接线，不是多网段性能或公网部署证据。
 - ice4j 默认会探测 AWS 映射 harvester；该测试通过 `ice4j.harvest.mapping.aws.enabled=false` 关闭了无关探测，初始化从数秒降至亚秒。产品配置仍需明确决定是否启用云厂商专属 harvester。
 
-Java 21 CI 发现 JSSE 应用缓冲区低于 `SSLSession.getApplicationBufferSize()` 时 `unwrap` 返回 `BUFFER_OVERFLOW`。现已让 TLS 握手和应用数据共用持久的 `TlsEndpoint`，并按 session 容量分配应用缓冲区；macOS ARM64 本机 `mvn verify` 与整链路测试通过，Linux/macOS/Windows Java 21 CI 均通过（Windows ICE 网络集成因 runner 网卡条件跳过）。另新增路径选择器测试：模拟直连预算超时只触发一次中继，权限拒绝和 TLS 身份错误不进入回退；该逻辑测试不代替网络级 UDP 阻断。WSS 客户端侧队列限制为 4 条消息，暂停消费时停止申请新消息，恢复读取后按序完整收齐 8 条 4 KiB 负载。最新两项测试变更尚待 Java 21 CI 重跑。
+Java 21 CI 发现 JSSE 应用缓冲区低于 `SSLSession.getApplicationBufferSize()` 时 `unwrap` 返回 `BUFFER_OVERFLOW`。现已让 TLS 握手和应用数据共用持久的 `TlsEndpoint`，并按 session 容量分配应用缓冲区；macOS ARM64 本机 `mvn verify` 与整链路测试通过，Linux/macOS/Windows Java 21 CI 均通过（Windows ICE 网络集成因 runner 网卡条件跳过）。新增路径选择器集成测试：模拟直连预算超时只触发一次回退，然后建立真实本机 WSS A/C 配对并传输完整二进制数据；权限拒绝和 TLS 身份错误不进入回退。该测试不代替网络级 UDP 阻断。WSS 客户端侧队列限制为 4 条消息，暂停消费时停止申请新消息，恢复读取后按序完整收齐 8 条 4 KiB 负载。该集成测试最新修改尚待 Java 21 CI 重跑。
 
 下一步仍需完成：
 
@@ -57,7 +57,7 @@ Java 21 CI 发现 JSSE 应用缓冲区低于 `SSLSession.getApplicationBufferSiz
 - 跨 NAT 候选协商；同机/同 LAN 测试和 UDP echo 不算跨 NAT 通过。
 - 可靠有序双向通道已在同机 LAN 覆盖二进制往返、两个初始数据报丢弃、数据报重排、低速接收者下 4 块应用队列上限、取消、TCP/HTTP2 半关闭与资源回收；本机 WSS 客户端侧也覆盖 4 条消息上限、暂停取数与恢复后的有序完整传输。生产 Relay 慢连接下的排队和资源限额仍待验证。
 - A—C TLS 1.3 + HTTP/2 CONNECT 到 TCP echo 目标已在同机 LAN 及本机 WSS 中继分别通过；跨 NAT 和真实部署网络尚未验证。WSS 测试还断言 relay 捕获帧中不包含 CONNECT 明文。
-- 本机 WSS 测试已验证 A/C 主动出站、Bearer 凭据拒绝、二进制双向转发和孤立/断线配对清理。同一配对管道现承载 A—C 内层 TLS 1.3 双向证书认证与 HTTP/2 CONNECT 到本机 TCP echo 目标的 1 KiB DATA/END_STREAM；测试捕获的 relay 帧不含 CONNECT 明文负载。客户端慢消费者队列有界并可恢复；超时选择器与实际 WebSocket 配对分别有测试，仍需用真实 UDP 阻断验证两者集成。生产 Relay 慢连接资源限额与跨网络验收未完成。认证或授权失败不能回退放行。
+- 本机 WSS 测试已验证 A/C 主动出站、Bearer 凭据拒绝、二进制双向转发和孤立/断线配对清理。同一配对管道现承载 A—C 内层 TLS 1.3 双向证书认证与 HTTP/2 CONNECT 到本机 TCP echo 目标的 1 KiB DATA/END_STREAM；测试捕获的 relay 帧不含 CONNECT 明文负载。客户端慢消费者队列有界并可恢复；模拟直连超时后已在真实本机 WSS 配对上传输二进制数据，仍需用真实 UDP 阻断验证完整网络选路。生产 Relay 慢连接资源限额与跨网络验收未完成。认证或授权失败不能回退放行。
 - Linux x64、macOS ARM64、Windows x64 的依赖和关闭行为。
 - 每项记录库版本、许可证、传递依赖、抓取到的本地端口、实际路径、环境和脱敏证据。
 
