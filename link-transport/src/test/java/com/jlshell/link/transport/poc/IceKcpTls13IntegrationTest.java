@@ -271,7 +271,13 @@ class IceKcpTls13IntegrationTest {
         byte[] encodedFrames = h2.drainServerOutbound();
         assertTrue(encodedFrames.length > 0, "HTTP/2 server produced no wire bytes");
         sendTlsApplicationData(serverTls.engine, serverTls.peer, encodedFrames);
-        h2.receiveAtClient(receiveTlsApplicationData(clientTls, encodedFrames.length));
+        try {
+            h2.receiveAtClient(receiveTlsApplicationData(clientTls, encodedFrames.length));
+        } catch (SSLException failure) {
+            throw new SSLException(failure.getMessage() + "; client=" + clientTls.peer.debugState()
+                    + "; server=" + serverTls.peer.debugState()
+                    + "; tls=" + clientTls.lastUnwrap, failure);
+        }
     }
 
     private static final class TcpEchoTarget implements AutoCloseable {
@@ -572,6 +578,7 @@ class IceKcpTls13IntegrationTest {
             endpoint.networkInput.put(incoming);
             endpoint.networkInput.flip();
             SSLEngineResult result = engine.unwrap(endpoint.networkInput, plaintext);
+            endpoint.lastUnwrap = result;
             if (result.getStatus() == SSLEngineResult.Status.CLOSED) {
                 throw new SSLException("TLS peer closed during application data");
             }
@@ -589,6 +596,7 @@ class IceKcpTls13IntegrationTest {
         private final ByteBuffer networkInput = ByteBuffer.allocate(65_536);
         private final ByteBuffer networkOutput = ByteBuffer.allocate(65_536);
         private final ByteBuffer applicationInput = ByteBuffer.allocate(65_536);
+        private SSLEngineResult lastUnwrap;
 
         private TlsEndpoint(SSLEngine engine, IceKcpPeer peer) {
             this.engine = engine;
@@ -731,6 +739,8 @@ class IceKcpTls13IntegrationTest {
         private final int dropFirstPackets;
         private final boolean reorderFirstPair;
         private final AtomicInteger outboundPackets = new AtomicInteger();
+        private final AtomicInteger sentDatagrams = new AtomicInteger();
+        private final AtomicInteger receivedDatagrams = new AtomicInteger();
         private final AtomicInteger droppedPackets = new AtomicInteger();
         private final AtomicReference<byte[]> delayedDatagram = new AtomicReference<>();
         private final AtomicBoolean reorderedPackets = new AtomicBoolean();
@@ -768,6 +778,15 @@ class IceKcpTls13IntegrationTest {
                     throw new IllegalStateException("KCP rejected payload: " + result);
                 }
                 engine.update(System.currentTimeMillis());
+            }
+        }
+
+        private String debugState() {
+            synchronized (engine) {
+                return "queue=" + received.size() + "/4, canRecv=" + engine.canRecv()
+                        + ", peek=" + engine.peekSize() + ", waitSnd=" + engine.waitSnd()
+                        + ", datagramsIn=" + receivedDatagrams.get() + ", datagramsOut=" + sentDatagrams.get()
+                        + ", closed=" + closed.get();
             }
         }
 
@@ -825,11 +844,14 @@ class IceKcpTls13IntegrationTest {
                         return;
                     }
                     adapter.send(datagram);
+                    sentDatagrams.incrementAndGet();
                     adapter.send(delayed);
+                    sentDatagrams.incrementAndGet();
                     reorderedPackets.set(true);
                     return;
                 }
                 adapter.send(datagram);
+                sentDatagrams.incrementAndGet();
             } catch (IOException e) {
                 throw new IllegalStateException("Unable to send KCP datagram over ICE socket", e);
             } finally {
@@ -838,6 +860,7 @@ class IceKcpTls13IntegrationTest {
         }
 
         private void receiveSegment(byte[] datagram) {
+            receivedDatagrams.incrementAndGet();
             synchronized (engine) {
                 engine.input(Unpooled.wrappedBuffer(datagram), true, System.currentTimeMillis());
                 drainKcpToApplicationQueue();
