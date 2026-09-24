@@ -5,6 +5,19 @@
 - Java 基线：Java 21；本机当前默认运行时为 OpenJDK 26.0.1，Maven 3.9.16
 - 状态：POC-01 本机 socket 原型通过；POC-02 已验证同机 LAN ICE nomination、KCP 丢包/重排恢复、低速接收者背压与关闭取消、TLS/HTTP2 CONNECT 和半关闭；POC-03 已在本机 WSS 配对管道上验证内层 mTLS 1.3、HTTP/2 CONNECT 到本机 TCP echo 目标和半关闭，并覆盖有界慢消费者队列。当前 11 项 Java 测试及 Linux/macOS/Windows Java 21 CI 均通过，Windows hosted runner 因没有 ice4j 可用候选而通过 `JLSHELL_LINK_ICE_TEST_ENABLED=false` 跳过 ICE 集成测试；该测试在其他环境默认启用。跨 NAT 和真实 UDP 阻断后的自动回退仍未验证；不得据此宣称已具备 P2P 或生产中继。
 
+## 真实 A/B/C 主机联调（2026-09-24）
+
+用户提供的拓扑：A 是开发机 macOS（`192.168.1.0/24` 网段），B 是云主机，C 是 Arch Linux 内网主机（`192.168.31.0/24` 网段）。B、C 以密钥 SSH 连通。所有探针只在三端同名的临时隔离目录 `jlshell-link-p0-20260924` 中运行；B、C 使用 `/var/tmp/`，A 使用 `/private/tmp/`。未修改现有进程、服务配置、防火墙或 Docker 容器。测试前核对端口空闲，结束后核对临时监听和 C 的探针进程已经退出。
+
+| 检查 | 结果 | 证据边界 |
+| --- | --- | --- |
+| 运行时 | A 为 OpenJDK 26.0.1；C 为 OpenJDK 27；B 没有 `java` 命令，但有 Python 3.12 与 Docker | A/C 探针以 `javac --release 21` 编译；真实主机尚未使用 JDK 21 执行，也没有部署 Java B 服务。 |
+| B 的 UDP 协调 | 临时 Python 探针分别监听 UDP 34673 和 13575；A/C 均发出 `HELLO`，B 没收到。对 13575 的 B `eth0` 定向抓包为 0 包 | 13575 在 B 本机 UFW 的已允许范围内且无端口冲突。报文没有到达 B 的网卡，可能是云侧入口策略或前段网络路径；**不能据此判定 A—C P2P 失败或成功**。未改安全组/UFW。 |
+| B 的 TCP 入口 | B 临时监听 TCP 13575；A、C 都收到固定探针应答 | 证明两端可主动出站到 B 的空闲 TCP 端口；不是 WSS/Website 服务验收。 |
+| A—B—C 加密转发 | B 在空闲 TCP 13576 上运行一次性 Python 原始字节转发器，A/C 运行 Java 21 字节码探针，内层双向证书 TLS 1.3 握手成功，4096 字节二进制负载往返完全一致。B 记录 A→C 5178 字节、C→A 5751 字节，转发缓冲中未发现测试明文标记 | 证实真实不同出口网络上的透明 TCP 中继可承载 Java mTLS 数据。B 仍是 Python 测试夹具；本次未运行生产 Java Relay、WSS、HTTP/2 CONNECT、票据授权、ICE/KCP 或真实 UDP 失败后的自动回退，不能标记 P0 完成。 |
+
+下一步要在不占用现有业务端口的前提下，为测试 B 明确一个可从 A/C 到达的 UDP 入口（需核对云侧安全组或公网映射），再部署可独立运行的 Java 信令/中继 POC，完成实际 ICE 候选交换、KCP、mTLS、HTTP/2 CONNECT 的跨 NAT 直连；随后对该测试入口做受控 UDP 阻断并验证 WSS 自动降级。当前只保持现有 Rust 运行时代码，不据此开始退役。
+
 ## 依赖候选
 
 | 组件 | 固定候选 | 许可证 | 当前决策 |
