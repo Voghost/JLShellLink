@@ -61,4 +61,13 @@ Java 21 CI 发现 JSSE 应用缓冲区低于 `SSLSession.getApplicationBufferSiz
 - Linux x64、macOS ARM64、Windows x64 的依赖和关闭行为。
 - 每项记录库版本、许可证、传递依赖、抓取到的本地端口、实际路径、环境和脱敏证据。
 
-POC-03 当前只有测试范围的本机 WSS 配对原型；仍需实现 UDP 阻断回退、慢消费者与跨平台关闭验证，再做不同出口网络实验。
+POC-03 仍是测试范围的本机 WSS 配对原型；多平台基础行为和客户端慢消费者边界已覆盖。仍需验证生产 Relay 的有界排队、真实 UDP 阻断回退，以及不同出口网络的 NAT 穿透。
+
+## POC 阶段选型结论
+
+- Java 21 + Maven 的运行与编译链路可行；Linux x64、macOS ARM64、Windows x64 上的 Java/WSS/KCP 测试均通过。Windows hosted runner 没有可用 ICE host candidate，ICE 集成测试在 CI 明确跳过，不能据此宣称 Windows ICE 已验证。
+- Netty `4.2.18.Final` 暂保留为 HTTP/2 编解码候选；目前只进入原型依赖，尚未用于正式产品传输模块。
+- ice4j `3.2-17-geea6cd3` 暂保留为 ICE API 候选。同机 LAN host candidate nomination 及 socket 复用已验证；真实 NAT 映射、跨出口连通性、Windows ICE 和许可/传递依赖审查仍未完成。
+- Java KCP `kcp-base:1.6` 仅用于原型测试，不加入产品运行依赖。自定义 `Kcp` 引擎可绑定 ICE 已选 socket并通过确定性丢包/重排及背压用例；`kcp-base` 的 `netty-all` 传递树、长时间可靠性和维护状态未达到生产准入条件。
+- 本机 WSS 证明 A/C 主动出站、配对认证、转发内层加密字节以及 TLS/HTTP2/CONNECT 接线可行；Relay 服务实现、真实 UDP 阻断下的选路、跨 NAT 和慢网络容量限制尚未验证。
+- 阶段决策：保留上述候选用于 POC 后续实验，不将它们视为已批准的生产技术栈。Java 数据面方向目前没有被本机验证否决，但 P0 仍未通过，不能开始切换产品运行时或退役 Rust。
