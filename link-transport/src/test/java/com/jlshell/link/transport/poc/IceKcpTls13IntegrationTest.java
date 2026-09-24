@@ -495,7 +495,7 @@ class IceKcpTls13IntegrationTest {
                 + clientEngine.getHandshakeStatus() + ", server=" + serverEngine.getHandshakeStatus());
     }
 
-    private static void driveHandshake(TlsEndpoint endpoint) throws IOException {
+    private static void driveHandshake(TlsEndpoint endpoint) throws IOException, InterruptedException {
         SSLEngine engine = endpoint.engine;
         SSLEngineResult.HandshakeStatus status = engine.getHandshakeStatus();
         while (status == SSLEngineResult.HandshakeStatus.NEED_TASK) {
@@ -506,7 +506,7 @@ class IceKcpTls13IntegrationTest {
             status = engine.getHandshakeStatus();
         }
 
-        byte[] incoming = endpoint.peer.received.poll();
+        byte[] incoming = endpoint.peer.pollReceived(0, TimeUnit.MILLISECONDS);
         if (incoming != null) {
             endpoint.networkInput.compact();
             if (incoming.length > endpoint.networkInput.remaining()) {
@@ -567,7 +567,7 @@ class IceKcpTls13IntegrationTest {
         ByteBuffer plaintext = ByteBuffer.allocate(expectedBytes + 1_024);
         long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
         while (plaintext.position() < expectedBytes && System.nanoTime() < deadline) {
-            byte[] incoming = peer.received.poll(100, TimeUnit.MILLISECONDS);
+            byte[] incoming = peer.pollReceived(100, TimeUnit.MILLISECONDS);
             if (incoming == null) {
                 continue;
             }
@@ -789,7 +789,7 @@ class IceKcpTls13IntegrationTest {
                 if (closed.get()) {
                     throw new CancellationException("ICE/KCP receive cancelled because the peer closed");
                 }
-                byte[] chunk = received.poll(100, TimeUnit.MILLISECONDS);
+                byte[] chunk = pollReceived(100, TimeUnit.MILLISECONDS);
                 if (chunk == null) {
                     continue;
                 }
@@ -799,6 +799,13 @@ class IceKcpTls13IntegrationTest {
                 if (slowConsumer) {
                     Thread.sleep(1);
                 }
+            }
+            return offset == length ? result : java.util.Arrays.copyOf(result, offset);
+        }
+
+        private byte[] pollReceived(long timeout, TimeUnit unit) throws InterruptedException {
+            byte[] chunk = received.poll(timeout, unit);
+            if (chunk != null && !closed.get()) {
                 synchronized (engine) {
                     drainKcpToApplicationQueue();
                     if (engine.checkFlush()) {
@@ -806,7 +813,7 @@ class IceKcpTls13IntegrationTest {
                     }
                 }
             }
-            return offset == length ? result : java.util.Arrays.copyOf(result, offset);
+            return chunk;
         }
 
         private void sendSegment(ByteBuf segment, IKcp ignored) {
