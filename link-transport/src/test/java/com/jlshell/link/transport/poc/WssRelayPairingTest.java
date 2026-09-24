@@ -57,9 +57,11 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
@@ -189,6 +191,29 @@ class WssRelayPairingTest {
             byte[] cToA = payload(4_097, 91);
             peerC.sendBinary(ByteBuffer.wrap(cToA), true).get(2, TimeUnit.SECONDS);
             assertArrayEquals(cToA, receivedAtA.get(3, TimeUnit.SECONDS));
+
+            CompletableFuture<byte[]> slowFirstMessage = new CompletableFuture<>();
+            BinaryListener slowListener = new BinaryListener(slowFirstMessage);
+            WebSocket slowPeerA = connect(client, endpoint, "slow-session", "A", RELAY_CREDENTIAL,
+                    new BinaryListener());
+            WebSocket slowPeerC = connect(client, endpoint, "slow-session", "C", RELAY_CREDENTIAL,
+                    slowListener);
+            assertTrue(relay.awaitPaired("slow-session", Duration.ofSeconds(2)));
+            byte[][] slowPayloads = new byte[8][];
+            for (int i = 0; i < slowPayloads.length; i++) {
+                slowPayloads[i] = payload(4_096, 120 + i);
+                slowPeerA.sendBinary(ByteBuffer.wrap(slowPayloads[i]), true).get(2, TimeUnit.SECONDS);
+            }
+            assertTrue(slowListener.awaitQueued(4, Duration.ofSeconds(2)),
+                    "slow WSS consumer did not fill its bounded receive queue");
+            assertEquals(4, slowListener.maxQueuedMessages.get());
+            for (byte[] expected : slowPayloads) {
+                assertArrayEquals(expected, slowListener.takeMessage(Duration.ofSeconds(2)));
+            }
+            assertTrue(slowListener.maxQueuedMessages.get() <= 4,
+                    "slow WSS consumer exceeded its bounded receive queue");
+            slowPeerA.sendClose(WebSocket.NORMAL_CLOSURE, "done").get(2, TimeUnit.SECONDS);
+            assertTrue(relay.awaitActiveSessions(1, Duration.ofSeconds(2)));
 
             peerA.sendClose(WebSocket.NORMAL_CLOSURE, "done").get(2, TimeUnit.SECONDS);
             assertTrue(relay.awaitActiveSessions(0, Duration.ofSeconds(2)),
@@ -453,7 +478,10 @@ class WssRelayPairingTest {
     private static final class BinaryListener implements WebSocket.Listener {
         private final ByteArrayOutputStream message = new ByteArrayOutputStream();
         private final CompletableFuture<byte[]> received;
-        private final LinkedBlockingQueue<byte[]> messages = new LinkedBlockingQueue<>();
+        private final ArrayBlockingQueue<byte[]> messages = new ArrayBlockingQueue<>(4);
+        private final AtomicBoolean requestOutstanding = new AtomicBoolean();
+        private final AtomicInteger maxQueuedMessages = new AtomicInteger();
+        private volatile WebSocket webSocket;
         private volatile boolean ended;
 
         private BinaryListener() {
@@ -466,7 +494,8 @@ class WssRelayPairingTest {
 
         @Override
         public void onOpen(WebSocket webSocket) {
-            webSocket.request(1);
+            this.webSocket = webSocket;
+            requestNextIfCapacity();
         }
 
         @Override
@@ -477,11 +506,41 @@ class WssRelayPairingTest {
             if (last) {
                 byte[] completeMessage = message.toByteArray();
                 message.reset();
-                messages.offer(completeMessage);
+                if (!messages.offer(completeMessage)) {
+                    received.completeExceptionally(new IOException("WSS receive queue exceeded its bound"));
+                    webSocket.abort();
+                    return CompletableFuture.completedFuture(null);
+                }
+                maxQueuedMessages.accumulateAndGet(messages.size(), Math::max);
                 received.complete(completeMessage);
             }
-            webSocket.request(1);
+            requestOutstanding.set(false);
+            requestNextIfCapacity();
             return null;
+        }
+
+        private byte[] takeMessage(Duration timeout) throws InterruptedException {
+            byte[] next = messages.poll(timeout.toMillis(), TimeUnit.MILLISECONDS);
+            if (next != null) {
+                requestNextIfCapacity();
+            }
+            return next;
+        }
+
+        private boolean awaitQueued(int size, Duration timeout) throws InterruptedException {
+            long deadline = System.nanoTime() + timeout.toNanos();
+            while (System.nanoTime() < deadline && messages.size() < size) {
+                Thread.sleep(5);
+            }
+            return messages.size() >= size;
+        }
+
+        private void requestNextIfCapacity() {
+            WebSocket current = webSocket;
+            if (current != null && !ended && messages.remainingCapacity() > 0
+                    && requestOutstanding.compareAndSet(false, true)) {
+                current.request(1);
+            }
         }
 
         @Override
@@ -535,7 +594,7 @@ class WssRelayPairingTest {
                         return -1;
                     }
                     try {
-                        byte[] next = listener.messages.poll(100, TimeUnit.MILLISECONDS);
+                        byte[] next = listener.takeMessage(Duration.ofMillis(100));
                         if (next != null) {
                             current = next;
                             offset = 0;
