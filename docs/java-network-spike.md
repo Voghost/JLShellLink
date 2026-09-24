@@ -9,8 +9,9 @@
 
 - `ReliableDuplexChannel` 已补充异步读取、EOF、可写通知、完整写入完成、输出半关闭、异常终止和关闭结果的统一语义；目前仍没有正式直连与 WSS 通道实现。
 - `TransportBudget` 已定义帧/头大小、并发流、写队列、单流和总缓冲、握手并发与超时的有限配置约束。
+- `NettyReliableDuplexChannel` 已提供有界 `ByteBuf` 字节流适配，支持分块读取、主动读背压、共享总缓冲账本、写队列限制、读取消、承载定义的半关闭动作及失败传播。多流复用时必须让所有通道共享同一个 `TransportBufferBudget`；目前尚未将它接入正式 direct/WSS 或 HTTP/2 child stream。
 - 新增 `TlsPeerContext` 与 `PinnedPeerTrustManager`：由显式信任库执行 PKIX 校验，并额外校验预期叶证书 SPKI SHA-256；TLS 仅启用 1.3，服务端要求客户端证书，ALPN 限定为 `h2`，每条隧道创建独立上下文。
-- ICE/KCP/mTLS 集成测试现使用该 TLS 工厂，验证双向证书信任成功、未受信客户端被拒绝及公钥指纹错误被拒绝。`mvn -B -ntp verify` 在本机 OpenJDK 26.0.1 上通过，Java 编译目标为 21。
+- ICE/KCP/mTLS 集成测试现使用该 TLS 工厂，验证双向证书信任成功、未受信客户端被拒绝及公钥指纹错误被拒绝。Netty 字节流适配器契约测试验证了取消读取、切块、EOF、队列超限、跨通道总缓冲限制与半关闭委托。全工程 `mvn -B -ntp verify` 在本机 OpenJDK 26.0.1 上通过（31 项测试，Java 编译目标为 21）。
 - 此进度**不代表 NET-01 验收完成**：Netty 承载桥、正式 CONNECT 流、多路复用与端到端背压联动、承载无关契约测试及 Java 21 CI 仍待实现和验证。
 
 ## 真实 A/B/C 主机联调（2026-09-24）
