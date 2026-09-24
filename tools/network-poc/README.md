@@ -2,7 +2,7 @@
 
 `JavaTcpRelay` 是 B 上只运行一次的透明 TCP 字节转发器，`JavaTlsPeer` 是 A/C 的 Java TLS 1.3 双向证书与二进制回环探针。它们用于确认不同出口网络上 Java 运行时和端到端加密的基本可行性，**没有**实现 ICE、KCP、WSS、HTTP/2 CONNECT、控制平面授权或生产资源限制。不能用这些类替代 Link 服务。
 
-`JavaStunProbe` 只查询 IPv4 STUN 映射；`JavaUdpPathProbe` 在同一个 UDP socket 上查询映射、经 B 的 `JavaTcpRelay` 交换候选，再发送短时 `PUNCH`/`ACK`。这也不是 ICE：没有候选优先级、connectivity checks、nomination 或可靠传输。
+`JavaStunProbe` 只查询 IPv4 STUN 映射；`JavaStunServer` 是 B 上短时运行的 IPv4 Binding 测试应答器。`JavaUdpPathProbe` 在同一个 UDP socket 上查询映射、经 B 的 `JavaTcpRelay` 交换候选，再发送短时 `PUNCH`/`ACK`。这也不是 ICE：没有候选优先级、connectivity checks、nomination 或可靠传输。
 
 ## 编译与隔离运行
 
@@ -12,6 +12,7 @@
 POC_DIR=/private/tmp/jlshell-link-p0-example
 mkdir -m 700 "$POC_DIR"
 javac --release 21 -d "$POC_DIR" JavaTcpRelay.java JavaTlsPeer.java
+javac --release 21 -d "$POC_DIR" JavaStunServer.java JavaStunProbe.java JavaUdpPathProbe.java
 ```
 
 使用 `keytool` 分别生成 A/C 的短期 PKCS12 身份库，交换**公有证书**并各自导入对端信任库。各端运行时目录分别需要 `<role>.p12` 和 `<role>-trust.p12`；私钥只给对应端。运行参数如下：
@@ -35,10 +36,10 @@ docker run --rm --network host --read-only --cap-drop ALL \
 
 ## UDP 路径诊断
 
-先在 A/C 的隔离目录编译并运行 `JavaStunProbe stun.cloudflare.com 3478`，确认 UDP 出站能从 [公共 STUN 服务](https://developers.cloudflare.com/realtime/turn/)收到 IPv4 映射。映射仅用于当次 socket；要实测直连，应在 B 的一个空闲 TCP 测试端口启动 `JavaTcpRelay`，再让 A/C 几乎同时执行：
+先在 A/C 的隔离目录编译并运行 `JavaStunProbe <B-host> <B-udp-port>`，确认自托管 B 的 UDP 入口可达。B 用同一现成 Java 21 容器模式运行 `JavaStunServer <B-udp-port> 60`；务必先确认该端口空闲并允许入站。若自托管入口不可达，也可使用 [公共 STUN 服务](https://developers.cloudflare.com/realtime/turn/)的 `stun.cloudflare.com 3478` 定位两端 UDP 出站问题。映射仅用于当次 socket；要实测直连，还应在 B 的一个空闲 TCP 测试端口启动 `JavaTcpRelay`，再让 A/C 几乎同时执行：
 
 ```text
-JavaUdpPathProbe <A|C> stun.cloudflare.com <B-host> <B-tcp-port> <same-token> 12
+JavaUdpPathProbe <A|C> <stun-host> <stun-port> <B-host> <B-tcp-port> <same-token> 12
 ```
 
-两端输出 `DIRECT_BIDIRECTIONAL` 表示带本次令牌的 UDP 报文与确认都抵达对端。B 只转发各一行候选地址。公网 STUN 仅为诊断工具；正式实现仍需自己的授权、候选信令与可达的 UDP 协调入口。
+两端输出 `DIRECT_BIDIRECTIONAL` 表示带本次令牌的 UDP 报文与确认都抵达对端。B 的 TCP 探针只转发各一行候选地址；其 UDP 探针只回答 Binding 请求。正式实现仍需自己的授权、候选信令与可靠的 UDP 协调服务。

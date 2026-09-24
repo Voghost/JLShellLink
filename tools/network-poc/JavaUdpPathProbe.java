@@ -78,17 +78,17 @@ public final class JavaUdpPathProbe {
     }
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 6 || !(args[0].equals("A") || args[0].equals("C"))) {
+        if (args.length != 7 || !(args[0].equals("A") || args[0].equals("C"))) {
             throw new IllegalArgumentException(
-                    "Usage: JavaUdpPathProbe <A|C> <stun-host> <B-host> <B-port> <token> <seconds>");
+                    "Usage: JavaUdpPathProbe <A|C> <stun-host> <stun-port> <B-host> <B-port> <token> <seconds>");
         }
         String role = args[0];
         String otherRole = role.equals("A") ? "C" : "A";
-        String token = args[4];
+        String token = args[5];
         try (DatagramSocket udp = new DatagramSocket();
-                Socket signal = new Socket(args[2], Integer.parseInt(args[3]))) {
+                Socket signal = new Socket(args[3], Integer.parseInt(args[4]))) {
             signal.setSoTimeout(30_000);
-            InetSocketAddress mapped = mapping(udp, args[1], 3478);
+            InetSocketAddress mapped = mapping(udp, args[1], Integer.parseInt(args[2]));
             System.out.println("LOCAL_PORT " + role + " " + udp.getLocalPort());
             System.out.println("STUN_MAPPING " + role + " " + mapped.getAddress().getHostAddress()
                     + ":" + mapped.getPort());
@@ -110,7 +110,7 @@ public final class JavaUdpPathProbe {
             System.out.println("B_CANDIDATE " + role + " " + peer.getAddress().getHostAddress()
                     + ":" + peer.getPort());
             udp.setSoTimeout(200);
-            long deadline = System.nanoTime() + Duration.ofSeconds(Long.parseLong(args[5])).toNanos();
+            long deadline = System.nanoTime() + Duration.ofSeconds(Long.parseLong(args[6])).toNanos();
             byte[] incoming = new byte[1500];
             boolean direct = false;
             while (System.nanoTime() < deadline) {
