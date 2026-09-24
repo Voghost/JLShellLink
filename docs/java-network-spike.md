@@ -3,7 +3,7 @@
 - 日期：2026-09-24
 - 分支：`feature/java-link-poc`
 - Java 基线：Java 21；本机当前默认运行时为 OpenJDK 26.0.1，Maven 3.9.16
-- 状态：POC-01 本机 socket 原型通过；POC-02 已验证同机 LAN ICE nomination、KCP 丢包/重排恢复、TLS/HTTP2 CONNECT 与半关闭；跨 NAT、背压和取消未验证；POC-03 未开始；不得据此宣称已具备 P2P 或生产中继
+- 状态：POC-01 本机 socket 原型通过；POC-02 已验证同机 LAN ICE nomination、KCP 丢包/重排恢复、TLS/HTTP2 CONNECT 与半关闭；POC-03 已在本机 WSS 配对管道上验证内层 mTLS 1.3、HTTP/2 CONNECT 到本机 TCP echo 目标和半关闭；跨 NAT、直连失败后自动回退、背压和取消未验证；不得据此宣称已具备 P2P 或生产中继
 
 ## 依赖候选
 
@@ -54,9 +54,9 @@
 
 - 跨 NAT 候选协商；同机/同 LAN 测试和 UDP echo 不算跨 NAT 通过。
 - 可靠有序双向通道已在同机 LAN 覆盖二进制往返、两个初始数据报丢弃、数据报重排、TCP/HTTP2 半关闭与资源回收；低速接收者背压和取消尚未验证。
-- A—C TLS 1.3 + HTTP/2 CONNECT 端到端目标访问，B 不可见明文。
-- 阻断 UDP 后经 WSS B 中继完成同一安全链路；认证或授权失败不能回退放行。
+- A—C TLS 1.3 + HTTP/2 CONNECT 到 TCP echo 目标已在同机 LAN 及本机 WSS 中继分别通过；跨 NAT 和真实部署网络尚未验证。WSS 测试还断言 relay 捕获帧中不包含 CONNECT 明文。
+- 本机 WSS 测试已验证 A/C 主动出站、Bearer 凭据拒绝、二进制双向转发和孤立/断线配对清理。同一配对管道现承载 A—C 内层 TLS 1.3 双向证书认证与 HTTP/2 CONNECT 到本机 TCP echo 目标的 1 KiB DATA/END_STREAM；测试捕获的 relay 帧不含 CONNECT 明文负载。UDP 阻断后的自动回退、慢消费者和跨网络验收未完成。认证或授权失败不能回退放行。
 - Linux x64、macOS ARM64、Windows x64 的依赖和关闭行为。
 - 每项记录库版本、许可证、传递依赖、抓取到的本地端口、实际路径、环境和脱敏证据。
 
-POC-03 中继尚未开始：仍需实现 B 的测试 WSS 配对管道、UDP 阻断回退、认证失败拒绝、半开配对清理、慢消费者与断线回收。
+POC-03 当前只有测试范围的本机 WSS 配对原型；仍需实现 UDP 阻断回退、慢消费者与跨平台关闭验证，再做不同出口网络实验。
