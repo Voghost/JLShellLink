@@ -1,0 +1,316 @@
+openapi: 3.1.0
+info:
+  title: JLShell Link Control API v2
+  version: 0.1.0
+  description: Versioned contract for enrollment, node identity, access grants and leases.
+servers:
+  - url: https://jlshell.example.test
+security:
+  - accountBearer: []
+paths:
+  /api/v2/link/enrollments:
+    post:
+      operationId: createEnrollment
+      responses:
+        '201':
+          description: One-time enrollment created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EnrollmentCreated' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v2/link/node-challenges:
+    post:
+      operationId: createNodeChallenge
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChallengeRequest' }
+      responses:
+        '201':
+          description: One-time proof challenge
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Challenge' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+  /api/v2/link/enrollments/consume:
+    post:
+      operationId: consumeEnrollment
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EnrollmentConsume' }
+      responses:
+        '200':
+          description: Agent identity bound atomically
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NodeBinding' }
+        '409': { $ref: '#/components/responses/Consumed' }
+  /api/v2/link/devices/{deviceId}/identity:
+    put:
+      operationId: bindDeviceIdentity
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/IdentityBindingRequest' }
+      responses:
+        '200':
+          description: Device identity bound
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NodeBinding' }
+        '409':
+          description: Existing key requires the explicit recovery or rotation flow
+  /api/v2/link/agents:
+    get:
+      operationId: listAgents
+      responses:
+        '200':
+          description: Account-scoped agent directory
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AgentSummary' }
+  /api/v2/link/agents/{agentId}/access-policy:
+    put:
+      operationId: replaceAccessPolicy
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccessPolicy' }
+      responses:
+        '200':
+          description: New monotonically increasing policy version
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessPolicy' }
+  /api/v2/link/control-credentials:
+    post:
+      operationId: issueControlCredential
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId, nodeKeyFingerprint]
+              properties:
+                deviceId: { type: string, format: uuid }
+                nodeKeyFingerprint: { $ref: '#/components/schemas/Fingerprint' }
+      responses:
+        '200':
+          description: Short-lived credential scoped to the control channel
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShortCredential' }
+  /api/v2/link/access-requests:
+    post:
+      operationId: requestAccess
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccessRequest' }
+      responses:
+        '200':
+          description: Authorized session and target grant
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccessResponse' }
+        '403': { $ref: '#/components/responses/Denied' }
+  /api/v2/link/sessions/{sessionId}/renew:
+    post:
+      operationId: renewAuthorizationLease
+      security:
+        - nodeCredential: []
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tunnelId, nodeKeyFingerprint]
+              properties:
+                tunnelId: { type: string, format: uuid }
+                nodeKeyFingerprint: { $ref: '#/components/schemas/Fingerprint' }
+      responses:
+        '200':
+          description: Renewed bounded authorization lease
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthorizationLease' }
+        '403': { $ref: '#/components/responses/Denied' }
+components:
+  securitySchemes:
+    accountBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: account JWT
+    nodeCredential:
+      type: http
+      scheme: bearer
+      bearerFormat: Link node credential
+  parameters:
+    DeviceId:
+      name: deviceId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    AgentId:
+      name: agentId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  responses:
+    Unauthorized: { description: Account authentication required }
+    InvalidRequest: { description: Request failed validation }
+    Consumed: { description: One-time value was already consumed }
+    Denied: { description: Stable authorization or policy denial; must not trigger path fallback }
+  schemas:
+    Fingerprint:
+      type: string
+      pattern: '^[0-9a-f]{64}$'
+    PublicIdentity:
+      type: object
+      required: [algorithm, publicKey, nodeKeyFingerprint]
+      properties:
+        algorithm: { const: Ed25519 }
+        publicKey: { type: string, contentEncoding: base64 }
+        nodeKeyFingerprint: { $ref: '#/components/schemas/Fingerprint' }
+    EnrollmentCreated:
+      type: object
+      required: [agentId, enrollmentToken, expiresAt]
+      properties:
+        agentId: { type: string, format: uuid }
+        enrollmentToken: { type: string, writeOnly: true }
+        expiresAt: { type: string, format: date-time }
+    ChallengeRequest:
+      type: object
+      required: [purpose, nodeId]
+      properties:
+        purpose: { enum: [enrollment, control, relay, key-rotation] }
+        nodeId: { type: string, format: uuid }
+        enrollmentToken: { type: string, writeOnly: true }
+        sessionId: { type: string, format: uuid }
+    Challenge:
+      type: object
+      required: [challengeId, challenge, expiresAt]
+      properties:
+        challengeId: { type: string, format: uuid }
+        challenge: { type: string, contentEncoding: base64 }
+        expiresAt: { type: string, format: date-time }
+    Proof:
+      type: object
+      required: [challengeId, signature]
+      properties:
+        challengeId: { type: string, format: uuid }
+        signature: { type: string, contentEncoding: base64 }
+    EnrollmentConsume:
+      type: object
+      required: [agentId, enrollmentToken, identity, proof, protocolVersion]
+      properties:
+        agentId: { type: string, format: uuid }
+        enrollmentToken: { type: string, writeOnly: true }
+        identity: { $ref: '#/components/schemas/PublicIdentity' }
+        proof: { $ref: '#/components/schemas/Proof' }
+        protocolVersion: { const: link-v2 }
+    IdentityBindingRequest:
+      type: object
+      required: [identity, proof, protocolVersion]
+      properties:
+        identity: { $ref: '#/components/schemas/PublicIdentity' }
+        proof: { $ref: '#/components/schemas/Proof' }
+        protocolVersion: { const: link-v2 }
+    NodeBinding:
+      type: object
+      required: [nodeId, nodeKeyFingerprint, protocolVersion, boundAt]
+      properties:
+        nodeId: { type: string, format: uuid }
+        nodeKeyFingerprint: { $ref: '#/components/schemas/Fingerprint' }
+        protocolVersion: { const: link-v2 }
+        boundAt: { type: string, format: date-time }
+    AgentSummary:
+      type: object
+      required: [agentId, nodeKeyFingerprint, online, protocolVersion, policyVersion]
+      properties:
+        agentId: { type: string, format: uuid }
+        nodeKeyFingerprint: { $ref: '#/components/schemas/Fingerprint' }
+        online: { type: boolean }
+        protocolVersion: { const: link-v2 }
+        capabilities: { type: array, items: { type: string }, uniqueItems: true }
+        policyVersion: { type: integer, minimum: 1 }
+    AccessRule:
+      type: object
+      required: [effect, cidr, ports]
+      properties:
+        effect: { enum: [ALLOW, DENY] }
+        cidr: { type: string }
+        ports:
+          type: array
+          items: { type: integer, minimum: 1, maximum: 65535 }
+          uniqueItems: true
+          description: Empty means all TCP ports in this CIDR.
+    AccessPolicy:
+      type: object
+      required: [enabled, allowLoopback, version, rules]
+      properties:
+        enabled: { type: boolean }
+        allowLoopback: { type: boolean, default: false }
+        version: { type: integer, minimum: 1, readOnly: true }
+        rules: { type: array, items: { $ref: '#/components/schemas/AccessRule' } }
+    ShortCredential:
+      type: object
+      required: [credential, expiresAt]
+      properties:
+        credential: { type: string, writeOnly: true }
+        expiresAt: { type: string, format: date-time }
+    TargetEndpoint:
+      type: object
+      required: [ip, port]
+      properties:
+        ip: { type: string, description: Canonical numeric IPv4 or IPv6; DNS names are rejected. }
+        port: { type: integer, minimum: 1, maximum: 65535 }
+    AccessRequest:
+      type: object
+      required: [deviceId, clientKeyFingerprint, agentId, target, connectPolicy, protocolVersion]
+      properties:
+        deviceId: { type: string, format: uuid }
+        clientKeyFingerprint: { $ref: '#/components/schemas/Fingerprint' }
+        agentId: { type: string, format: uuid }
+        target: { $ref: '#/components/schemas/TargetEndpoint' }
+        connectPolicy: { enum: [AUTO, DIRECT_ONLY, RELAY_ONLY] }
+        protocolVersion: { const: link-v2 }
+    AccessResponse:
+      type: object
+      required: [sessionId, tunnelId, agentKeyFingerprint, accessTicket, ticketExpiresAt]
+      properties:
+        sessionId: { type: string, format: uuid }
+        tunnelId: { type: string, format: uuid }
+        agentKeyFingerprint: { $ref: '#/components/schemas/Fingerprint' }
+        accessTicket: { type: string, writeOnly: true }
+        ticketExpiresAt: { type: string, format: date-time }
+        relayPrepared: { type: boolean }
+    AuthorizationLease:
+      type: object
+      required: [sessionId, tunnelId, policyVersion, validUntil]
+      properties:
+        sessionId: { type: string, format: uuid }
+        tunnelId: { type: string, format: uuid }
+        policyVersion: { type: integer, minimum: 1 }
+        validUntil: { type: string, format: date-time }
