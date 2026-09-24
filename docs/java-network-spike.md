@@ -3,7 +3,7 @@
 - 日期：2026-09-24
 - 分支：`feature/java-link-poc`
 - Java 基线：Java 21；本机当前默认运行时为 OpenJDK 26.0.1，Maven 3.9.16
-- 状态：POC-01 本机 socket 原型通过；POC-02 已验证同机 LAN ICE nomination 和 KCP over ICE；跨 NAT、TLS/HTTP2 未验证；POC-03 未开始；不得据此宣称已具备 P2P 或生产中继
+- 状态：POC-01 本机 socket 原型通过；POC-02 已验证同机 LAN ICE nomination、KCP 丢包/重排恢复、TLS/HTTP2 CONNECT 与半关闭；跨 NAT、背压和取消未验证；POC-03 未开始；不得据此宣称已具备 P2P 或生产中继
 
 ## 依赖候选
 
@@ -39,21 +39,21 @@
 
 - 增加 `IceKcpTls13IntegrationTest`，调用固定候选版本的 Agent、Stream、Component API，在本机活动的非点对点 IPv4 网卡收集候选、交换 ICE 凭据并完成 nomination；再把底层 KCP 引擎连接到 ICE `Component.getSocket()`，通过选中的候选对往返二进制数据，并确认释放 KCP 与 ICE 后资源关闭。
 - 源码检查确认应用数据面应从 `Component.getSocket()` 读写；ICE/STUN 由其内部多路复用。现有 NIO channel dispatcher 不能直接代替该接口，所以新增 `IceComponentDatagramAdapter` 原型，使用由 ICE 组件拥有的 `DatagramSocket` 收发 Link 数据，适配器不关闭 ICE socket。
-- 本机同一局域网 ICE connectivity checks 已完成并选出 host candidate pair，随后 KCP 经 ICE 组件 socket 双向传输二进制流。测试丢弃一个 KCP 出站数据报后仍重传恢复 4 KiB 数据；并覆盖 Agent/KCP 资源回收。这证明候选 API、凭据交换、nomination、ICE socket 复用和 LAN KCP 接线可工作；因为两端在同一主机和同一局域网，不构成跨 NAT 或 P2P 可用性证据。乱序、持续丢包、背压和半关闭仍待验证。
+- 本机同一局域网 ICE connectivity checks 已完成并选出 host candidate pair，随后 KCP 经 ICE 组件 socket 双向传输二进制流。测试确定性丢弃两个初始 KCP 数据报并重排后续一对数据报，仍重传恢复 4 KiB 数据；同时断言 ICE host candidate 与组件 application socket 的本地地址一致，并覆盖 Agent/KCP 资源回收。这证明候选 API、凭据交换、nomination、ICE socket 复用和 LAN KCP 接线可工作；因为两端在同一主机和同一局域网，不构成跨 NAT 或 P2P 可用性证据。低速接收者背压和取消仍待验证。
 - 通过临时 JDK `keytool` 证书在 KCP 字节流上完成 JSSE TLS 1.3 双向身份校验及加密应用数据传输；使用未受信的客户端证书时，服务端拒绝握手。测试证书、私钥和信任库只存在系统临时目录，测试退出时删除。
-- 完成同机整链路：ICE → KCP → TLS 1.3 mTLS → Netty HTTP/2 CONNECT → 本机 TCP echo 目标。HTTP/2 CONNECT 的 1 KiB 二进制 DATA 通过 TCP 目标完整往返。HTTP/2 目前只在测试 profile 引入 `netty-codec-http2`；此集成证明本机编解码和接线，不是多网段性能或公网部署证据。
+- 完成同机整链路：ICE → KCP → TLS 1.3 mTLS → Netty HTTP/2 CONNECT → 本机 TCP echo 目标。HTTP/2 CONNECT 的 1 KiB 二进制 DATA 通过 TCP 目标完整往返；客户端 HTTP/2 END_STREAM 映射为目标 TCP 输出半关闭，回程 EOF 映射为响应 END_STREAM。HTTP/2 目前只在测试 profile 引入 `netty-codec-http2`；此集成证明本机编解码和接线，不是多网段性能或公网部署证据。
 - ice4j 默认会探测 AWS 映射 harvester；该测试通过 `ice4j.harvest.mapping.aws.enabled=false` 关闭了无关探测，初始化从数秒降至亚秒。产品配置仍需明确决定是否启用云厂商专属 harvester。
 
 下一步仍需完成：
 
 - 通过公网两端执行跨 NAT 实验，记录映射地址、候选对、建连耗时及实际路径。
-- 为 KCP over ICE 补可靠、有序、丢包/乱序、背压、半关闭和取消测试，并比较选中 ICE 本地候选端口与组件 application socket 实际本地端口。
+- 为 KCP over ICE 补低速接收者背压、取消测试，并将链路测试移至 Java 21 运行时重跑。
 - 连接 TLS 1.3 双向校验、HTTP/2 CONNECT 和目标 TCP 服务，并记录 B 不可见业务明文的证据。
 
 ## 尚未完成的 POC-02/03 门槛
 
 - 跨 NAT 候选协商；同机/同 LAN 测试和 UDP echo 不算跨 NAT 通过。
-- 可靠有序双向通道、丢包/乱序、背压、取消、半关闭和资源回收。
+- 可靠有序双向通道已在同机 LAN 覆盖二进制往返、两个初始数据报丢弃、数据报重排、TCP/HTTP2 半关闭与资源回收；低速接收者背压和取消尚未验证。
 - A—C TLS 1.3 + HTTP/2 CONNECT 端到端目标访问，B 不可见明文。
 - 阻断 UDP 后经 WSS B 中继完成同一安全链路；认证或授权失败不能回退放行。
 - Linux x64、macOS ARM64、Windows x64 的依赖和关闭行为。

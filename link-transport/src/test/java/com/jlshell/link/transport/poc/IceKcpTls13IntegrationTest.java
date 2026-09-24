@@ -135,13 +135,21 @@ class IceKcpTls13IntegrationTest {
             }
             assertNotNull(componentA.getSelectedPair(), "ICE A did not nominate the reachable pair");
             assertNotNull(componentC.getSelectedPair(), "ICE C did not nominate the reachable pair");
+            assertEquals(localA.getTransportAddress(), componentA.getSocket().getLocalSocketAddress(),
+                    "ICE A host candidate and application socket do not share a local address");
+            assertEquals(localC.getTransportAddress(), componentC.getSocket().getLocalSocketAddress(),
+                    "ICE C host candidate and application socket do not share a local address");
+            assertEquals(localA.getTransportAddress(),
+                    componentA.getSelectedPair().getLocalCandidate().getTransportAddress());
+            assertEquals(localC.getTransportAddress(),
+                    componentC.getSelectedPair().getLocalCandidate().getTransportAddress());
 
             try (IceKcpPeer peerA = new IceKcpPeer(
                             componentA.getSocket(),
-                            componentA.getSelectedPair().getRemoteCandidate().getTransportAddress(), true);
+                            componentA.getSelectedPair().getRemoteCandidate().getTransportAddress(), 2, true);
                     IceKcpPeer peerC = new IceKcpPeer(
                             componentC.getSocket(),
-                            componentC.getSelectedPair().getRemoteCandidate().getTransportAddress(), false)) {
+                            componentC.getSelectedPair().getRemoteCandidate().getTransportAddress(), 0, false)) {
                 byte[] payload = new byte[4_096];
                 for (int i = 0; i < payload.length; i++) {
                     payload[i] = (byte) (i * 31 + (i >>> 3));
@@ -149,7 +157,8 @@ class IceKcpTls13IntegrationTest {
                 peerA.send(payload);
                 assertArrayEquals(payload, peerC.receiveExactly(payload.length),
                         "KCP did not recover dropped data over the ICE component sockets");
-                assertTrue(peerA.droppedPackets.get() == 1, "KCP loss injection did not run");
+                assertEquals(2, peerA.droppedPackets.get(), "KCP loss injection did not drop both initial datagrams");
+                assertTrue(peerA.reorderedPackets.get(), "KCP datagram reorder injection did not run");
                 byte[] response = new byte[777];
                 for (int i = 0; i < response.length; i++) {
                     response[i] = (byte) (255 - i * 13);
@@ -187,11 +196,13 @@ class IceKcpTls13IntegrationTest {
                         for (int i = 0; i < connectData.length; i++) {
                             connectData[i] = (byte) (i * 7 + 3);
                         }
-                        h2.sendData(connectData);
+                        h2.sendData(connectData, true);
                         transferClientH2ToServer(tlsClient, peerA, tlsServer, peerC, h2);
                         transferServerH2ToClient(tlsClient, peerA, tlsServer, peerC, h2);
                         assertArrayEquals(connectData, h2.echoedData.poll(2, TimeUnit.SECONDS),
                                 "HTTP/2 CONNECT data did not reach the TCP target and return");
+                        assertTrue(h2.responseEnded.get(),
+                                "HTTP/2 END_STREAM was not returned after the TCP half-close");
                     }
 
                     SSLEngine untrustedClient = identities.untrustedClientContext().createSSLEngine("localhost", 443);
@@ -278,6 +289,7 @@ class IceKcpTls13IntegrationTest {
     private static final class Http2ConnectSession implements AutoCloseable {
         private final AtomicReference<Http2Headers> connectRequest = new AtomicReference<>();
         private final AtomicReference<Socket> targetSocket = new AtomicReference<>();
+        private final AtomicBoolean responseEnded = new AtomicBoolean();
         private final LinkedBlockingQueue<Integer> responseStatus = new LinkedBlockingQueue<>();
         private final LinkedBlockingQueue<byte[]> echoedData = new LinkedBlockingQueue<>();
         private final EmbeddedChannel client;
@@ -322,6 +334,9 @@ class IceKcpTls13IntegrationTest {
                                         dataFrame.content().getBytes(dataFrame.content().readerIndex(), request);
                                         socket.getOutputStream().write(request);
                                         socket.getOutputStream().flush();
+                                        if (dataFrame.isEndStream()) {
+                                            socket.shutdownOutput();
+                                        }
                                         byte[] response = socket.getInputStream().readNBytes(request.length);
                                         if (response.length != request.length) {
                                             throw new IOException("TCP target returned a truncated response");
@@ -346,6 +361,7 @@ class IceKcpTls13IntegrationTest {
                                 byte[] bytes = new byte[dataFrame.content().readableBytes()];
                                 dataFrame.content().getBytes(dataFrame.content().readerIndex(), bytes);
                                 echoedData.offer(bytes);
+                                responseEnded.set(dataFrame.isEndStream());
                             }
                         }
                     })
@@ -364,8 +380,9 @@ class IceKcpTls13IntegrationTest {
                     && ("127.0.0.1:" + targetPort).contentEquals(headers.authority());
         }
 
-        private void sendData(byte[] payload) {
-            clientStream.writeAndFlush(new DefaultHttp2DataFrame(Unpooled.wrappedBuffer(payload.clone()), false));
+        private void sendData(byte[] payload, boolean endStream) {
+            clientStream.writeAndFlush(new DefaultHttp2DataFrame(
+                    Unpooled.wrappedBuffer(payload.clone()), endStream));
             client.runPendingTasks();
         }
 
@@ -683,8 +700,12 @@ class IceKcpTls13IntegrationTest {
         private final IceComponentDatagramAdapter adapter;
         private final Kcp engine;
         private final ArrayBlockingQueue<byte[]> received = new ArrayBlockingQueue<>(4);
-        private final boolean dropFirstPacket;
+        private final int dropFirstPackets;
+        private final boolean reorderFirstPair;
+        private final AtomicInteger outboundPackets = new AtomicInteger();
         private final AtomicInteger droppedPackets = new AtomicInteger();
+        private final AtomicReference<byte[]> delayedDatagram = new AtomicReference<>();
+        private final AtomicBoolean reorderedPackets = new AtomicBoolean();
         private final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor(
                 Thread.ofPlatform().name("ice-kcp-poc-timer-", 0).factory());
         private final AtomicBoolean closed = new AtomicBoolean();
@@ -693,9 +714,11 @@ class IceKcpTls13IntegrationTest {
         private IceKcpPeer(
                 DatagramSocket iceSocket,
                 SocketAddress remote,
-                boolean dropFirstPacket) throws SocketException {
+                int dropFirstPackets,
+                boolean reorderFirstPair) throws SocketException {
             this.iceSocket = iceSocket;
-            this.dropFirstPacket = dropFirstPacket;
+            this.dropFirstPackets = dropFirstPackets;
+            this.reorderFirstPair = reorderFirstPair;
             this.iceSocket.setSoTimeout(100);
             this.adapter = new IceComponentDatagramAdapter(iceSocket, remote, this::receiveSegment);
             this.engine = new Kcp(0x4A4C5348, this::sendSegment);
@@ -740,7 +763,19 @@ class IceKcpTls13IntegrationTest {
             try {
                 byte[] datagram = new byte[segment.readableBytes()];
                 segment.getBytes(segment.readerIndex(), datagram);
-                if (dropFirstPacket && droppedPackets.compareAndSet(0, 1)) {
+                if (outboundPackets.getAndIncrement() < dropFirstPackets) {
+                    droppedPackets.incrementAndGet();
+                    return;
+                }
+                byte[] delayed = delayedDatagram.getAndSet(null);
+                if (reorderFirstPair && !reorderedPackets.get()) {
+                    if (delayed == null) {
+                        delayedDatagram.set(datagram);
+                        return;
+                    }
+                    adapter.send(datagram);
+                    adapter.send(delayed);
+                    reorderedPackets.set(true);
                     return;
                 }
                 adapter.send(datagram);
