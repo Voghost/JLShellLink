@@ -25,6 +25,7 @@ import io.netty.handler.codec.http2.Http2HeadersFrame;
 import io.netty.handler.codec.http2.Http2MultiplexHandler;
 import io.netty.handler.codec.http2.Http2StreamChannel;
 import io.netty.handler.codec.http2.Http2StreamChannelBootstrap;
+import com.jlshell.link.core.transport.TlsPeerContext;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.InetAddress;
@@ -62,7 +63,6 @@ import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLEngineResult;
 import javax.net.ssl.SSLException;
 import javax.net.ssl.SSLParameters;
-import javax.net.ssl.TrustManagerFactory;
 import kcp.IKcp;
 import kcp.Kcp;
 import org.ice4j.ice.Agent;
@@ -231,6 +231,14 @@ class IceKcpTls13IntegrationTest {
                     assertThrows(SSLException.class, () -> completeHandshake(
                             new TlsEndpoint(untrustedClient, peerA), new TlsEndpoint(secondServer, peerC)),
                             "server accepted a client certificate outside its test trust store");
+
+                    SSLEngine wrongPinClient = identities.wrongPinClientContext().createSSLEngine("localhost", 443);
+                    configureTls13(wrongPinClient, true);
+                    SSLEngine thirdServer = identities.serverContext().createSSLEngine();
+                    configureTls13(thirdServer, false);
+                    assertThrows(SSLException.class, () -> completeHandshake(
+                            new TlsEndpoint(wrongPinClient, peerA), new TlsEndpoint(thirdServer, peerC)),
+                            "client accepted a trusted certificate with the wrong public key pin");
                 }
 
                 CompletableFuture<byte[]> blockedRead = CompletableFuture.supplyAsync(() -> {
@@ -604,16 +612,19 @@ class IceKcpTls13IntegrationTest {
         private final SSLContext clientContext;
         private final SSLContext serverContext;
         private final SSLContext untrustedClientContext;
+        private final SSLContext wrongPinClientContext;
 
         private TlsTestIdentities(
                 Path directory,
                 SSLContext clientContext,
                 SSLContext serverContext,
-                SSLContext untrustedClientContext) {
+                SSLContext untrustedClientContext,
+                SSLContext wrongPinClientContext) {
             this.directory = directory;
             this.clientContext = clientContext;
             this.serverContext = serverContext;
             this.untrustedClientContext = untrustedClientContext;
+            this.wrongPinClientContext = wrongPinClientContext;
         }
 
         private static TlsTestIdentities create() throws Exception {
@@ -634,9 +645,10 @@ class IceKcpTls13IntegrationTest {
             importCertificate(serverTrust, "client", clientCertificate);
             return new TlsTestIdentities(
                     directory,
-                    sslContext(clientIdentity, clientTrust),
-                    sslContext(serverIdentity, serverTrust),
-                    sslContext(untrustedClientIdentity, clientTrust));
+                    pinnedSslContext(clientIdentity, clientTrust, serverCertificate, false),
+                    pinnedSslContext(serverIdentity, serverTrust, clientCertificate, false),
+                    pinnedSslContext(untrustedClientIdentity, clientTrust, serverCertificate, false),
+                    pinnedSslContext(clientIdentity, clientTrust, serverCertificate, true));
         }
 
         private static void generateIdentity(
@@ -679,7 +691,8 @@ class IceKcpTls13IntegrationTest {
             }
         }
 
-        private static SSLContext sslContext(Path identity, Path trust) throws Exception {
+        private static SSLContext pinnedSslContext(Path identity, Path trust, Path peerCertificate,
+                boolean corruptPin) throws Exception {
             KeyStore keyStore = KeyStore.getInstance("PKCS12");
             try (var input = Files.newInputStream(identity)) {
                 keyStore.load(input, PASSWORD);
@@ -691,13 +704,17 @@ class IceKcpTls13IntegrationTest {
             try (var input = Files.newInputStream(trust)) {
                 trustStore.load(input, PASSWORD);
             }
-            TrustManagerFactory trustManagers = TrustManagerFactory.getInstance(
-                    TrustManagerFactory.getDefaultAlgorithm());
-            trustManagers.init(trustStore);
-
-            SSLContext context = SSLContext.getInstance("TLSv1.3");
-            context.init(keyManagers.getKeyManagers(), trustManagers.getTrustManagers(), null);
-            return context;
+            java.security.cert.X509Certificate peer;
+            try (var input = Files.newInputStream(peerCertificate)) {
+                peer = (java.security.cert.X509Certificate) java.security.cert.CertificateFactory
+                        .getInstance("X.509").generateCertificate(input);
+            }
+            byte[] pin = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(peer.getPublicKey().getEncoded());
+            if (corruptPin) {
+                pin[0] ^= 1;
+            }
+            return TlsPeerContext.create(keyManagers.getKeyManagers(), trustStore, pin);
         }
 
         private SSLContext clientContext() {
@@ -710,6 +727,10 @@ class IceKcpTls13IntegrationTest {
 
         private SSLContext untrustedClientContext() {
             return untrustedClientContext;
+        }
+
+        private SSLContext wrongPinClientContext() {
+            return wrongPinClientContext;
         }
 
         @Override

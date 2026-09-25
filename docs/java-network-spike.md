@@ -5,6 +5,16 @@
 - Java 基线：Java 21；本机当前默认运行时为 OpenJDK 26.0.1，Maven 3.9.16
 - 状态：P0 **原型门槛通过**。真实不同出口 A/C 经公网 B 的 STUN 和信令完成 ICE 候选选定，在同一 UDP socket 上以 KCP、双向 TLS 1.3、`h2` 和 HTTP/2 CONNECT 访问 C 的 TCP echo 目标；4096 字节回显及半关闭通过。`auto` 模式真实跨 NAT 直连通过；B 上两个独立容器网络命名空间先直连，再在 A' 内核阻断业务 UDP，`auto` 于 2 秒后只回退一次 WSS，并完成内层 mTLS/CONNECT。精简 KCP 传递依赖后，真实跨 NAT 整链路复跑通过。本机 11 项 Java 测试通过；此前 Linux/macOS/Windows Java 21 CI 通过，本分支的 CI 待 PR 检查。Windows hosted runner 因缺少可用 ICE 候选跳过该项，不能宣称 Windows ICE 已验收。原型不能直接部署为生产 P2P/Relay，正式鉴权、限额和容量在后续阶段实现。
 
+## NET-01 实施进度（2026-09-25）
+
+- `ReliableDuplexChannel` 已补充异步读取、EOF、可写通知、完整写入完成、输出半关闭、异常终止和关闭结果的统一语义；目前仍没有正式直连与 WSS 通道实现。
+- `TransportBudget` 已定义帧/头大小、并发流、写队列、单流和总缓冲、握手并发与超时的有限配置约束。
+- `NettyReliableDuplexChannel` 已提供有界 `ByteBuf` 字节流适配，支持分块读取、主动读背压、共享总缓冲账本、写队列限制、读取消、承载定义的半关闭动作及失败传播。多流复用时必须让所有通道共享同一个 `TransportBufferBudget`；目前尚未将它接入正式 direct/WSS 或 HTTP/2 child stream。
+- 新增 `TlsPeerContext` 与 `PinnedPeerTrustManager`：由显式信任库执行 PKIX 校验，并额外校验预期叶证书 SPKI SHA-256；TLS 仅启用 1.3，服务端要求客户端证书，ALPN 限定为 `h2`，每条隧道创建独立上下文。
+- `TlsPeerHandler` 已将 TLS 1.3 peer context 接入 Netty `SslHandler`，并从共享传输预算应用握手超时。
+- ICE/KCP/mTLS 集成测试现使用该 TLS 工厂，验证双向证书信任成功、未受信客户端被拒绝及公钥指纹错误被拒绝。Netty 字节流适配器契约测试验证了取消读取、切块、EOF、队列超限、跨通道总缓冲限制与半关闭委托；TLS handler 测试验证握手超时和协议版本。全工程 `mvn -B -ntp verify` 在本机 OpenJDK 26.0.1 上通过（32 项测试，Java 编译目标为 21）。
+- 此进度**不代表 NET-01 验收完成**：Netty 承载桥、正式 CONNECT 流、多路复用与端到端背压联动、承载无关契约测试及 Java 21 CI 仍待实现和验证。
+
 ## 真实 A/B/C 主机联调（2026-09-24）
 
 用户提供的拓扑：A 是开发机 macOS（`192.168.1.0/24` 网段），B 是云主机，C 是 Arch Linux 内网主机（`192.168.31.0/24` 网段）。B、C 以密钥 SSH 连通。所有探针只在三端同名的临时隔离目录 `jlshell-link-p0-20260924` 中运行；B、C 使用 `/var/tmp/`，A 使用 `/private/tmp/`。未修改现有进程、服务配置、防火墙或 Docker 容器。测试前核对端口空闲，结束后核对临时监听和 C 的探针进程已经退出。
