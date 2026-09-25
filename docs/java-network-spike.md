@@ -7,19 +7,29 @@
 
 ## NET-01 实施进度（2026-09-25）
 
-- `ReliableDuplexChannel` 已补充异步读取、EOF、可写通知、完整写入完成、输出半关闭、异常终止和关闭结果的统一语义；目前仍没有正式直连与 WSS 通道实现。
+- `ReliableDuplexChannel` 已补充异步读取、EOF、可写通知、完整写入完成、输出半关闭、异常终止和关闭结果的统一语义。直连由 `KcpReliableDuplexChannel` 实现，WSS CONNECT 由 `ConnectClientMultiplexer.ConnectTunnel` 实现；两端调用相同的 `ReliableDuplexChannelContract` 测试。
 - `TransportBudget` 已定义帧/头大小、并发流、写队列、单流和总缓冲、握手并发与超时的有限配置约束。
 - `NettyReliableDuplexChannel` 已提供有界 `ByteBuf` 字节流适配，支持分块读取、主动读背压、共享总缓冲账本、写队列限制、读取消、承载定义的半关闭动作及失败传播。多流复用时必须让所有通道共享同一个 `TransportBufferBudget`。
+- `IceSelectedDatagramPath` 把 ice4j nomination 后的远端地址和组件应用 socket 接到 KCP；它拥有接收线程、校验远端地址、设置有界接收超时并在关闭时恢复原超时，不关闭 ICE 所有的 socket。`KcpReliableDuplexChannel` 使用固定 MTU、拥塞控制、最多 64 个 KCP 窗口、受限数据报队列和共享字节预算；DATA/EOF 控制记录提供顺序字节流、取消、写入确认和半关闭。
 - 新增 `TlsPeerContext` 与 `PinnedPeerTrustManager`：由显式信任库执行 PKIX 校验，并额外校验预期叶证书 SPKI SHA-256；TLS 仅启用 1.3，服务端要求客户端证书，ALPN 限定为 `h2`，每条隧道创建独立上下文。
 - `TlsPeerHandler` 已将 TLS 1.3 peer context 接入 Netty `SslHandler`，并从共享传输预算应用握手超时。
-- ICE/KCP/mTLS 集成测试现使用该 TLS 工厂，验证双向证书信任成功、未受信客户端被拒绝及公钥指纹错误被拒绝。Netty 字节流适配器契约测试验证了取消读取、切块、EOF、队列超限、跨通道总缓冲限制与半关闭委托；TLS handler 测试验证握手超时、TLS 版本和并发闸门。全工程 `mvn -B -ntp verify` 在本机 OpenJDK 26.0.1 上通过（40 项测试，Java 编译目标为 21）。
+- ICE/KCP/mTLS 集成测试现也通过新 `KcpReliableDuplexChannel` 建立直接路径，验证双向证书信任、TLS 1.3、HTTP/2 CONNECT、4096 字节 TCP echo 与半关闭。错误客户端证书和错误公钥固定仍由拒绝测试覆盖。Netty 与 KCP 共同字节流契约覆盖完整二进制回显、读取分块与半关闭；Netty 适配器还覆盖取消读取、EOF、队列超限和共享总缓冲限制；TLS handler 测试覆盖握手超时、TLS 版本与并发闸门。
 - 新增生产依赖 `netty-codec-http2` 和服务端 `ConnectStreamMultiplexer`：每条 HTTP/2 子流校验 CONNECT 与一次性票据字段，通过 fail-closed 授权回调后才连接规范化数值 IP；限制并发流、请求头/帧、建连队列与共享缓冲；DATA 写完后再归还入站流控信用，发送方向随写队列和 HTTP/2 可写状态暂停读取，较大的目标读取会切成协议允许大小的 DATA 帧。请求 END_STREAM 映射为目标 TCP 输出半关闭，目标 EOF 映射为响应 END_STREAM，RST 和通道关闭会回收目标与计时器。四条 EmbeddedChannel 测试覆盖双向二进制、大目标读取分帧、半关闭/EOF、拒绝、主机名目标、缺票据和授权超时。
 - 新增客户端 `ConnectClientMultiplexer`：在已认证 HTTP/2 parent 上按 tunnel 开子流，发送协议文档定义的授权头，只有收到 `:status 200` 才交付 `ReliableDuplexChannel`；非成功状态 fail closed。入站 DATA frame 保留到调用者读取完才释放，使 HTTP/2 流控信用与业务消费关联；写入按帧上限切分，并与总预算、单流队列、半关闭和建连响应截止时间联动。三条客户端/服务端 EmbeddedChannel 联调测试覆盖大于帧上限的二进制往返、拒绝后不拨号、缺票据前置拦截、半关闭/EOF 和缓冲回收。
 - `TlsHandshakeGate` 已提供跨连接共享的 TLS 握手槽位：达到上限时在 TLS 握手前关闭新连接，握手结束或通道关闭时释放槽位。Netty 测试覆盖预激活通道的并发拒绝与关闭后重新接纳；WSS Upgrade 后的活跃通道也先取得槽位再添加内层 `SslHandler`，避免握手先于限额。direct 入口仍未接线，CONNECT setup 并发槽也仍沿用 `maxConcurrentHandshakes` 预算值。
 - `SecureConnectPipeline` 提供共用的客户端/服务端 Netty 管线入口：在通道激活前安装共享握手闸门与 TLS，只有双向 TLS 握手成功且 ALPN 确实协商为 `h2` 才安装有限流设置的 HTTP/2 编解码和 CONNECT 子流处理器；握手失败、ALPN 缺失或通道提前关闭时，ready stage 失败并关闭通道。调用方必须等待 ready stage 后才开放新 CONNECT 流。该入口尚需由正式 direct/WSS 承载调用，不能视为两个承载已完成。
 - `WebSocketByteStreamCodec` 把已认证 WSS 的二进制帧转换为内层 TLS 可消费的有序字节，并把内层 TLS 写出分片成 WSS 二进制消息。它拒绝文本、异常续帧和超预算消息；待发送字节有独立上限，保留 Ping/Pong 与连接关闭处理。
 - `WssSecureConnector` 为 A/C 两侧建立仅限 `wss://` 的出站连接：外层 TLS 1.3 校验证书链及主机名，WSS 禁用扩展并限制帧大小，Upgrade 成功后插入字节流 codec、共享握手闸门、内层双向 TLS 1.3 与 `h2`/CONNECT 管线。就绪结果只有内层安全管线完成才成功；连接、握手或取消失败会关闭 socket。调用方需使用明确受信的外层 SSLContext、每次会话的新鲜内层固定公钥上下文及 B 签发的连接凭据。新增本机 WSS 配对整链路用例，以生产 A/C connector、内层 TLS/HTTP2、正式 CONNECT 两端和真实 TCP echo 目标验证 4096 字节双向完整、半关闭与 B 不见明文；该用例发现并修复了 `tcpConnector` 缺失 Netty Bootstrap handler 导致真实目标始终返回 502 的问题。B 的正式鉴权与双端配对仍未实现。
-- 此进度**不代表 NET-01 验收完成**：授权器尚未接入真实票据/ACL 服务；direct 适配、B 的正式 WSS 服务与两种承载共用的契约测试仍待完成。本次代码已按 Java 21 API 编译，PR 的 Java 21 CI 检查需在提交后确认。
+- **NET-01 的传输模块验收项已完成**：direct KCP 与 WSS CONNECT 实现同一字节流接口；同一契约测试在两种承载运行；TLS 1.3 双向证书/公钥校验、帧与缓冲限制、背压、半关闭、错误传播、WSS 明文隔离均有实现和测试。每个 A-C 隧道必须通过 `TlsPeerContext.create` 使用新建的内层 TLS 上下文；TLS 1.3 与 WSS `allowExtensions(false)` 禁用 TLS/业务压缩和 WebSocket 扩展协商。正式 B WSS 身份配对及 Website 票据/ACL 实际接入归 SRV-01/WEB-02；direct 与 relay 竞争选路、网络代次、授权后只开一条目标流归 NET-02，不能因 NET-01 传输层完成而宣称整套产品已上线。
+
+## NET-02 实施进度（2026-09-25）
+
+- `link-client` 新增 `ConnectionCoordinator`，提供可配置 direct/relay 建连超时、ICE 候选数上限和当前网络代次；`AUTO` 按 direct 失败后 relay 的次序尝试，只有显式标记为可跨路径重试的网络失败才会降级，未分类异常、授权/身份/协议/配额错误和取消均不会触发 Relay。`DIRECT_ONLY` 绝不调用 relay connector；`RELAY_ONLY` 不调用 direct connector。
+- 承载 connector 必须在候选检查、TLS peer 身份校验和 `h2` ready 后才交付 `SecureCarrier`。协调器选定一个承载后才调用一次 target opener；目标授权或建流失败会关闭承载并返回错误，不会拿同一票据再次尝试或重复拨号。迟到的承载会立即释放；连接返回值绑定实际路径及网络代次。
+- 网络代次递增会取消旧代次的待建连接并使 connector 收到 cancellation signal。已完成的 tunnel 不参加代次取消，网络切换不会把仍在工作的中继流强制迁移。断线恢复必须由宿主重新向授权方申请一次性票据和新 tunnel ID；协调器不复用旧票据。
+- `Observer` 只收到路径、状态、耗时和有限的失败类别；不会收到候选地址、目标、身份凭据或 ticket。返回的连接对应用层发送/接收负载做字节计数，能据此区分实际 DIRECT/RELAY 流量，不统计网络、TLS 或 HTTP/2 协议开销。
+- 新增 9 个 `ConnectionCoordinatorTest`，覆盖三种路径策略、授权失败拒绝降级、未分类错误拒绝降级、超时后的 Relay 回退和迟到 direct 清理、target 只开一次、错误路径标签拒绝、网络代次失效、连接字节计数。
+- **完成边界：** 这是可复用的选路策略与连接生命周期 API，不代表 Java Agent/客户端已经接入。正式 Website 票据/ACL 与 B 的节点配对属 WEB/SRV；C 端 ICE 收集、选定候选与系统网络切换属 AGENT；真实 A 端客户端将 direct KCP 安全流和 WSS HTTP/2 carrier 接到本协调器、以及宿主断线后重新授权/恢复，仍需 CLIENT/AGENT/SRV 的产品实现和跨模块验收。已记录的真实跨出口 ICE/KCP 与真实 WSS 降级是 POC 证据，不能替代这些正式集成。
 
 ## 真实 A/B/C 主机联调（2026-09-24）
 
@@ -57,11 +67,11 @@
 | 组件 | 固定候选 | 许可证 | 当前决策 |
 |---|---|---|---|
 | Netty | `4.2.18.Final` | Apache-2.0 | 原型 BOM 固定；正式使用前继续检查目标平台与许可证清单。KCP 间接引入的 `netty-all` 已排除并完成真实跨 NAT 复跑。 |
-| ice4j | `org.jitsi:ice4j:3.2-17-geea6cd3` | Apache-2.0 | 固定在测试候选 profile；`Component.getSocket()` 的同 socket 数据面经跨 NAT ICE/KCP/CONNECT 验证。Windows 真网卡 ICE 与长期运行仍待验收。 |
-| Java KCP | `com.github.l42111996:kcp-base:1.6` | Apache-2.0 | 仍是测试候选，不进入生产运行依赖；底层 `Kcp` 接入 ICE 已选 socket。`kcp-fec` 提供其必需 `Snmp` 类，不能排除；`netty-all` 已排除，依赖从 81 JAR 降至 41 JAR，跨 NAT 复跑通过。维护风险留到 NET 阶段审查。 |
+| ice4j | `org.jitsi:ice4j:3.2-17-geea6cd3` | Apache-2.0 | 固定在测试候选 profile，运行依赖不引入 ICE agent；`IceSelectedDatagramPath` 只接收 nomination 结果和组件应用 socket。Windows 真网卡 ICE 与长期运行仍待验收。 |
+| Java KCP | `com.github.l42111996:kcp-base:1.6` | Apache-2.0 | NET-01 已提升为 `link-transport` 编译/运行依赖。依赖树为 `kcp-fec:1.6`、`jctools-core:3.0.0`、`slf4j-api:1.7.30`、`slf4j-simple:1.7.30`；`netty-all` 已排除。当前数据面只用 `Kcp`/`KcpOutput`，不加载 JNI/native 代码；上游版本较旧，更新前需重新做互通与丢包测试。 |
 | JDK API | Java 21 NIO DatagramChannel | 当前 POC 直接持有单个 UDP socket，并验证 STUN/Link 数据报分流与本地端口保持；未实现 STUN 完整解析或 KCP。 |
 
-参考来源： [Netty 官方下载页](https://netty.io/downloads.html)、[Maven Central ice4j](https://central.sonatype.com/artifact/org.jitsi/ice4j)、[java-Kcp 上游 README](https://github.com/l42111996/java-Kcp/blob/master/README.en.md)、[Maven Central kcp-base](https://central.sonatype.com/artifact/com.github.l42111996/kcp-base)。版本与维护状况在进入正式依赖前重新核对。
+参考来源： [Netty 官方下载页](https://netty.io/downloads.html)、[Maven Central ice4j](https://central.sonatype.com/artifact/org.jitsi/ice4j)、[java-Kcp 上游 README](https://github.com/l42111996/java-Kcp/blob/master/README.en.md)、[java-Kcp Apache-2.0 许可证](https://github.com/l42111996/java-Kcp/blob/master/LICENSE)、[Maven Central kcp-base](https://central.sonatype.com/artifact/com.github.l42111996/kcp-base)。KCP 已进入 NET-01 运行依赖；版本升级前需重新核对来源、维护情况、依赖树和许可证。
 
 ## POC-01：socket 分流骨架
 
@@ -101,3 +111,14 @@ Java 21 CI 发现 JSSE 应用缓冲区低于 `SSLSession.getApplicationBufferSiz
 - Java 21 的新 CI 检查、Windows 真正可用网络下的 ICE、长时间网络与慢 Relay 容量仍需后续验证。Windows hosted runner 的 ICE 跳过不能当作通过。
 - 依赖许可证按上游候选记录；`kcp-fec` 是运行时必需类来源，已排除其无用的 `netty-all` 传递包。正式引入运行时依赖前继续核对维护状态和最终制品许可清单。
 - Rust 运行时在迁移及恢复演练完成前保留，不因 P0 原型放行而删除。
+
+## SRV-01 / AGENT-01 Java 组件进展（2026-09-25）
+
+本分支新增了可独立构建的 Link Server 与 C Agent 核心组件：
+
+- B：`WssRelayServer` 的一次性 challenge/proof + WSS upgrade、同账号/session/tunnel/节点指纹配对、有界 opaque-frame 转发、Binding-only STUN、节点控制租约 registry、优雅关闭和 Spring lifecycle adapter。
+- C：一次性 enrollment client、0600/0700 POSIX 身份文件、Website 心跳/撤销/Relay 请求轮询、退避控制会话、主动出站 WSS relay、目标 TCP CONNECT 前的 Ed25519 JWS/ACL/JTI 校验和按独立业务授权租约关闭。
+- A：`ReauthorizingConnectionFlow` 每个新 tunnel（包含断线重连）调用 Website 的 `/api/v2/link/access-requests`，复用 session 时仍要求新的 tunnel/JTI/ticket。
+- Website：访问票据绑定 `sessionId + tunnelId`；C 只拉取已激活额度且业务租约有效的 relay 元数据，不取得票据。短票据到期不影响已打开 Relay 的租约续订，但 C 不可使用旧票据建立新配对。
+
+验证以各仓库的本地 Maven 测试为准，不含真实公网部署或跨仓库运行时装配。`RelayControlAuthenticator` 仍是 Link SPI，Website 当前没有注入该 SPI 的实现；WSS control 信令/ICE 候选路由、Agent CLI/平台服务托管及生产部署配置也未完成。故本节不代表 SRV-01/AGENT-01 完成，也不能作为真实 A—C 产品 P2P/Relay 鉴权验收证据。真实不同出口 A/C 网络验收仍依赖生产应用接线后重跑，并单独记录脱敏 STUN 映射、选中候选对、建连时间和数据路径。

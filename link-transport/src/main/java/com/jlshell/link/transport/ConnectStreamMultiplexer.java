@@ -41,6 +41,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.Set;
+import java.util.Map;
 
 /** Server-side HTTP/2 CONNECT multiplexer with a fail-closed authorization hook. */
 public final class ConnectStreamMultiplexer {
@@ -72,6 +75,7 @@ public final class ConnectStreamMultiplexer {
     private final TargetConnector connector;
     private final AtomicInteger activeStreams = new AtomicInteger();
     private final Semaphore setupSlots;
+    private final Map<TunnelId, Set<Channel>> activeTargetChannels = new ConcurrentHashMap<>();
 
     /**
      * One instance represents one authenticated A—C HTTP/2 connection. The
@@ -124,6 +128,12 @@ public final class ConnectStreamMultiplexer {
         return Http2FrameCodecBuilder.forServer().initialSettings(settings).build();
     }
 
+    /** Close every currently open target stream after a policy/Agent revocation event. */
+    public void closeAllAuthorizedStreams() {
+        activeTargetChannels.values().forEach(channels -> channels.forEach(Channel::close));
+        activeTargetChannels.clear();
+    }
+
     /** Add the codec and per-stream CONNECT handler to a server pipeline. */
     public void installServerPipeline(ChannelPipeline pipeline) {
         Objects.requireNonNull(pipeline, "pipeline");
@@ -159,6 +169,7 @@ public final class ConnectStreamMultiplexer {
         private State state = State.WAITING_FOR_REQUEST;
         private TargetEndpoint target;
         private Channel targetChannel;
+        private TunnelId activeTunnelId;
         private boolean requestEnded;
         private boolean responseEnded;
         private boolean setupSlotHeld;
@@ -207,6 +218,7 @@ public final class ConnectStreamMultiplexer {
             try {
                 target = parseAuthority(frame.headers().authority().toString());
                 request = parseAuthorization(frame.headers(), target);
+                activeTunnelId = request.tunnelId();
             } catch (MissingAccessTicketException missingTicket) {
                 respond(context, 401, true);
                 return;
@@ -263,6 +275,15 @@ public final class ConnectStreamMultiplexer {
                     return;
                 }
                 targetChannel = connected;
+                activeTargetChannels.computeIfAbsent(activeTunnelId, ignored -> ConcurrentHashMap.newKeySet())
+                        .add(connected);
+                connected.closeFuture().addListener(ignored -> {
+                    Set<Channel> channels = activeTargetChannels.get(activeTunnelId);
+                    if (channels != null) {
+                        channels.remove(connected);
+                        if (channels.isEmpty()) activeTargetChannels.remove(activeTunnelId, channels);
+                    }
+                });
                 connected.pipeline().addLast(new TargetHandler());
                 state = State.OPEN;
                 cancelSetupTimeout();

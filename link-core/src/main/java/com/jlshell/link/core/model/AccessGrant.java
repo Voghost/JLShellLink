@@ -11,6 +11,8 @@ public record AccessGrant(
         URI issuer,
         String audience,
         UUID accountId,
+        LinkSessionId sessionId,
+        TunnelId tunnelId,
         NodeKeyFingerprint clientKeyFingerprint,
         UUID agentId,
         NodeKeyFingerprint agentKeyFingerprint,
@@ -28,6 +30,8 @@ public record AccessGrant(
         if (!issuer.isAbsolute()) throw new IllegalArgumentException("Issuer must be absolute");
         if (audience == null || audience.isBlank()) throw new IllegalArgumentException("Audience is required");
         Objects.requireNonNull(accountId, "accountId");
+        Objects.requireNonNull(sessionId, "sessionId");
+        Objects.requireNonNull(tunnelId, "tunnelId");
         Objects.requireNonNull(clientKeyFingerprint, "clientKeyFingerprint");
         Objects.requireNonNull(agentId, "agentId");
         Objects.requireNonNull(agentKeyFingerprint, "agentKeyFingerprint");

@@ -39,6 +39,39 @@ B 只能在同账号且已授权的 A/C 间路由候选。旧 generation、跨 s
 - 授权、身份、票据、协议、配额和用户取消错误不得通过换路径重试。
 - 首版不做活跃 tunnel 的无损换路。路径失败后关闭旧 session，重新取票并建立新 session/tunnel。
 
+### 掉线后的重新授权
+
+每次建立目标 TCP 流或在断线后重建该流，A 都调用 `POST /api/v2/link/access-requests`。
+仍有效的 A—C 承载可以沿用 `sessionId`，但 Website 每次必须生成新的 `tunnelId`、JTI
+和签名访问票据；客户端不得缓存并重放旧票据。`POST /sessions/{sessionId}/renew` 只续订
+已建立 tunnel 的运行期授权租约，不签发新的目标访问票据，也不能代替掉线后的授权请求。
+授权成功后，direct 与 relay 竞争同一份新 grant；如果 direct carrier 在目标 CONNECT 之前
+遇到可重试的网络失败，relay 使用同一份 grant 建立 carrier。授权、身份、ACL、配额或协议
+失败不进入另一条路径；CONNECT 已尝试后也不重放一次性票据。已建立的 tunnel 掉线后，
+无论沿用还是新建 session，都重新向 Website 授权并使用新的 tunnel/JTI。
+
+## WSS Relay 身份证明与配对
+
+本实现的 Relay listener 提供 `POST /link/v2/relay-challenges` 和
+`GET /link/v2/relay` WebSocket Upgrade。两次请求都带 `Authorization: Bearer ...`，以及
+`X-Link-Role`、`X-Link-Node-Id`、`X-Link-Agent-Id`、`X-Link-Session-Id`、
+`X-Link-Tunnel-Id` 和 `X-Link-Key-Fingerprint`。挑战响应返回一次性 32 字节 nonce；节点
+对绑定角色、双方业务 ID、session、tunnel、指纹和 nonce 的规范签名输入作 Ed25519 签名，
+Upgrade 请求再提交 `X-Link-Challenge-Id` 与 `X-Link-Proof`。B 每次都重新委托控制面验证
+凭据、在线 C、当前会话/tunnel/账号/身份，再原子消费 proof challenge。Bearer、proof 和
+票据不得写入访问日志。
+
+Upgrade 后，B 只允许同账号、同 agent/session/tunnel、同票据过期时间和预期 A/C 指纹的
+两个不同角色配对；C 必须仍在在线节点租约内。一个 tunnel 只能配对一次。B 将 WSS 二进制
+帧按有界队列双向原样转发，不解密内层 A—C TLS，也不转发文本帧。SRV-01 的在线信令和
+候选路由不是这个 Relay listener 的一部分，必须与实际实现区分。
+
+## STUN
+
+Link Server 的 UDP listener 只提供 RFC 5389 Binding request/response 和
+XOR-MAPPED-ADDRESS（IPv4/IPv6），响应有大小上限并按源 IP 限速；它不分配中继地址，不是
+TURN 服务。公网 UDP bind、NAT 映射及候选信令的生产配置由 Website/SRV 部署集成负责。
+
 ## 数据面与 CONNECT
 
 直连承载为 ICE 选定 UDP socket 上的可靠有序字节流；中继承载为 A/C 主动出站的 WSS 密文字节流。两者之上使用相同的 A—C TLS 1.3 双向认证和 `h2` ALPN。

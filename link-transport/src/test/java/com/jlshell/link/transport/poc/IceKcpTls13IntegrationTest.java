@@ -26,6 +26,10 @@ import io.netty.handler.codec.http2.Http2MultiplexHandler;
 import io.netty.handler.codec.http2.Http2StreamChannel;
 import io.netty.handler.codec.http2.Http2StreamChannelBootstrap;
 import com.jlshell.link.core.transport.TlsPeerContext;
+import com.jlshell.link.core.transport.ReliableDuplexChannel;
+import com.jlshell.link.core.transport.TransportBudget;
+import com.jlshell.link.transport.IceSelectedDatagramPath;
+import com.jlshell.link.transport.KcpReliableDuplexChannel;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.InetAddress;
@@ -50,6 +54,7 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -258,6 +263,53 @@ class IceKcpTls13IntegrationTest {
                 assertFalse(componentC.getSocket().isClosed(),
                         "KCP adapter closed the ICE-owned application socket");
             }
+
+            TransportBudget directBudget = new TransportBudget(16_384, 8_192, 8, 65_536,
+                    32_768, 131_072, 4, Duration.ofSeconds(5));
+            try (IceSelectedDatagramPath pathA = new IceSelectedDatagramPath(componentA.getSocket(),
+                            componentA.getSelectedPair().getRemoteCandidate().getTransportAddress(), 1_200, 100);
+                    IceSelectedDatagramPath pathC = new IceSelectedDatagramPath(componentC.getSocket(),
+                            componentC.getSelectedPair().getRemoteCandidate().getTransportAddress(), 1_200, 100);
+                    KcpReliableDuplexChannel directA = new KcpReliableDuplexChannel(0x4A4C4E01,
+                            pathA, directBudget);
+                    KcpReliableDuplexChannel directC = new KcpReliableDuplexChannel(0x4A4C4E01,
+                            pathC, directBudget);
+                    TlsTestIdentities identities = TlsTestIdentities.create()) {
+                SSLEngine directTlsClient = identities.clientContext().createSSLEngine("localhost", 443);
+                configureTls13(directTlsClient, true);
+                SSLEngine directTlsServer = identities.serverContext().createSSLEngine();
+                configureTls13(directTlsServer, false);
+                TlsEndpoint directClient = new TlsEndpoint(directTlsClient, new ReliableChannelPeer(directA));
+                TlsEndpoint directGateway = new TlsEndpoint(directTlsServer, new ReliableChannelPeer(directC));
+                completeHandshake(directClient, directGateway);
+                assertEquals("TLSv1.3", directTlsClient.getSession().getProtocol());
+                assertEquals("TLSv1.3", directTlsServer.getSession().getProtocol());
+
+                try (TcpEchoTarget target = new TcpEchoTarget();
+                        Http2ConnectSession h2 = new Http2ConnectSession(target.port())) {
+                    transferClientH2ToServer(directClient, directGateway, h2);
+                    transferServerH2ToClient(directClient, directGateway, h2);
+                    transferClientH2ToServer(directClient, directGateway, h2);
+                    h2.openConnect();
+                    transferClientH2ToServer(directClient, directGateway, h2);
+                    transferServerH2ToClient(directClient, directGateway, h2);
+                    assertTrue(h2.connectAccepted(), "direct HTTP/2 CONNECT was not accepted");
+                    assertEquals(200, h2.responseStatus.poll(2, TimeUnit.SECONDS));
+
+                    byte[] directPayload = new byte[4_096];
+                    for (int i = 0; i < directPayload.length; i++) {
+                        directPayload[i] = (byte) (i * 29 + (i >>> 2));
+                    }
+                    h2.sendData(directPayload, true);
+                    transferClientH2ToServer(directClient, directGateway, h2);
+                    transferServerH2ToClient(directClient, directGateway, h2);
+                    assertArrayEquals(directPayload, h2.echoedData.poll(2, TimeUnit.SECONDS),
+                            "direct ICE/KCP/TLS/HTTP2 CONNECT data did not echo correctly");
+                    assertTrue(h2.responseEnded.get(), "direct HTTP/2 CONNECT did not map half-close to EOF");
+                }
+            }
+            assertFalse(componentA.getSocket().isClosed(), "direct adapter closed ICE-owned socket A");
+            assertFalse(componentC.getSocket().isClosed(), "direct adapter closed ICE-owned socket C");
         } finally {
             agentA.free();
             agentC.free();
@@ -539,7 +591,7 @@ class IceKcpTls13IntegrationTest {
         }
     }
 
-    private static void sendNetworkBytes(IceKcpPeer peer, ByteBuffer bytes) {
+    private static void sendNetworkBytes(ReliablePeer peer, ByteBuffer bytes) throws IOException {
         bytes.flip();
         if (!bytes.hasRemaining()) {
             return;
@@ -549,7 +601,7 @@ class IceKcpTls13IntegrationTest {
         peer.send(packet);
     }
 
-    private static void sendTlsApplicationData(SSLEngine engine, IceKcpPeer peer, byte[] plaintext)
+    private static void sendTlsApplicationData(SSLEngine engine, ReliablePeer peer, byte[] plaintext)
             throws IOException {
         ByteBuffer source = ByteBuffer.wrap(plaintext);
         TlsEndpoint endpoint = new TlsEndpoint(engine, peer);
@@ -565,7 +617,7 @@ class IceKcpTls13IntegrationTest {
 
     private static byte[] receiveTlsApplicationData(TlsEndpoint endpoint, int expectedBytes) throws Exception {
         SSLEngine engine = endpoint.engine;
-        IceKcpPeer peer = endpoint.peer;
+        ReliablePeer peer = endpoint.peer;
         int applicationBufferSize = engine.getSession().getApplicationBufferSize();
         ByteBuffer plaintext = ByteBuffer.allocate(Math.max(expectedBytes + 1_024, applicationBufferSize));
         long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
@@ -594,15 +646,58 @@ class IceKcpTls13IntegrationTest {
 
     private static final class TlsEndpoint {
         private final SSLEngine engine;
-        private final IceKcpPeer peer;
+        private final ReliablePeer peer;
         private final ByteBuffer networkInput = ByteBuffer.allocate(65_536);
         private final ByteBuffer networkOutput = ByteBuffer.allocate(65_536);
         private final ByteBuffer applicationInput = ByteBuffer.allocate(65_536);
 
-        private TlsEndpoint(SSLEngine engine, IceKcpPeer peer) {
+        private TlsEndpoint(SSLEngine engine, ReliablePeer peer) {
             this.engine = engine;
             this.peer = peer;
             networkInput.limit(0);
+        }
+    }
+
+    private interface ReliablePeer {
+        void send(byte[] payload) throws IOException;
+
+        byte[] pollReceived(long timeout, TimeUnit unit) throws InterruptedException, IOException;
+    }
+
+    private static final class ReliableChannelPeer implements ReliablePeer {
+        private final ReliableDuplexChannel channel;
+
+        private ReliableChannelPeer(ReliableDuplexChannel channel) {
+            this.channel = channel;
+        }
+
+        @Override
+        public void send(byte[] payload) throws IOException {
+            try {
+                channel.write(ByteBuffer.wrap(payload)).toCompletableFuture().get(5, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("interrupted writing KCP TLS bytes", e);
+            } catch (ExecutionException | TimeoutException e) {
+                throw new IOException("failed writing KCP TLS bytes", e);
+            }
+        }
+
+        @Override
+        public byte[] pollReceived(long timeout, TimeUnit unit) throws InterruptedException, IOException {
+            var read = channel.read(65_536).toCompletableFuture();
+            try {
+                long timeoutMillis = Math.max(1, unit.toMillis(timeout));
+                ByteBuffer data = read.get(timeoutMillis, TimeUnit.MILLISECONDS);
+                byte[] bytes = new byte[data.remaining()];
+                data.get(bytes);
+                return bytes;
+            } catch (TimeoutException e) {
+                read.cancel(false);
+                return null;
+            } catch (ExecutionException e) {
+                throw new IOException("failed reading KCP TLS bytes", e.getCause());
+            }
         }
     }
 
@@ -743,7 +838,7 @@ class IceKcpTls13IntegrationTest {
         }
     }
 
-    private static final class IceKcpPeer implements AutoCloseable {
+    private static final class IceKcpPeer implements AutoCloseable, ReliablePeer {
         private final DatagramSocket iceSocket;
         private final IceComponentDatagramAdapter adapter;
         private final Kcp engine;
@@ -781,7 +876,8 @@ class IceKcpTls13IntegrationTest {
             timer.scheduleAtFixedRate(this::update, 0, 10, TimeUnit.MILLISECONDS);
         }
 
-        private void send(byte[] payload) {
+        @Override
+        public void send(byte[] payload) {
             synchronized (engine) {
                 ByteBuf data = Unpooled.wrappedBuffer(payload.clone());
                 int result = engine.send(data);
@@ -819,7 +915,8 @@ class IceKcpTls13IntegrationTest {
             return offset == length ? result : java.util.Arrays.copyOf(result, offset);
         }
 
-        private byte[] pollReceived(long timeout, TimeUnit unit) throws InterruptedException {
+        @Override
+        public byte[] pollReceived(long timeout, TimeUnit unit) throws InterruptedException {
             byte[] chunk = received.poll(timeout, unit);
             if (chunk != null && !closed.get()) {
                 synchronized (engine) {
