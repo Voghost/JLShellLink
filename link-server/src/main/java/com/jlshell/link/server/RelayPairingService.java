@@ -1,6 +1,7 @@
 package com.jlshell.link.server;
 
 import com.jlshell.link.core.model.NodeKeyFingerprint;
+import com.jlshell.link.core.model.NodeIdentity;
 import com.jlshell.link.core.model.NodeRole;
 import com.jlshell.link.core.model.TunnelId;
 import com.jlshell.link.core.model.LinkSessionId;
@@ -76,7 +77,7 @@ public final class RelayPairingService implements AutoCloseable {
                 channel.config().setAutoRead(false);
                 return result;
             }
-            validatePair(current, peer);
+            validatePair(current, peer, channel);
             if (current.firstPeer.role() == peer.role()) {
                 throw new RejectedExecutionException("duplicate relay role");
             }
@@ -101,7 +102,7 @@ public final class RelayPairingService implements AutoCloseable {
         return result;
     }
 
-    private void validatePair(PendingPair pair, AuthorizedPeer peer) {
+    private void validatePair(PendingPair pair, AuthorizedPeer peer, Channel joiningChannel) {
         AuthorizedPeer first = pair.firstPeer;
         if (first.role() == peer.role()) return;
         if (!first.accountId().equals(peer.accountId()) || !first.agentId().equals(peer.agentId())
@@ -110,6 +111,14 @@ public final class RelayPairingService implements AutoCloseable {
             throw new RejectedExecutionException("relay peers do not share an authorized session");
         }
         AuthorizedPeer agent = first.role() == NodeRole.AGENT ? first : peer;
+        Channel agentChannel = first.role() == NodeRole.AGENT ? pair.firstChannel : joiningChannel;
+        if (!agentChannel.isActive()) {
+            throw new RejectedExecutionException("target Agent is no longer connected");
+        }
+        NodeConnectionRegistry.Registration liveAgent = nodes.register(
+                new NodeIdentity(agent.agentId(), NodeRole.AGENT, agent.keyFingerprint()),
+                agent.accountId(), UUID.randomUUID(), agent.ticketExpiresAt());
+        agentChannel.closeFuture().addListener(ignored -> nodes.unregister(liveAgent));
         var online = nodes.findOnline(agent.agentId()).orElseThrow(
                 () -> new RejectedExecutionException("target Agent is offline"));
         if (online.identity().role() != NodeRole.AGENT || !online.accountId().equals(agent.accountId())

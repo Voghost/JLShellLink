@@ -304,7 +304,14 @@ public final class WssRelayServer implements AutoCloseable {
                 return;
             }
             context.channel().config().setAutoRead(false);
-            pairings.join(peer, context.channel()).whenComplete((pair, error) -> {
+            java.util.concurrent.CompletionStage<RelayPairingService.PairedChannels> joining;
+            try {
+                joining = pairings.join(peer, context.channel());
+            } catch (RuntimeException rejected) {
+                context.close();
+                return;
+            }
+            joining.whenComplete((pair, error) -> {
                 if (error != null || pair == null) {
                     context.close();
                     return;

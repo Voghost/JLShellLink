@@ -29,8 +29,6 @@ class RelayPairingServiceTest {
         var clientKey = Ed25519NodeKey.generate();
         var agentKey = Ed25519NodeKey.generate();
         var nodes = new NodeConnectionRegistry(clock);
-        nodes.register(new NodeIdentity(agentId, NodeRole.AGENT, agentKey.fingerprint()),
-                account, UUID.randomUUID(), Instant.now().plusSeconds(60));
         var scheduler = Executors.newSingleThreadScheduledExecutor();
         var service = new RelayPairingService(nodes, scheduler, clock, 8, 1024);
         EmbeddedChannel clientChannel = new EmbeddedChannel();
@@ -48,6 +46,8 @@ class RelayPairingServiceTest {
             assertEquals(pair, second.toCompletableFuture().get(1, TimeUnit.SECONDS));
             assertEquals(clientChannel, pair.aChannel());
             assertEquals(agentChannel, pair.cChannel());
+            assertTrue(nodes.findOnline(agentId).isPresent(),
+                    "pairing must register the authenticated, live Agent channel");
 
             EmbeddedChannel duplicate = new EmbeddedChannel();
             try {
@@ -61,6 +61,8 @@ class RelayPairingServiceTest {
             agentChannel.finishAndReleaseAll();
             scheduler.shutdownNow();
         }
+        assertTrue(nodes.findOnline(agentId).isEmpty(),
+                "closing the authenticated Agent channel must clear its online lease");
     }
 
     @Test

@@ -153,8 +153,8 @@ public final class AgentControlSession implements AutoCloseable {
         }, delay, TimeUnit.MILLISECONDS);
     }
 
-    private void handleRelayRequests(List<AgentControlPlaneClient.RelayOpenRequest> requests,
-                                     AgentLeaseSnapshot snapshot) {
+    void handleRelayRequests(List<AgentControlPlaneClient.RelayOpenRequest> requests,
+                             AgentLeaseSnapshot snapshot) {
         java.time.Instant now = java.time.Instant.now();
         java.util.Set<UUID> listed = new java.util.HashSet<>();
         for (AgentControlPlaneClient.RelayOpenRequest request : requests) {
@@ -181,12 +181,12 @@ public final class AgentControlSession implements AutoCloseable {
                         "relay open handler returned null");
                 opening.whenComplete((ignored, error) -> {
                     if (error != null) {
-                        handledRelayRequests.remove(request.tunnelId(), request.ticketExpiresAt());
+                        handledRelayRequests.remove(request.tunnelId(), request.authorizationLeaseExpiresAt());
                         safeStatus("relay-open-failed");
                     }
                 });
             } catch (RuntimeException error) {
-                handledRelayRequests.remove(request.tunnelId(), request.ticketExpiresAt());
+                handledRelayRequests.remove(request.tunnelId(), request.authorizationLeaseExpiresAt());
                 safeStatus("relay-open-failed");
             }
         }
