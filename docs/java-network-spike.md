@@ -111,3 +111,14 @@ Java 21 CI 发现 JSSE 应用缓冲区低于 `SSLSession.getApplicationBufferSiz
 - Java 21 的新 CI 检查、Windows 真正可用网络下的 ICE、长时间网络与慢 Relay 容量仍需后续验证。Windows hosted runner 的 ICE 跳过不能当作通过。
 - 依赖许可证按上游候选记录；`kcp-fec` 是运行时必需类来源，已排除其无用的 `netty-all` 传递包。正式引入运行时依赖前继续核对维护状态和最终制品许可清单。
 - Rust 运行时在迁移及恢复演练完成前保留，不因 P0 原型放行而删除。
+
+## SRV-01 / AGENT-01 Java 组件进展（2026-09-25）
+
+本分支新增了可独立构建的 Link Server 与 C Agent 核心组件：
+
+- B：`WssRelayServer` 的一次性 challenge/proof + WSS upgrade、同账号/session/tunnel/节点指纹配对、有界 opaque-frame 转发、Binding-only STUN、节点控制租约 registry、优雅关闭和 Spring lifecycle adapter。
+- C：一次性 enrollment client、0600/0700 POSIX 身份文件、Website 心跳/撤销/Relay 请求轮询、退避控制会话、主动出站 WSS relay、目标 TCP CONNECT 前的 Ed25519 JWS/ACL/JTI 校验和按独立业务授权租约关闭。
+- A：`ReauthorizingConnectionFlow` 每个新 tunnel（包含断线重连）调用 Website 的 `/api/v2/link/access-requests`，复用 session 时仍要求新的 tunnel/JTI/ticket。
+- Website：访问票据绑定 `sessionId + tunnelId`；C 只拉取已激活额度且业务租约有效的 relay 元数据，不取得票据。短票据到期不影响已打开 Relay 的租约续订，但 C 不可使用旧票据建立新配对。
+
+验证以各仓库的本地 Maven 测试为准，不含真实公网部署或跨仓库运行时装配。`RelayControlAuthenticator` 仍是 Link SPI，Website 当前没有注入该 SPI 的实现；WSS control 信令/ICE 候选路由、Agent CLI/平台服务托管及生产部署配置也未完成。故本节不代表 SRV-01/AGENT-01 完成，也不能作为真实 A—C 产品 P2P/Relay 鉴权验收证据。真实不同出口 A/C 网络验收仍依赖生产应用接线后重跑，并单独记录脱敏 STUN 映射、选中候选对、建连时间和数据路径。

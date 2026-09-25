@@ -198,6 +198,7 @@ paths:
   /api/v2/link/access-requests:
     post:
       operationId: requestAccess
+      description: Each call issues a new one-use tunnel and JTI. Reuse sessionId only to reuse the carrier session; it never reuses an old access ticket.
       security:
         - linkControlCredential: []
       requestBody:
@@ -215,6 +216,7 @@ paths:
   /api/v2/link/sessions/{sessionId}/renew:
     post:
       operationId: renewAuthorizationLease
+      description: Extends the runtime lease for an existing tunnel only. It does not issue a new access ticket and cannot authorize reconnect after a dropped target stream.
       security:
         - linkControlCredential: []
       parameters:
@@ -284,6 +286,20 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/RevocationEvent' }
+  /api/v2/link/agent-relay-requests:
+    get:
+      operationId: listAgentRelayOpenRequests
+      description: Lists up to 100 quota-active tunnels whose independent authorization lease is still valid. Entries may remain visible after the short ticket expires so C can refresh an already-open relay; an expired ticket must never open a new carrier.
+      security:
+        - agentCredential: []
+      responses:
+        '200':
+          description: Active, quota-reserved tunnels the Agent joins through outbound WSS
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/RelayOpenRequest' }
 components:
   securitySchemes:
     accountBearer:
@@ -488,7 +504,10 @@ components:
         targetPort: { type: integer, minimum: 1, maximum: 65535 }
         connectPolicy: { enum: [AUTO, DIRECT_ONLY, RELAY_ONLY] }
         state: { enum: [AUTHORIZED, RELAY_PREPARED, RELAY_ACTIVE, CLOSED, REVOKED, EXPIRED] }
-        accessTicket: { type: string, writeOnly: true }
+        accessTicket:
+          type: string
+          writeOnly: true
+          description: Ed25519 JWS bound to account, A/C key fingerprints, exact target, policyVersion, sessionId, tunnelId and one-use jti.
         ticketExpiresAt: { type: string, format: date-time }
         authorizationLeaseExpiresAt: { type: string, format: date-time }
         policyVersion: { type: integer, minimum: 1 }
@@ -520,3 +539,18 @@ components:
         policyVersion: { type: integer, minimum: 1 }
         reason: { type: string }
         createdAt: { type: string, format: date-time }
+    RelayOpenRequest:
+      type: object
+      required: [sessionId, tunnelId, agentId, clientKeyFingerprint, agentKeyFingerprint, targetIp, targetPort, policyVersion, ticketExpiresAt, authorizationLeaseExpiresAt]
+      description: Metadata only; the access ticket itself is never sent to C through this polling endpoint.
+      properties:
+        sessionId: { type: string, format: uuid }
+        tunnelId: { type: string, format: uuid }
+        agentId: { type: string, format: uuid }
+        clientKeyFingerprint: { $ref: '#/components/schemas/Fingerprint' }
+        agentKeyFingerprint: { $ref: '#/components/schemas/Fingerprint' }
+        targetIp: { type: string, description: Canonical numeric IPv4 or IPv6; DNS names are rejected. }
+        targetPort: { type: integer, minimum: 1, maximum: 65535 }
+        policyVersion: { type: integer, minimum: 1 }
+        ticketExpiresAt: { type: string, format: date-time }
+        authorizationLeaseExpiresAt: { type: string, format: date-time }

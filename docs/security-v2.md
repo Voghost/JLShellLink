@@ -11,11 +11,11 @@
 
 访问票据是 compact JWS，固定 `alg=Ed25519`，必须携带 `kid`。使用 Nimbus JOSE+JWT 解析 JWS，签名在原始 compact signing input 上验证，不把解析后的 JSON 重新序列化再验签。
 
-标准字段：`iss`、单值 `aud`、`iat`、`nbf`、`exp`、`jti`。私有字段：`protocolVersion`、`accountId`、`clientKeyFingerprint`、`agentId`、`agentKeyFingerprint`、`targetIp`、`targetPort`、`capabilities`、`policyVersion`。
+标准字段：`iss`、单值 `aud`、`iat`、`nbf`、`exp`、`jti`。私有字段：`protocolVersion`、`accountId`、`sessionId`、`tunnelId`、`clientKeyFingerprint`、`agentId`、`agentKeyFingerprint`、`targetIp`、`targetPort`、`capabilities`、`policyVersion`。`sessionId + tunnelId + jti` 都必须存在且与当前 CONNECT/relay 握手上下文精确匹配；旧票据不能用于另一条 tunnel。
 
-C 在打开目标 socket 前固定顺序验证：允许的算法 → `kid` 信任来源 → 签名 → issuer/audience → 时间和可注入时钟偏差 → `link-v2` → A/C 身份 → 精确目标 → 当前策略 → 原子消费 jti。任何失败都不能通过直连/中继切换绕过。建议建连票据有效期 60 秒，允许的时钟偏差上限 2 分钟；运行期使用独立授权租约。
+C 在打开目标 socket 前固定顺序验证：允许的算法 → `kid` 信任来源 → 签名 → issuer/audience → 时间和可注入时钟偏差 → `link-v2` → session/tunnel/A/C 身份 → 精确目标 → Website 当前策略与 C 本地 ACL → 原子消费 jti。当前策略校验必须在消费 jti 之前执行；失败时保持票据未消费但拒绝开流。任何失败都不能通过直连/中继切换绕过。建连票据建议有效期 60 秒，允许的时钟偏差上限 2 分钟；已建立 TCP 流使用独立 Website 授权租约，C 控制租约与用户访问租约分别过期关闭。
 
-`ReplayStore.consume(jti, exp, now)` 必须原子化。单 JVM 可使用内存实现；多实例 Website/Agent 使用共享或持久化实现。过期条目可删除，未过期的重复 jti 必须拒绝。
+`ReplayStore.consume(jti, exp, now)` 必须原子化。单 JVM 可使用内存实现；多实例 C 使用共享或持久化实现。过期条目可删除，未过期的重复 jti 必须拒绝。每次掉线后新建目标 TCP 流都要先向 Website 取得新 grant，因此会有新 `tunnelId` 与 JTI；`renew` 仅延长当前已建立流的运行期授权。
 
 ## 目标 ACL
 

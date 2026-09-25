@@ -2,7 +2,9 @@ package com.jlshell.link.core.auth;
 
 import com.jlshell.link.core.model.AccessGrant;
 import com.jlshell.link.core.model.NodeKeyFingerprint;
+import com.jlshell.link.core.model.LinkSessionId;
 import com.jlshell.link.core.model.TargetEndpoint;
+import com.jlshell.link.core.model.TunnelId;
 import com.nimbusds.jose.JOSEException;
 import com.nimbusds.jose.JOSEObjectType;
 import com.nimbusds.jose.JWSAlgorithm;
@@ -22,11 +24,14 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Predicate;
 
 /** Issues and validates raw compact Ed25519 JWS access grants. */
 public final class AccessGrantJwsService {
     private static final String ACCOUNT_ID = "accountId";
     private static final String CLIENT_KEY = "clientKeyFingerprint";
+    private static final String SESSION_ID = "sessionId";
+    private static final String TUNNEL_ID = "tunnelId";
     private static final String AGENT_ID = "agentId";
     private static final String AGENT_KEY = "agentKeyFingerprint";
     private static final String TARGET_IP = "targetIp";
@@ -60,6 +65,8 @@ public final class AccessGrantJwsService {
                 .notBeforeTime(Date.from(grant.notBefore()))
                 .expirationTime(Date.from(grant.expiresAt()))
                 .claim(ACCOUNT_ID, grant.accountId().toString())
+                .claim(SESSION_ID, grant.sessionId().toString())
+                .claim(TUNNEL_ID, grant.tunnelId().toString())
                 .claim(CLIENT_KEY, grant.clientKeyFingerprint().value())
                 .claim(AGENT_ID, grant.agentId().toString())
                 .claim(AGENT_KEY, grant.agentKeyFingerprint().value())
@@ -81,8 +88,18 @@ public final class AccessGrantJwsService {
             String compactJws,
             GrantValidationContext expected,
             SigningKeyResolver keys) throws TicketValidationException {
+        return validate(compactJws, expected, keys, ignored -> true);
+    }
+
+    /** Validate signature and bindings, run current policy checks, then atomically consume jti. */
+    public AccessGrant validate(
+            String compactJws,
+            GrantValidationContext expected,
+            SigningKeyResolver keys,
+            Predicate<AccessGrant> beforeConsume) throws TicketValidationException {
         Objects.requireNonNull(expected, "expected");
         Objects.requireNonNull(keys, "keys");
+        Objects.requireNonNull(beforeConsume, "beforeConsume");
         SignedJWT jwt;
         try {
             jwt = SignedJWT.parse(Objects.requireNonNull(compactJws, "compactJws"));
@@ -114,6 +131,10 @@ public final class AccessGrantJwsService {
         AccessGrant grant = claims(jwt);
         validateContext(grant, expected);
         validateTime(grant);
+        if (!beforeConsume.test(grant)) {
+            throw new TicketValidationException(TicketValidationException.Reason.POLICY,
+                    "Access ticket no longer matches current policy");
+        }
         if (!replayStore.consume(grant.jti(), grant.expiresAt(), clock.instant())) {
             throw new TicketValidationException(TicketValidationException.Reason.REPLAY,
                     "Access ticket was already consumed");
@@ -135,6 +156,8 @@ public final class AccessGrantJwsService {
                     URI.create(required(claims.getIssuer(), "iss")),
                     audience.getFirst(),
                     UUID.fromString(required(claims.getStringClaim(ACCOUNT_ID), ACCOUNT_ID)),
+                    LinkSessionId.parse(required(claims.getStringClaim(SESSION_ID), SESSION_ID)),
+                    TunnelId.parse(required(claims.getStringClaim(TUNNEL_ID), TUNNEL_ID)),
                     new NodeKeyFingerprint(required(claims.getStringClaim(CLIENT_KEY), CLIENT_KEY)),
                     UUID.fromString(required(claims.getStringClaim(AGENT_ID), AGENT_ID)),
                     new NodeKeyFingerprint(required(claims.getStringClaim(AGENT_KEY), AGENT_KEY)),
@@ -156,6 +179,9 @@ public final class AccessGrantJwsService {
         if (!grant.issuer().equals(expected.issuer())) fail(TicketValidationException.Reason.ISSUER);
         if (!grant.audience().equals(expected.audience())) fail(TicketValidationException.Reason.AUDIENCE);
         if (!grant.protocolVersion().equals(expected.protocolVersion())) fail(TicketValidationException.Reason.PROTOCOL);
+        if (!grant.sessionId().equals(expected.sessionId()) || !grant.tunnelId().equals(expected.tunnelId())) {
+            fail(TicketValidationException.Reason.IDENTITY);
+        }
         if (!grant.clientKeyFingerprint().equals(expected.clientKeyFingerprint())
                 || !grant.agentId().equals(expected.agentId())
                 || !grant.agentKeyFingerprint().equals(expected.agentKeyFingerprint())) {

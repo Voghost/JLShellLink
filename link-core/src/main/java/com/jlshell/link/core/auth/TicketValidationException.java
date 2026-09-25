@@ -10,9 +10,10 @@ public final class TicketValidationException extends Exception {
         AUDIENCE,
         TIME,
         PROTOCOL,
-        IDENTITY,
-        TARGET,
-        REPLAY
+            IDENTITY,
+            TARGET,
+            POLICY,
+            REPLAY
     }
 
     private final Reason reason;

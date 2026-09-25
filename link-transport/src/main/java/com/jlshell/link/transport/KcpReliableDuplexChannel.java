@@ -21,6 +21,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import kcp.IKcp;
 import kcp.Kcp;
 
@@ -138,7 +139,15 @@ public final class KcpReliableDuplexChannel implements ReliableDuplexChannel {
             readers.addLast(result);
             deliverReads();
             drainKcpMessages();
-        }, result);
+        }, result, () -> { }, rejected -> {
+            // A close can race the initial terminated check above. Preserve stream EOF
+            // semantics if the peer completed an orderly half-close during submission.
+            if (terminated && orderlyClosed) {
+                result.complete(ByteBuffer.allocate(0).asReadOnlyBuffer());
+            } else {
+                result.completeExceptionally(rejected);
+            }
+        });
         result.whenComplete((ignored, error) -> {
             if (result.isCancelled()) {
                 executeBounded(() -> readers.remove(result), new CompletableFuture<>());
@@ -253,15 +262,20 @@ public final class KcpReliableDuplexChannel implements ReliableDuplexChannel {
     }
 
     private void executeBounded(Runnable task, CompletableFuture<?> result) {
-        executeBounded(task, result, () -> { });
+        executeBounded(task, result, () -> { }, result::completeExceptionally);
     }
 
     private void executeBounded(Runnable task, CompletableFuture<?> result, Runnable rejectedCleanup) {
+        executeBounded(task, result, rejectedCleanup, result::completeExceptionally);
+    }
+
+    private void executeBounded(Runnable task, CompletableFuture<?> result, Runnable rejectedCleanup,
+            Consumer<RejectedExecutionException> rejectionHandler) {
         int queued = pendingApiOperations.incrementAndGet();
         if (queued > maxPendingApiOperations) {
             pendingApiOperations.decrementAndGet();
             rejectedCleanup.run();
-            result.completeExceptionally(new RejectedExecutionException("KCP operation queue is full"));
+            rejectionHandler.accept(new RejectedExecutionException("KCP operation queue is full"));
             return;
         }
         try {
@@ -276,7 +290,7 @@ public final class KcpReliableDuplexChannel implements ReliableDuplexChannel {
         } catch (RejectedExecutionException error) {
             pendingApiOperations.decrementAndGet();
             rejectedCleanup.run();
-            result.completeExceptionally(error);
+            rejectionHandler.accept(error);
         }
     }
 

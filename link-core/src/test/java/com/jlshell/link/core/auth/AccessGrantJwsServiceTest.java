@@ -7,7 +7,9 @@ import com.jlshell.link.core.ProtocolVersion;
 import com.jlshell.link.core.identity.Ed25519NodeKey;
 import com.jlshell.link.core.model.AccessGrant;
 import com.jlshell.link.core.model.NodeKeyFingerprint;
+import com.jlshell.link.core.model.LinkSessionId;
 import com.jlshell.link.core.model.TargetEndpoint;
+import com.jlshell.link.core.model.TunnelId;
 import java.net.URI;
 import java.security.KeyFactory;
 import java.security.PublicKey;
@@ -30,6 +32,8 @@ class AccessGrantJwsServiceTest {
     private Ed25519NodeKey signingKey;
     private AccessGrant grant;
     private GrantValidationContext expected;
+    private LinkSessionId sessionId;
+    private TunnelId tunnelId;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -37,12 +41,14 @@ class AccessGrantJwsServiceTest {
         Ed25519NodeKey client = Ed25519NodeKey.generate();
         Ed25519NodeKey agent = Ed25519NodeKey.generate();
         UUID agentId = UUID.randomUUID();
+        sessionId = LinkSessionId.random();
+        tunnelId = TunnelId.random();
         TargetEndpoint target = new TargetEndpoint("192.168.31.20", 22);
         grant = new AccessGrant(URI.create("https://link.example.test"), "jlshell-link-agent",
-                UUID.randomUUID(), client.fingerprint(), agentId, agent.fingerprint(), target,
+                UUID.randomUUID(), sessionId, tunnelId, client.fingerprint(), agentId, agent.fingerprint(), target,
                 Set.of("tcp-connect"), 7, "ticket-1", NOW, NOW.minusSeconds(1),
                 NOW.plusSeconds(60), ProtocolVersion.V2);
-        expected = new GrantValidationContext(grant.issuer(), grant.audience(),
+        expected = new GrantValidationContext(grant.issuer(), grant.audience(), sessionId, tunnelId,
                 grant.clientKeyFingerprint(), agentId, grant.agentKeyFingerprint(), target, ProtocolVersion.V2);
     }
 
@@ -65,6 +71,7 @@ class AccessGrantJwsServiceTest {
         String ticket = service.issue(grant, "signing-key-1", signingKey.privateKey());
         SigningKeyResolver keys = ignored -> Optional.of(signingKey.publicKey());
         GrantValidationContext wrongTarget = new GrantValidationContext(expected.issuer(), expected.audience(),
+                expected.sessionId(), expected.tunnelId(),
                 expected.clientKeyFingerprint(), expected.agentId(), expected.agentKeyFingerprint(),
                 new TargetEndpoint("192.168.31.21", 22), ProtocolVersion.V2);
         TicketValidationException mismatch = assertThrows(TicketValidationException.class,
@@ -94,6 +101,7 @@ class AccessGrantJwsServiceTest {
         String ticket = service.issue(grant, "signing-key-1", signingKey.privateKey());
         NodeKeyFingerprint another = Ed25519NodeKey.generate().fingerprint();
         GrantValidationContext wrongClient = new GrantValidationContext(expected.issuer(), expected.audience(),
+                expected.sessionId(), expected.tunnelId(),
                 another, expected.agentId(), expected.agentKeyFingerprint(), expected.target(), ProtocolVersion.V2);
         TicketValidationException mismatch = assertThrows(TicketValidationException.class,
                 () -> service.validate(ticket, wrongClient, ignored -> Optional.of(signingKey.publicKey())));
@@ -114,6 +122,7 @@ class AccessGrantJwsServiceTest {
         assertEquals(TicketValidationException.Reason.ALGORITHM, algorithm.reason());
 
         GrantValidationContext wrongAudience = new GrantValidationContext(expected.issuer(), "another-service",
+                expected.sessionId(), expected.tunnelId(),
                 expected.clientKeyFingerprint(), expected.agentId(), expected.agentKeyFingerprint(),
                 expected.target(), ProtocolVersion.V2);
         TicketValidationException audience = assertThrows(TicketValidationException.class,
@@ -123,7 +132,7 @@ class AccessGrantJwsServiceTest {
     }
 
     @Test
-    void validatesPublishedFixedVector() throws Exception {
+    void rejectsPreviouslyPublishedUnboundTicketVector() throws Exception {
         Properties vector = new Properties();
         try (var input = getClass().getResourceAsStream("/vectors/access-grant-v2.properties")) {
             vector.load(input);
@@ -133,13 +142,16 @@ class AccessGrantJwsServiceTest {
         assertEquals(vector.getProperty("fingerprint"), NodeKeyFingerprint.from(publicKey).value());
         GrantValidationContext vectorContext = new GrantValidationContext(
                 URI.create("https://link.example.test"), "jlshell-link-agent",
+                LinkSessionId.parse("33333333-3333-3333-3333-333333333333"),
+                TunnelId.parse("44444444-4444-4444-4444-444444444444"),
                 new NodeKeyFingerprint("1".repeat(64)),
                 UUID.fromString("22222222-2222-2222-2222-222222222222"),
                 new NodeKeyFingerprint("2".repeat(64)),
                 new TargetEndpoint("192.168.31.20", 22), ProtocolVersion.V2);
-        AccessGrant validated = service().validate(vector.getProperty("compactJws"), vectorContext,
-                keyId -> keyId.equals("vector-ed25519-1") ? Optional.of(publicKey) : Optional.empty());
-        assertEquals("vector-ticket-1", validated.jti());
+        TicketValidationException missingTunnelBinding = assertThrows(TicketValidationException.class,
+                () -> service().validate(vector.getProperty("compactJws"), vectorContext,
+                        keyId -> keyId.equals("vector-ed25519-1") ? Optional.of(publicKey) : Optional.empty()));
+        assertEquals(TicketValidationException.Reason.MALFORMED, missingTunnelBinding.reason());
     }
 
     private static AccessGrantJwsService service() {
