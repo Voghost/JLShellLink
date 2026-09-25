@@ -11,6 +11,7 @@ import com.jlshell.link.core.transport.TransportBufferBudget;
 import com.jlshell.link.core.transport.TransportBudget;
 import com.jlshell.link.transport.ConnectClientMultiplexer;
 import com.jlshell.link.transport.ConnectStreamMultiplexer;
+import com.jlshell.link.transport.ReliableDuplexChannelContract;
 import com.jlshell.link.transport.TlsHandshakeGate;
 import com.jlshell.link.transport.WssSecureConnector;
 import io.netty.buffer.ByteBuf;
@@ -143,20 +144,7 @@ class WssRelayPairingTest {
                             + ", active=" + targetActive.get(), error);
                 }
                 byte[] payload = payload(4_096, 41);
-                tunnel.write(ByteBuffer.wrap(payload)).toCompletableFuture().get(5, TimeUnit.SECONDS);
-                byte[] received = new byte[payload.length];
-                int count = 0;
-                while (count < received.length) {
-                    ByteBuffer part = tunnel.read(received.length - count)
-                            .toCompletableFuture().get(5, TimeUnit.SECONDS);
-                    int size = part.remaining();
-                    assertTrue(size > 0, "WSS CONNECT target closed before echo completed");
-                    part.get(received, count, size);
-                    count += size;
-                }
-                assertArrayEquals(payload, received);
-                tunnel.shutdownOutput().toCompletableFuture().get(5, TimeUnit.SECONDS);
-                assertEquals(0, tunnel.read(1).toCompletableFuture().get(5, TimeUnit.SECONDS).remaining());
+                ReliableDuplexChannelContract.assertEchoAndHalfClose(tunnel, payload);
                 assertTrue(!relay.forwardedContains("production-connector", payload),
                         "B observed inner CONNECT plaintext");
             } finally {

@@ -39,6 +39,17 @@
             <artifactId>netty-codec-http</artifactId>
         </dependency>
         <dependency>
+            <groupId>com.github.l42111996</groupId>
+            <artifactId>kcp-base</artifactId>
+            <version>${java-kcp.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>io.netty</groupId>
+                    <artifactId>netty-all</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
             <scope>test</scope>
@@ -66,18 +77,6 @@
                     <artifactId>ice4j</artifactId>
                     <version>${ice4j.version}</version>
                     <scope>test</scope>
-                </dependency>
-                <dependency>
-                    <groupId>com.github.l42111996</groupId>
-                    <artifactId>kcp-base</artifactId>
-                    <version>${java-kcp.version}</version>
-                    <scope>test</scope>
-                    <exclusions>
-                        <exclusion>
-                            <groupId>io.netty</groupId>
-                            <artifactId>netty-all</artifactId>
-                        </exclusion>
-                    </exclusions>
                 </dependency>
             </dependencies>
         </profile>
