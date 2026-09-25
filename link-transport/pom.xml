@@ -60,6 +60,12 @@
                     <artifactId>kcp-base</artifactId>
                     <version>${java-kcp.version}</version>
                     <scope>test</scope>
+                    <exclusions>
+                        <exclusion>
+                            <groupId>io.netty</groupId>
+                            <artifactId>netty-all</artifactId>
+                        </exclusion>
+                    </exclusions>
                 </dependency>
                 <dependency>
                     <groupId>io.netty</groupId>

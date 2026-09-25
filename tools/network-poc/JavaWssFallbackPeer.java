@@ -316,7 +316,7 @@ public final class JavaWssFallbackPeer {
                 || !(args[0].equals("A") || args[0].equals("C"))) {
             throw new IllegalArgumentException("Usage: JavaWssFallbackPeer <A|C> <B-host> <stun-port>"
                     + " <signal-port> <wss-port> <workdir> <token> <session> <storepass>"
-                    + " [<echo|http2> <app-drop|os-block|os-baseline>]");
+                    + " [<echo|http2> <app-drop|os-block|os-baseline|relay-only>]");
         }
         String role = args[0];
         String host = args[1];
@@ -327,32 +327,36 @@ public final class JavaWssFallbackPeer {
         String dropMode = args.length == 11 ? args[10] : "app-drop";
         if (!(protocol.equals("echo") || protocol.equals("http2"))
                 || !(dropMode.equals("app-drop") || dropMode.equals("os-block")
-                        || dropMode.equals("os-baseline"))) {
+                        || dropMode.equals("os-baseline") || dropMode.equals("relay-only"))) {
             throw new IllegalArgumentException("Unknown protocol or drop mode");
         }
         try (DatagramSocket udp = new DatagramSocket(
                 Integer.getInteger("jlshell.p0.udpPort", 0))) {
-            InetSocketAddress peer = candidate(udp, role, host, Integer.parseInt(args[2]),
-                    Integer.parseInt(args[3]), token);
             AtomicInteger dropped = new AtomicInteger();
             Thread dropper = null;
-            if (role.equals("A")) {
-                directAttempt(udp, peer, token, dropMode.equals("os-baseline"),
-                        dropMode.equals("os-block"));
-                if (dropMode.equals("os-baseline")) return;
-                System.out.println("RELAY_ATTEMPTS 1");
-            } else {
-                dropper = receiveDirect(udp, peer, token, dropped, !dropMode.equals("app-drop"));
-                if (dropMode.equals("os-baseline")) {
-                    dropper.join(6_000);
-                    System.out.println("DIRECT_BASELINE_RECEIVED " + dropped.get());
-                    if (dropped.get() == 0) throw new IOException("C received no baseline UDP");
-                    return;
+            if (!dropMode.equals("relay-only")) {
+                InetSocketAddress peer = candidate(udp, role, host, Integer.parseInt(args[2]),
+                        Integer.parseInt(args[3]), token);
+                if (role.equals("A")) {
+                    directAttempt(udp, peer, token, dropMode.equals("os-baseline"),
+                            dropMode.equals("os-block"));
+                    if (dropMode.equals("os-baseline")) return;
+                    System.out.println("RELAY_ATTEMPTS 1");
+                } else {
+                    dropper = receiveDirect(udp, peer, token, dropped, !dropMode.equals("app-drop"));
+                    if (dropMode.equals("os-baseline")) {
+                        dropper.join(6_000);
+                        System.out.println("DIRECT_BASELINE_RECEIVED " + dropped.get());
+                        if (dropped.get() == 0) throw new IOException("C received no baseline UDP");
+                        return;
+                    }
                 }
+            } else if (role.equals("A")) {
+                System.out.println("RELAY_ATTEMPTS 1");
             }
             SSLContext outer = context(null, directory.resolve("B-trust.p12"), password);
-            HttpClient client = HttpClient.newBuilder().sslContext(outer)
-                    .connectTimeout(Duration.ofSeconds(5)).build();
+            try (HttpClient client = HttpClient.newBuilder().sslContext(outer)
+                    .connectTimeout(Duration.ofSeconds(5)).build()) {
             BinaryListener listener = new BinaryListener();
             URI endpoint = URI.create("wss://" + host + ":" + args[4] + "/link/v2/relay");
             WebSocket webSocket = client.newWebSocketBuilder()
@@ -424,6 +428,7 @@ public final class JavaWssFallbackPeer {
                     System.out.println("WSS_ECHO_C bytes=" + length);
                     Thread.sleep(250);
                 }
+            }
             }
             if (dropper != null) {
                 dropper.join(6_000);

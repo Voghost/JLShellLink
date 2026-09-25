@@ -162,7 +162,7 @@ public final class JavaWssRelayProbe {
     }
 
     private synchronized void awaitPair() throws InterruptedException, IOException {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
         while ((a == null || c == null) && System.nanoTime() < deadline) {
             wait(200);
         }
