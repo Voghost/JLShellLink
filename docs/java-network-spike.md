@@ -12,9 +12,10 @@
 - `NettyReliableDuplexChannel` 已提供有界 `ByteBuf` 字节流适配，支持分块读取、主动读背压、共享总缓冲账本、写队列限制、读取消、承载定义的半关闭动作及失败传播。多流复用时必须让所有通道共享同一个 `TransportBufferBudget`。
 - 新增 `TlsPeerContext` 与 `PinnedPeerTrustManager`：由显式信任库执行 PKIX 校验，并额外校验预期叶证书 SPKI SHA-256；TLS 仅启用 1.3，服务端要求客户端证书，ALPN 限定为 `h2`，每条隧道创建独立上下文。
 - `TlsPeerHandler` 已将 TLS 1.3 peer context 接入 Netty `SslHandler`，并从共享传输预算应用握手超时。
-- ICE/KCP/mTLS 集成测试现使用该 TLS 工厂，验证双向证书信任成功、未受信客户端被拒绝及公钥指纹错误被拒绝。Netty 字节流适配器契约测试验证了取消读取、切块、EOF、队列超限、跨通道总缓冲限制与半关闭委托；TLS handler 测试验证握手超时和协议版本。全工程 `mvn -B -ntp verify` 在本机 OpenJDK 26.0.1 上通过（36 项测试，Java 编译目标为 21）。
+- ICE/KCP/mTLS 集成测试现使用该 TLS 工厂，验证双向证书信任成功、未受信客户端被拒绝及公钥指纹错误被拒绝。Netty 字节流适配器契约测试验证了取消读取、切块、EOF、队列超限、跨通道总缓冲限制与半关闭委托；TLS handler 测试验证握手超时、TLS 版本和并发闸门。全工程 `mvn -B -ntp verify` 在本机 OpenJDK 26.0.1 上通过（37 项测试，Java 编译目标为 21）。
 - 新增生产依赖 `netty-codec-http2` 和服务端 `ConnectStreamMultiplexer`：每条 HTTP/2 子流校验 CONNECT 与一次性票据字段，通过 fail-closed 授权回调后才连接规范化数值 IP；限制并发流、请求头/帧、建连队列与共享缓冲；DATA 写完后再归还入站流控信用，发送方向随写队列和 HTTP/2 可写状态暂停读取，较大的目标读取会切成协议允许大小的 DATA 帧。请求 END_STREAM 映射为目标 TCP 输出半关闭，目标 EOF 映射为响应 END_STREAM，RST 和通道关闭会回收目标与计时器。四条 EmbeddedChannel 测试覆盖双向二进制、大目标读取分帧、半关闭/EOF、拒绝、主机名目标、缺票据和授权超时。
-- 此进度**不代表 NET-01 验收完成**：目前实现的是可复用的服务端 CONNECT 子流端点，授权器尚未接入真实票据/ACL 服务；客户端流复用器、direct/WSS 桥接、TLS 握手并发闸门、两种承载共用的契约测试及 Java 21 CI 仍待完成。`maxConcurrentHandshakes` 当前用于限制授权与目标拨号的并发准备阶段，不等同于 TLS 握手闸门。
+- `TlsHandshakeGate` 已提供跨连接共享的 TLS 握手槽位：达到上限时在 TLS 握手前关闭新连接，握手结束或通道关闭时释放槽位。Netty 测试覆盖并发拒绝与关闭后重新接纳。连接入口必须共用一个 gate 实例；正式 direct/WSS 入口目前尚未接线，CONNECT setup 并发槽也仍沿用 `maxConcurrentHandshakes` 预算值。
+- 此进度**不代表 NET-01 验收完成**：目前实现的是可复用的服务端 CONNECT 子流端点，授权器尚未接入真实票据/ACL 服务；客户端流复用器、direct/WSS 桥接、TLS 握手闸门与各入口接线、两种承载共用的契约测试及 Java 21 CI 仍待完成。
 
 ## 真实 A/B/C 主机联调（2026-09-24）
 
