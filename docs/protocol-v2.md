@@ -43,7 +43,17 @@ B 只能在同账号且已授权的 A/C 间路由候选。旧 generation、跨 s
 
 直连承载为 ICE 选定 UDP socket 上的可靠有序字节流；中继承载为 A/C 主动出站的 WSS 密文字节流。两者之上使用相同的 A—C TLS 1.3 双向认证和 `h2` ALPN。
 
-CONNECT 请求至少携带 `tunnelId`、数值 `targetIp`、`targetPort`、`accessTicket`。C 依次验证 TLS 对端指纹、票据、目标、当前 ACL、jti 单次消费，再连接目标 TCP。成功返回 2xx；拒绝不打开目标 socket。
+CONNECT 请求使用 HTTP/2 扩展头传递业务授权元数据：
+
+| Header | 含义 |
+| --- | --- |
+| `:authority` | 规范化的数值 `targetIp:targetPort`；IPv6 使用 `[address]:port`。不允许主机名。 |
+| `x-jlshell-target-ip` | 票据授权的数值 IP，必须与 `:authority` 一致。 |
+| `x-jlshell-target-port` | 票据授权的 TCP 端口，必须与 `:authority` 一致。 |
+| `x-jlshell-tunnel-id` | 本次 TCP 隧道的 UUID。 |
+| `x-jlshell-access-ticket` | 一次性访问票据；不得写入日志或错误响应。 |
+
+C 依次验证 TLS 对端指纹、票据、目标、当前 ACL、jti 单次消费，再连接目标 TCP。成功返回 `:status 200`；字段缺失或错误返回 `400`，缺票据返回 `401`，授权拒绝返回 `403`，非 CONNECT 请求返回 `405`，目标连接失败返回 `502`，授权服务不可用或建连超时返回 `503`；拒绝不打开目标 socket。`401`、`403` 是本实现的 HTTP/2 CONNECT 映射约定，外层 TLS 必须已完成身份认证。
 
 - HTTP/2 DATA 对应 TCP 字节；流控必须向底层读取传播背压。
 - 请求 END_STREAM 映射为目标 TCP `shutdownOutput`；目标 EOF 映射为响应 END_STREAM。
