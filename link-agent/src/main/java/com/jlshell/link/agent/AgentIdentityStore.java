@@ -49,6 +49,10 @@ public final class AgentIdentityStore {
         return generated;
     }
 
+    public Optional<Ed25519NodeKey> loadKey() throws IOException, GeneralSecurityException {
+        return keys.load();
+    }
+
     public Optional<Registration> loadRegistration() throws IOException {
         if (!Files.exists(metadataFile)) return Optional.empty();
         verifyOwnerOnly(metadataFile);
