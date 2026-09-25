@@ -17,6 +17,7 @@
 - 新增客户端 `ConnectClientMultiplexer`：在已认证 HTTP/2 parent 上按 tunnel 开子流，发送协议文档定义的授权头，只有收到 `:status 200` 才交付 `ReliableDuplexChannel`；非成功状态 fail closed。入站 DATA frame 保留到调用者读取完才释放，使 HTTP/2 流控信用与业务消费关联；写入按帧上限切分，并与总预算、单流队列、半关闭和建连响应截止时间联动。三条客户端/服务端 EmbeddedChannel 联调测试覆盖大于帧上限的二进制往返、拒绝后不拨号、缺票据前置拦截、半关闭/EOF 和缓冲回收。
 - `TlsHandshakeGate` 已提供跨连接共享的 TLS 握手槽位：达到上限时在 TLS 握手前关闭新连接，握手结束或通道关闭时释放槽位。Netty 测试覆盖并发拒绝与关闭后重新接纳。连接入口必须共用一个 gate 实例；正式 direct/WSS 入口目前尚未接线，CONNECT setup 并发槽也仍沿用 `maxConcurrentHandshakes` 预算值。
 - `SecureConnectPipeline` 提供共用的客户端/服务端 Netty 管线入口：在通道激活前安装共享握手闸门与 TLS，只有双向 TLS 握手成功且 ALPN 确实协商为 `h2` 才安装有限流设置的 HTTP/2 编解码和 CONNECT 子流处理器；握手失败、ALPN 缺失或通道提前关闭时，ready stage 失败并关闭通道。调用方必须等待 ready stage 后才开放新 CONNECT 流。该入口尚需由正式 direct/WSS 承载调用，不能视为两个承载已完成。
+- `WebSocketByteStreamCodec` 把已认证 WSS 的二进制帧转换为内层 TLS 可消费的有序字节，并把内层 TLS 写出分片成 WSS 二进制消息。它拒绝文本、异常续帧和超预算消息；待发送字节有独立上限，保留 Ping/Pong 与连接关闭处理。外层 WebSocket 解码器仍必须设置同等帧上限并禁用压缩扩展；该 codec 尚未接入正式 WSS 建连、身份配对与实际安全管线。
 - 此进度**不代表 NET-01 验收完成**：授权器尚未接入真实票据/ACL 服务；direct/WSS 桥接及实际连接入口上的 TLS gate 接线、两种承载共用的契约测试仍待完成。本次代码已按 Java 21 API 编译，PR 的 Java 21 CI 检查需在提交后确认。
 
 ## 真实 A/B/C 主机联调（2026-09-24）
