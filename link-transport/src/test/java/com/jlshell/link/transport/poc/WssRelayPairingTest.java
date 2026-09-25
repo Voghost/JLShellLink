@@ -5,12 +5,24 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.jlshell.link.core.model.TargetEndpoint;
+import com.jlshell.link.core.model.TunnelId;
+import com.jlshell.link.core.transport.TransportBufferBudget;
+import com.jlshell.link.core.transport.TransportBudget;
+import com.jlshell.link.transport.ConnectClientMultiplexer;
+import com.jlshell.link.transport.ConnectStreamMultiplexer;
+import com.jlshell.link.transport.TlsHandshakeGate;
+import com.jlshell.link.transport.WssSecureConnector;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
+import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.embedded.EmbeddedChannel;
+import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.handler.codec.http.DefaultHttpHeaders;
+import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http2.DefaultHttp2DataFrame;
 import io.netty.handler.codec.http2.DefaultHttp2Headers;
 import io.netty.handler.codec.http2.DefaultHttp2HeadersFrame;
@@ -77,6 +89,117 @@ import org.junit.jupiter.api.Test;
 /** Local WSS pairing proof only; production relay authentication remains a Website contract. */
 class WssRelayPairingTest {
     private static final String RELAY_CREDENTIAL = "poc-relay-credential";
+
+    @Test
+    void productionWssConnectorCarriesInnerTlsHttp2Connect() throws Exception {
+        TransportBudget budget = new TransportBudget(16_384, 8_192, 8, 1_048_576,
+                65_535, 4_194_304, 8, Duration.ofSeconds(8));
+        try (TestIdentity identity = TestIdentity.create();
+                WssRelayServer relay = new WssRelayServer(identity.serverContext(), RELAY_CREDENTIAL);
+                TcpEchoTarget target = new TcpEchoTarget()) {
+            NioEventLoopGroup group = new NioEventLoopGroup(2);
+            Channel client = null;
+            Channel gateway = null;
+            ConnectClientMultiplexer.ConnectTunnel tunnel = null;
+            try {
+                URI endpoint = URI.create("wss://localhost:" + relay.port() + "/link/v2/relay");
+                TlsHandshakeGate gate = new TlsHandshakeGate(budget.maxConcurrentHandshakes());
+                AtomicReference<Throwable> targetFailure = new AtomicReference<>();
+                AtomicReference<Boolean> targetActive = new AtomicReference<>();
+                ConnectStreamMultiplexer.TargetConnector tcp = ConnectStreamMultiplexer.tcpConnector(budget);
+                ConnectStreamMultiplexer gatewayMux = new ConnectStreamMultiplexer(budget,
+                        new TransportBufferBudget(budget.maxBufferedBytesTotal()),
+                        request -> CompletableFuture.completedFuture(
+                                request.target().equals(new TargetEndpoint("127.0.0.1", target.port()))
+                                        && "test-ticket".equals(request.accessTicket())),
+                        (endpointToConnect, eventLoop) -> {
+                            try {
+                                return tcp.connect(endpointToConnect, eventLoop).whenComplete((connected, error) -> {
+                                    targetFailure.set(error);
+                                    targetActive.set(connected != null && connected.isActive());
+                                });
+                            } catch (RuntimeException error) {
+                                targetFailure.set(error);
+                                throw error;
+                            }
+                        });
+                CompletableFuture<Channel> gatewayReady = WssSecureConnector.connectGateway(group, endpoint,
+                        identity.clientContext(), relayHeaders("C"), identity.serverContext(),
+                        "client", 443, budget, gate, gatewayMux).toCompletableFuture();
+                CompletableFuture<Channel> clientReady = WssSecureConnector.connectClient(group, endpoint,
+                        identity.clientContext(), relayHeaders("A"), identity.clientContext(),
+                        "localhost", 443, budget, gate).toCompletableFuture();
+                gateway = gatewayReady.get(12, TimeUnit.SECONDS);
+                client = clientReady.get(12, TimeUnit.SECONDS);
+                assertEquals(0, gate.inFlightHandshakes());
+
+                ConnectClientMultiplexer clientMux = new ConnectClientMultiplexer(client, budget,
+                        new TransportBufferBudget(budget.maxBufferedBytesTotal()));
+                try {
+                    tunnel = clientMux.open(new TargetEndpoint("127.0.0.1", target.port()),
+                            TunnelId.random(), "test-ticket").toCompletableFuture().get(5, TimeUnit.SECONDS);
+                } catch (ExecutionException error) {
+                    throw new AssertionError("target connect failure: " + targetFailure.get()
+                            + ", active=" + targetActive.get(), error);
+                }
+                byte[] payload = payload(4_096, 41);
+                tunnel.write(ByteBuffer.wrap(payload)).toCompletableFuture().get(5, TimeUnit.SECONDS);
+                byte[] received = new byte[payload.length];
+                int count = 0;
+                while (count < received.length) {
+                    ByteBuffer part = tunnel.read(received.length - count)
+                            .toCompletableFuture().get(5, TimeUnit.SECONDS);
+                    int size = part.remaining();
+                    assertTrue(size > 0, "WSS CONNECT target closed before echo completed");
+                    part.get(received, count, size);
+                    count += size;
+                }
+                assertArrayEquals(payload, received);
+                tunnel.shutdownOutput().toCompletableFuture().get(5, TimeUnit.SECONDS);
+                assertEquals(0, tunnel.read(1).toCompletableFuture().get(5, TimeUnit.SECONDS).remaining());
+                assertTrue(!relay.forwardedContains("production-connector", payload),
+                        "B observed inner CONNECT plaintext");
+            } finally {
+                if (tunnel != null) {
+                    tunnel.close();
+                }
+                if (client != null) {
+                    client.close().syncUninterruptibly();
+                }
+                if (gateway != null) {
+                    gateway.close().syncUninterruptibly();
+                }
+                group.shutdownGracefully().syncUninterruptibly();
+            }
+            assertTrue(relay.awaitActiveSessions(0, Duration.ofSeconds(3)));
+        }
+    }
+
+    private static HttpHeaders relayHeaders(String role) {
+        return new DefaultHttpHeaders()
+                .add("Authorization", "Bearer " + RELAY_CREDENTIAL)
+                .add("X-Link-Session", "production-connector")
+                .add("X-Link-Role", role);
+    }
+
+    @Test
+    void productionConnectorRejectsPlaintextRelayAndMissingAuthorization() throws Exception {
+        TransportBudget budget = new TransportBudget(16_384, 8_192, 8, 1_048_576,
+                65_535, 4_194_304, 8, Duration.ofSeconds(5));
+        NioEventLoopGroup group = new NioEventLoopGroup(1);
+        try {
+            SSLContext context = SSLContext.getDefault();
+            TlsHandshakeGate gate = new TlsHandshakeGate(8);
+            assertThrows(IllegalArgumentException.class, () -> WssSecureConnector.connectClient(
+                    group, URI.create("ws://localhost:443/link/v2/relay"), context,
+                    relayHeaders("A"), context, "localhost", 443, budget, gate));
+            assertThrows(IllegalArgumentException.class, () -> WssSecureConnector.connectClient(
+                    group, URI.create("wss://localhost:443/link/v2/relay"), context,
+                    new DefaultHttpHeaders(), context, "localhost", 443, budget, gate));
+        } finally {
+            group.shutdownGracefully().syncUninterruptibly();
+        }
+    }
 
     @Test
     void fallsBackOnceAfterDirectTimeoutButNeverAfterAuthorizationFailure() throws Exception {

@@ -15,10 +15,11 @@
 - ICE/KCP/mTLS 集成测试现使用该 TLS 工厂，验证双向证书信任成功、未受信客户端被拒绝及公钥指纹错误被拒绝。Netty 字节流适配器契约测试验证了取消读取、切块、EOF、队列超限、跨通道总缓冲限制与半关闭委托；TLS handler 测试验证握手超时、TLS 版本和并发闸门。全工程 `mvn -B -ntp verify` 在本机 OpenJDK 26.0.1 上通过（40 项测试，Java 编译目标为 21）。
 - 新增生产依赖 `netty-codec-http2` 和服务端 `ConnectStreamMultiplexer`：每条 HTTP/2 子流校验 CONNECT 与一次性票据字段，通过 fail-closed 授权回调后才连接规范化数值 IP；限制并发流、请求头/帧、建连队列与共享缓冲；DATA 写完后再归还入站流控信用，发送方向随写队列和 HTTP/2 可写状态暂停读取，较大的目标读取会切成协议允许大小的 DATA 帧。请求 END_STREAM 映射为目标 TCP 输出半关闭，目标 EOF 映射为响应 END_STREAM，RST 和通道关闭会回收目标与计时器。四条 EmbeddedChannel 测试覆盖双向二进制、大目标读取分帧、半关闭/EOF、拒绝、主机名目标、缺票据和授权超时。
 - 新增客户端 `ConnectClientMultiplexer`：在已认证 HTTP/2 parent 上按 tunnel 开子流，发送协议文档定义的授权头，只有收到 `:status 200` 才交付 `ReliableDuplexChannel`；非成功状态 fail closed。入站 DATA frame 保留到调用者读取完才释放，使 HTTP/2 流控信用与业务消费关联；写入按帧上限切分，并与总预算、单流队列、半关闭和建连响应截止时间联动。三条客户端/服务端 EmbeddedChannel 联调测试覆盖大于帧上限的二进制往返、拒绝后不拨号、缺票据前置拦截、半关闭/EOF 和缓冲回收。
-- `TlsHandshakeGate` 已提供跨连接共享的 TLS 握手槽位：达到上限时在 TLS 握手前关闭新连接，握手结束或通道关闭时释放槽位。Netty 测试覆盖并发拒绝与关闭后重新接纳。连接入口必须共用一个 gate 实例；正式 direct/WSS 入口目前尚未接线，CONNECT setup 并发槽也仍沿用 `maxConcurrentHandshakes` 预算值。
+- `TlsHandshakeGate` 已提供跨连接共享的 TLS 握手槽位：达到上限时在 TLS 握手前关闭新连接，握手结束或通道关闭时释放槽位。Netty 测试覆盖预激活通道的并发拒绝与关闭后重新接纳；WSS Upgrade 后的活跃通道也先取得槽位再添加内层 `SslHandler`，避免握手先于限额。direct 入口仍未接线，CONNECT setup 并发槽也仍沿用 `maxConcurrentHandshakes` 预算值。
 - `SecureConnectPipeline` 提供共用的客户端/服务端 Netty 管线入口：在通道激活前安装共享握手闸门与 TLS，只有双向 TLS 握手成功且 ALPN 确实协商为 `h2` 才安装有限流设置的 HTTP/2 编解码和 CONNECT 子流处理器；握手失败、ALPN 缺失或通道提前关闭时，ready stage 失败并关闭通道。调用方必须等待 ready stage 后才开放新 CONNECT 流。该入口尚需由正式 direct/WSS 承载调用，不能视为两个承载已完成。
-- `WebSocketByteStreamCodec` 把已认证 WSS 的二进制帧转换为内层 TLS 可消费的有序字节，并把内层 TLS 写出分片成 WSS 二进制消息。它拒绝文本、异常续帧和超预算消息；待发送字节有独立上限，保留 Ping/Pong 与连接关闭处理。外层 WebSocket 解码器仍必须设置同等帧上限并禁用压缩扩展；该 codec 尚未接入正式 WSS 建连、身份配对与实际安全管线。
-- 此进度**不代表 NET-01 验收完成**：授权器尚未接入真实票据/ACL 服务；direct/WSS 桥接及实际连接入口上的 TLS gate 接线、两种承载共用的契约测试仍待完成。本次代码已按 Java 21 API 编译，PR 的 Java 21 CI 检查需在提交后确认。
+- `WebSocketByteStreamCodec` 把已认证 WSS 的二进制帧转换为内层 TLS 可消费的有序字节，并把内层 TLS 写出分片成 WSS 二进制消息。它拒绝文本、异常续帧和超预算消息；待发送字节有独立上限，保留 Ping/Pong 与连接关闭处理。
+- `WssSecureConnector` 为 A/C 两侧建立仅限 `wss://` 的出站连接：外层 TLS 1.3 校验证书链及主机名，WSS 禁用扩展并限制帧大小，Upgrade 成功后插入字节流 codec、共享握手闸门、内层双向 TLS 1.3 与 `h2`/CONNECT 管线。就绪结果只有内层安全管线完成才成功；连接、握手或取消失败会关闭 socket。调用方需使用明确受信的外层 SSLContext、每次会话的新鲜内层固定公钥上下文及 B 签发的连接凭据。新增本机 WSS 配对整链路用例，以生产 A/C connector、内层 TLS/HTTP2、正式 CONNECT 两端和真实 TCP echo 目标验证 4096 字节双向完整、半关闭与 B 不见明文；该用例发现并修复了 `tcpConnector` 缺失 Netty Bootstrap handler 导致真实目标始终返回 502 的问题。B 的正式鉴权与双端配对仍未实现。
+- 此进度**不代表 NET-01 验收完成**：授权器尚未接入真实票据/ACL 服务；direct 适配、B 的正式 WSS 服务与两种承载共用的契约测试仍待完成。本次代码已按 Java 21 API 编译，PR 的 Java 21 CI 检查需在提交后确认。
 
 ## 真实 A/B/C 主机联调（2026-09-24）
 

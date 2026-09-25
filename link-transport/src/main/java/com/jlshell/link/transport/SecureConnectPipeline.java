@@ -15,6 +15,7 @@ import java.io.IOException;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.RejectedExecutionException;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLHandshakeException;
 
@@ -29,34 +30,62 @@ public final class SecureConnectPipeline {
     /** Install before channel activation; open CONNECT streams only after the returned stage completes. */
     public static CompletionStage<Void> installClient(ChannelPipeline pipeline, SSLContext context, String peerHost,
             int peerPort, TransportBudget budget, TlsHandshakeGate gate) {
-        return install(pipeline, context, peerHost, peerPort, true, budget, gate, null);
+        return install(pipeline, context, peerHost, peerPort, true, false, budget, gate, null);
     }
 
     /** Install before channel activation; the authorizer belongs to this authenticated A-C session. */
     public static CompletionStage<Void> installServer(ChannelPipeline pipeline, SSLContext context, String peerHost,
             int peerPort, TransportBudget budget, TlsHandshakeGate gate,
             ConnectStreamMultiplexer multiplexer) {
-        return install(pipeline, context, peerHost, peerPort, false, budget, gate,
+        return install(pipeline, context, peerHost, peerPort, false, false, budget, gate,
+                Objects.requireNonNull(multiplexer, "multiplexer"));
+    }
+
+    /** Install inner client TLS on an active, already authenticated carrier such as WSS. */
+    public static CompletionStage<Void> installClientOnActiveCarrier(ChannelPipeline pipeline, SSLContext context,
+            String peerHost, int peerPort, TransportBudget budget, TlsHandshakeGate gate) {
+        return install(pipeline, context, peerHost, peerPort, true, true, budget, gate, null);
+    }
+
+    /** Install inner server TLS on an active, already authenticated carrier such as WSS. */
+    public static CompletionStage<Void> installServerOnActiveCarrier(ChannelPipeline pipeline, SSLContext context,
+            String peerHost, int peerPort, TransportBudget budget, TlsHandshakeGate gate,
+            ConnectStreamMultiplexer multiplexer) {
+        return install(pipeline, context, peerHost, peerPort, false, true, budget, gate,
                 Objects.requireNonNull(multiplexer, "multiplexer"));
     }
 
     private static CompletionStage<Void> install(ChannelPipeline pipeline, SSLContext context, String peerHost,
-            int peerPort, boolean client, TransportBudget budget, TlsHandshakeGate gate,
+            int peerPort, boolean client, boolean activeCarrier, TransportBudget budget, TlsHandshakeGate gate,
             ConnectStreamMultiplexer multiplexer) {
         Objects.requireNonNull(pipeline, "pipeline");
         Objects.requireNonNull(context, "context");
         Objects.requireNonNull(budget, "budget");
         Objects.requireNonNull(gate, "gate");
-        if (pipeline.channel().isActive()) {
-            throw new IllegalStateException("secure pipeline must be installed before channel activation");
+        if (pipeline.channel().isActive() != activeCarrier) {
+            throw new IllegalStateException(activeCarrier
+                    ? "carrier must be active before installing inner TLS"
+                    : "secure pipeline must be installed before channel activation");
         }
         if (budget.maxFrameBytes() < 16_384 || budget.maxFrameBytes() > 16_777_215) {
             throw new IllegalArgumentException("HTTP/2 frame budget must be between 16384 and 16777215 bytes");
         }
         SslHandler tls = TlsPeerHandler.create(context, peerHost, peerPort, client, budget);
         CompletableFuture<Void> ready = new CompletableFuture<>();
-        gate.install(pipeline, tls);
-        pipeline.addLast("jlshell-link-alpn", new AlpnGate(tls, client, budget, multiplexer, ready));
+        AlpnGate alpn = new AlpnGate(tls, client, budget, multiplexer, ready);
+        if (activeCarrier) {
+            try {
+                if (!gate.installOnActive(pipeline, tls, alpn)) {
+                    ready.completeExceptionally(new RejectedExecutionException("TLS handshake budget is full"));
+                }
+            } catch (RuntimeException error) {
+                ready.completeExceptionally(error);
+                pipeline.channel().close();
+            }
+        } else {
+            gate.install(pipeline, tls);
+            pipeline.addLast("jlshell-link-alpn", alpn);
+        }
         return ready;
     }
 
