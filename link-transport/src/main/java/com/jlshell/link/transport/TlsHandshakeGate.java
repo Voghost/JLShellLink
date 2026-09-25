@@ -36,6 +36,44 @@ public final class TlsHandshakeGate {
         pipeline.addLast("jlshell-link-tls", sslHandler);
     }
 
+    /**
+     * Installs inner TLS after an outer carrier such as WSS has completed its
+     * handshake. The permit is acquired before adding TLS to the active
+     * channel, because SslHandler may start its handshake in handlerAdded.
+     * Must run on the channel event loop.
+     */
+    boolean installOnActive(ChannelPipeline pipeline, SslHandler sslHandler, ChannelHandler afterTls) {
+        Objects.requireNonNull(pipeline, "pipeline");
+        Objects.requireNonNull(sslHandler, "sslHandler");
+        Objects.requireNonNull(afterTls, "afterTls");
+        if (!pipeline.channel().isActive() || !pipeline.channel().eventLoop().inEventLoop()) {
+            throw new IllegalStateException("active TLS installation requires the active channel event loop");
+        }
+        if (!permits.tryAcquire()) {
+            pipeline.channel().close();
+            return false;
+        }
+        AtomicBoolean held = new AtomicBoolean(true);
+        Runnable release = () -> {
+            if (held.compareAndSet(true, false)) {
+                inFlight.decrementAndGet();
+                permits.release();
+            }
+        };
+        inFlight.incrementAndGet();
+        sslHandler.handshakeFuture().addListener(ignored -> release.run());
+        pipeline.channel().closeFuture().addListener(ignored -> release.run());
+        try {
+            pipeline.addLast("jlshell-link-alpn", afterTls);
+            pipeline.addBefore("jlshell-link-alpn", "jlshell-link-tls", sslHandler);
+            return true;
+        } catch (RuntimeException error) {
+            release.run();
+            pipeline.channel().close();
+            throw error;
+        }
+    }
+
     /** Creates a per-channel handler backed by this gate's shared permit pool. */
     public ChannelHandler newHandler(SslHandler sslHandler) {
         return new GateHandler(Objects.requireNonNull(sslHandler, "sslHandler"));

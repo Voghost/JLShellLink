@@ -98,6 +98,7 @@ public final class ConnectStreamMultiplexer {
             Bootstrap bootstrap = new Bootstrap()
                     .group(eventLoop)
                     .channel(NioSocketChannel.class)
+                    .handler(new ChannelInboundHandlerAdapter())
                     .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, (int) timeout);
             bootstrap.connect(target.socketAddress()).addListener(future -> {
                 if (future.isSuccess()) {
