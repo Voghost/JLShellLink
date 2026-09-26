@@ -28,9 +28,11 @@ function Quote-Argument([string]$Value) {
     if ($Value.Contains('"')) { Fail '参数路径不能包含双引号' }
     return '"' + $Value + '"'
 }
-function Set-PrivateAcl([string]$Path, [string]$ServiceAccount, [string]$ServiceRights) {
+function Set-PrivateAcl([string]$Path, [string]$ServiceAccount, [string]$ServiceRights,
+                       [string]$InstallerAccount) {
     & icacls.exe $Path /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" `
-        "BUILTIN\Administrators:(OI)(CI)F" "${ServiceAccount}:(OI)(CI)$ServiceRights" /T | Out-Null
+        "BUILTIN\Administrators:(OI)(CI)F" "${InstallerAccount}:(OI)(CI)F" `
+        "${ServiceAccount}:(OI)(CI)$ServiceRights" /T | Out-Null
     if ($LASTEXITCODE -ne 0) { Fail "无法保护目录权限: $Path" }
 }
 function Set-ProgramAcl([string]$Path, [string]$ServiceAccount) {
@@ -150,8 +152,8 @@ switch ($Action) {
             Fail "无法将服务账号设置为专属虚拟服务身份：$($accountResult -join ' ')"
         }
         Set-ProgramAcl $programRoot $serviceSid
-        Set-PrivateAcl $stateRoot $serviceSid 'M'
-        Set-PrivateAcl (Join-Path $dataRoot 'logs') $serviceSid 'M'
+        Set-PrivateAcl $stateRoot $serviceSid 'M' $identity.Name
+        Set-PrivateAcl (Join-Path $dataRoot 'logs') $serviceSid 'M' $identity.Name
         & $wrapperPath start
         if ($LASTEXITCODE -ne 0) { Fail 'Windows Service 已安装但未能启动。' }
         Write-Host "JLShell Link Agent 已安装为 Windows Service；状态目录：$stateRoot"
