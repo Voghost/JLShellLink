@@ -124,9 +124,18 @@ try {
                 [DateTime]::UtcNow -lt $deadline) {
             Start-Sleep -Milliseconds 250
         }
-        Assert ((Test-Path $startedMarker) -and
-            (Get-Service -Name $serviceId -ErrorAction SilentlyContinue).Status -eq 'Running') `
-            "Windows service failed to start on lifecycle attempt $attempt."
+        $serviceStatus = (Get-Service -Name $serviceId -ErrorAction SilentlyContinue).Status
+        if (-not (Test-Path $startedMarker) -or $serviceStatus -ne 'Running') {
+            Write-Host "Windows test service diagnostic: run marker present=$([bool](Test-Path $startedMarker)); service status=$serviceStatus."
+            $logDirectory = Join-Path $dataRoot 'logs'
+            if (Test-Path $logDirectory) {
+                Get-ChildItem -Path $logDirectory -File -ErrorAction SilentlyContinue | ForEach-Object {
+                    Write-Host "--- WinSW log: $($_.Name) ---"
+                    Get-Content -Path $_.FullName -Tail 80 -ErrorAction SilentlyContinue
+                }
+            }
+            throw "Windows service failed to start on lifecycle attempt $attempt."
+        }
         & pwsh -NoProfile -File $installer status
         if ($LASTEXITCODE -ne 0) { throw "Windows service status failed on lifecycle attempt $attempt." }
         & pwsh -NoProfile -File $installer uninstall
