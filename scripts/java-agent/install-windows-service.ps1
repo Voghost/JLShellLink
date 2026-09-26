@@ -125,8 +125,10 @@ switch ($Action) {
         & $wrapperPath install
         if ($LASTEXITCODE -ne 0) { Fail 'WinSW 无法注册 Windows Service。' }
         & sc.exe sidtype $serviceId unrestricted | Out-Null
-        & sc.exe config $serviceId obj= $serviceSid password= '' | Out-Null
-        if ($LASTEXITCODE -ne 0) { Fail '无法将服务账号设置为专属虚拟服务身份。' }
+        $accountResult = & sc.exe config $serviceId "obj=$serviceSid" 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Fail "无法将服务账号设置为专属虚拟服务身份：$($accountResult -join ' ')"
+        }
         Set-PrivateAcl $programRoot $serviceSid 'RX'
         Set-PrivateAcl $stateRoot $serviceSid 'M'
         Set-PrivateAcl (Join-Path $dataRoot 'logs') $serviceSid 'M'
