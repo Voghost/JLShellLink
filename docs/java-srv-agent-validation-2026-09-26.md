@@ -3,7 +3,7 @@
 ## 环境边界
 
 - B：`/root/jlshell-link-validation`，独立 Compose 项目、PostgreSQL、Redis、临时 TLS 证书及 Website 后端；未复用生产数据库或容器。监听 `13575/TCP`（WSS）、`13576/UDP`（STUN）、`13577/TCP`（临时 HTTPS API）。
-- C：`/home/voghost/jlshell-link-validation`，独立 Agent 身份、凭据、白名单和 JVM truststore；以前台 `run` 命令的后台进程承载。未安装系统服务。
+- C：`/home/voghost/jlshell-link-validation`，独立 Agent 身份、凭据、白名单和 JVM truststore；通过通用 Linux `systemd-user` 安装脚本运行 `jlshell-link-agent.service`。Agent 状态与验证目录分离；未替换既有生产服务。
 - A：本机 `/private/tmp/jlshell-link-validation-a`，独立测试身份和 truststore。测试凭据均未放入仓库。
 - B 上三个容器运行正常，后端约 415 MiB、PostgreSQL 83 MiB、Redis 3 MiB；隔离栈使用独立内存上限。
 
@@ -15,14 +15,18 @@ A/C 均先建立持钥证明的 WSS 控制连接。A 从临时 Website 获得真
 
 | C 侧目标 | 观察到的响应 | 建连耗时 | A 侧操作 |
 | --- | --- | ---: | --- |
-| `192.168.31.1:80` | HTTP 响应首段 36 字节 | 4927 ms | 发送半关闭 |
-| `192.168.31.151:22` | SSH banner 40 字节 | 9870 ms | 发送半关闭 |
-| `192.168.31.202:22` | SSH banner 22 字节 | 9801 ms | 发送半关闭 |
+| `192.168.31.1:80` | HTTP 响应 859 字节，直到 EOF | 1121 ms | 双向半关闭 |
+| `192.168.31.151:22` | SSH 响应 1176 字节，直到 EOF | 10019 ms | 双向半关闭 |
+| `192.168.31.202:22` | SSH 响应 1062 字节，直到 EOF | 9806 ms | 双向半关闭 |
 
-这是三个不同的数值 IP 目标，Website 策略和 C 本地白名单均只允许对应端口。测试证明 A 发出半关闭；远端 EOF 与双向半关闭的完整行为仍需单独验收。B 重启后 C 日志出现短暂 `control-wss-disconnected` / `website-unavailable`，随后重新进入 `online` 和 `control-wss-online`，证明控制连接自动恢复。尚未演练真实账号/节点吊销及租约到期的跨主机关闭时延。
+这是三个不同的数值 IP 目标，Website 策略和 C 本地白名单均只允许对应端口。重连同一 HTTP 目标时，Website 返回了新的 session、tunnel 与 access ticket，并再次送达 `SESSION_INVITE`。B 重启后 C 日志出现短暂 `control-wss-disconnected` / `website-unavailable`，随后重新进入 `online` 和 `control-wss-online`，证明控制连接自动恢复。
 
-首次短会话联测发现用量快照可能在事务关闭后才异步冲刷，导致落账为 0。修正为关闭预留前纳入内存累计后重测，隔离数据库的关闭预留汇总为 11 个会话、A→C 13391 字节、C→A 11534 字节；另有 1 个过期且未传输的预留。数值包含握手后的加密帧，不代表业务明文字节。
+随后通过 Website 真实 `/sessions/{id}/close` 撤销活动 SSH session。A 收到 `SESSION_REVOKED`，该 session 的 relay stream 在 **47 ms** 内关闭。再次创建两个同时活动的跨主机 Website session，分别连接 `192.168.31.202:22` 与 `192.168.31.151:22`；关闭第一条 session 后，其 relay stream 在 **412 ms** 内关闭，第二条未收到撤销且仍可用，继续完成 SSH 双向半关闭并收到 **1136 字节**响应。由此覆盖“仅撤销指定 session”的真实 A—B—C 路径。
+
+C 的通用 `install-user-service.sh` 使用独立状态目录和临时 truststore 成功部署为 `jlshell-link-agent.service` 用户级 unit，Agent 回到 `online/control-wss-online`；联测时 Java 进程约 108 MiB。该 unit 不替换现有服务。macOS LaunchAgent 和 Windows Service 的运行时生命周期验收已加到独立 GitHub Actions runner；本分支 CI 结果未出前不将其标记完成。
+
+首次短会话联测发现用量快照可能在事务关闭后才异步冲刷，导致落账为 0。修正为关闭预留前纳入内存累计后重测。完成双 session 撤销联测后，隔离数据库汇总为 **23 个已关闭 Relay 预留、A→C 39641 字节、C→A 40401 字节**；另有 1 个过期且未传输的预留。数字累计本日多轮验收并包含加密传输帧，不代表业务明文字节，也不包含用户凭据。
 
 ## 结论和剩余工作
 
-单次独立 Website 部署已提供 Java WSS 控制信令、中继与 STUN，真实票据、在线节点和三个目标的 A—B—C 业务闭环已跑通。该部署使用七天有效的自签证书，仅供验证。正式发布还需版本化 Maven 包、生产 TLS/公网端口配置、平台服务托管和安装包生命周期；Agent 的 ICE/direct KCP 产品组装属于后续 NET/AGENT 工作。
+单次独立 Website 部署已提供 Java WSS 控制信令、中继与 STUN，真实票据、在线节点、重连重新授权、实时撤销和三个目标的 A—B—C 业务闭环已跑通。该部署使用七天有效的自签证书，仅供验证。Linux systemd 已在 C 实际安装；macOS LaunchAgent 和 Windows Service 安装脚本已加入跨平台包流程，尚待对应系统实机验收。生产 TLS/公网端口启用须另排维护窗口。Agent 的 ICE/direct KCP 产品组装属于后续 NET/AGENT 工作。
