@@ -191,15 +191,17 @@ public final class ConnectionCoordinator implements AutoCloseable {
     /** Selected path plus live, secret-free byte counters for the opened target stream. */
     public static final class Connection implements AutoCloseable {
         private final LinkPath path;
+        private final TunnelId tunnelId;
         private final long networkGeneration;
         private final SecureCarrier carrier;
         private final CountingChannel channel;
         private final AtomicBoolean closed = new AtomicBoolean();
         private final AtomicBoolean carrierReleased = new AtomicBoolean();
 
-        private Connection(LinkPath path, long networkGeneration, SecureCarrier carrier,
+        private Connection(LinkPath path, TunnelId tunnelId, long networkGeneration, SecureCarrier carrier,
                 ReliableDuplexChannel channel) {
             this.path = path;
+            this.tunnelId = tunnelId;
             this.networkGeneration = networkGeneration;
             this.carrier = carrier;
             this.channel = new CountingChannel(channel, this::releaseCarrier);
@@ -207,6 +209,7 @@ public final class ConnectionCoordinator implements AutoCloseable {
         }
 
         public LinkPath path() { return path; }
+        public TunnelId tunnelId() { return tunnelId; }
         public long networkGeneration() { return networkGeneration; }
         public ReliableDuplexChannel channel() { return channel; }
         public long bytesSent() { return channel.bytesSent.get(); }
@@ -410,7 +413,7 @@ public final class ConnectionCoordinator implements AutoCloseable {
                     return;
                 }
                 notifyObserver(path, PathOutcome.TARGET_OPENED, targetStarted, null);
-                Connection opened = new Connection(path, generation, carrier, channel);
+                Connection opened = new Connection(path, targetRequest.tunnelId(), generation, carrier, channel);
                 if (!result.complete(opened)) opened.close();
                 pending.remove(this);
                 AttemptContextImpl completedContext = activeContext.getAndSet(null);
