@@ -15,32 +15,34 @@ $stateRoot = Join-Path $dataRoot 'state'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $installer = Join-Path $PSScriptRoot 'install-windows-service.ps1'
 $expectedJar = Join-Path $repoRoot 'link-agent.jar'
-$expectedJarExisted = Test-Path $expectedJar
 $testRoot = Join-Path $env:TEMP ('jlshell-agent-service-' + [guid]::NewGuid().ToString('N'))
 $sourceState = Join-Path $testRoot 'source-state'
-$fakeJavaSource = @'
-using System;
-using System.IO;
-using System.Threading;
-public static class FakeJava {
-    public static int Main(string[] args) {
-        string state = null;
-        for (int i = 0; i + 1 < args.Length; i++) {
-            if (args[i] == "--state-dir") { state = args[i + 1]; break; }
+$testRootsOwned = $false
+$expectedJarCreated = $false
+$fakeAgentSource = @'
+import java.nio.file.Files;
+import java.nio.file.Path;
+
+public final class FakeAgent {
+    public static void main(String[] args) throws Exception {
+        if (args.length == 0) throw new IllegalArgumentException("missing test action");
+        Path state = null;
+        for (int i = 1; i + 1 < args.length; i++) {
+            if ("--state-dir".equals(args[i])) { state = Path.of(args[i + 1]); break; }
         }
-        if (state == null) return 2;
-        if (Array.IndexOf(args, "run") >= 0) {
-            Directory.CreateDirectory(state);
-            File.WriteAllText(Path.Combine(state, "ci-service-started"), "running");
-            string stop = Path.Combine(state, "ci-service-stop-requested");
-            while (!File.Exists(stop)) Thread.Sleep(100);
-            return 0;
+        if (state == null) throw new IllegalArgumentException("missing state directory");
+        Files.createDirectories(state);
+        if ("run".equals(args[0])) {
+            Files.writeString(state.resolve("ci-service-started"), "running");
+            Path stop = state.resolve("ci-service-stop-requested");
+            while (!Files.exists(stop)) Thread.sleep(100);
+            return;
         }
-        if (Array.IndexOf(args, "stop") >= 0) {
-            File.WriteAllText(Path.Combine(state, "ci-service-stop-requested"), "stopped");
-            return 0;
+        if ("stop".equals(args[0])) {
+            Files.writeString(state.resolve("ci-service-stop-requested"), "stopped");
+            return;
         }
-        return 2;
+        throw new IllegalArgumentException("unexpected test action");
     }
 }
 '@
@@ -51,8 +53,6 @@ function Assert([bool]$Condition, [string]$Message) {
 
 function Install-TestService {
     New-Item -ItemType Directory -Force $programRoot | Out-Null
-    Add-Type -TypeDefinition $fakeJavaSource -OutputType ConsoleApplication `
-        -OutputAssembly (Join-Path $programRoot 'java.exe')
     $env:PATH = "$programRoot;$env:PATH"
     & pwsh -NoProfile -File $installer install -StateDirectory $sourceState `
         -LinkWssUri 'wss://127.0.0.1:1/link/v2/control' `
@@ -73,7 +73,11 @@ try {
         'A JLShellLinkAgent service already exists on this runner.'
     Assert (-not (Test-Path $programRoot) -and -not (Test-Path $dataRoot)) `
         'JLShell service data already exists on this runner.'
+    Assert (-not (Test-Path $expectedJar)) 'A root link-agent.jar already exists; refusing to overwrite it.'
+    Assert (-not (Test-Path $testRoot)) 'Generated Windows test directory unexpectedly already exists.'
     Assert (Test-Path $AgentJarPath) 'The built Agent JAR was not found.'
+    $testRootsOwned = $true
+    New-Item -ItemType Directory -Force $testRoot | Out-Null
     New-Item -ItemType Directory -Force $sourceState | Out-Null
     Set-Content -Path (Join-Path $sourceState 'agent.properties') -Value 'ci-test=true'
     Set-Content -Path (Join-Path $sourceState 'agent.credential') -Value 'ci-test-only'
@@ -81,7 +85,20 @@ try {
     Set-Content -Path (Join-Path $testRoot 'agent.p12') -Value 'ci-test-only'
     Set-Content -Path (Join-Path $testRoot 'tls.password') -Value 'ci-test-only'
     Set-Content -Path (Join-Path $testRoot 'allowed-targets') -Value '192.0.2.1:22'
-    Copy-Item -Force $AgentJarPath $expectedJar
+    $classes = Join-Path $testRoot 'classes'
+    $sourceFile = Join-Path $testRoot 'FakeAgent.java'
+    $manifest = Join-Path $testRoot 'MANIFEST.MF'
+    $fakeJar = Join-Path $testRoot 'link-agent-ci-test.jar'
+    New-Item -ItemType Directory -Force $classes | Out-Null
+    Set-Content -Path $sourceFile -Value $fakeAgentSource
+    [System.IO.File]::WriteAllText($manifest, "Manifest-Version: 1.0`r`nMain-Class: FakeAgent`r`n`r`n",
+        [System.Text.Encoding]::ASCII)
+    & javac.exe -d $classes $sourceFile
+    if ($LASTEXITCODE -ne 0) { throw 'Could not compile the isolated Java service test process.' }
+    & jar.exe --create --file $fakeJar --manifest $manifest -C $classes .
+    if ($LASTEXITCODE -ne 0) { throw 'Could not package the isolated Java service test process.' }
+    $expectedJarCreated = $true
+    Copy-Item -Force $fakeJar $expectedJar
 
     for ($attempt = 1; $attempt -le 2; $attempt++) {
         Remove-Item -Force -Path @(
@@ -109,9 +126,12 @@ try {
     }
 }
 finally {
-    if (Get-Service -Name $serviceId -ErrorAction SilentlyContinue) {
-        & pwsh -NoProfile -File $installer uninstall
+    if ($testRootsOwned) {
+        if (Get-Service -Name $serviceId -ErrorAction SilentlyContinue) {
+            & pwsh -NoProfile -File $installer uninstall
+        }
+        Remove-Item -Recurse -Force $programRoot, $dataRoot -ErrorAction SilentlyContinue
     }
-    if (-not $expectedJarExisted) { Remove-Item -Force $expectedJar -ErrorAction SilentlyContinue }
-    Remove-Item -Recurse -Force $programRoot, $dataRoot, $testRoot -ErrorAction SilentlyContinue
+    if ($expectedJarCreated) { Remove-Item -Force $expectedJar -ErrorAction SilentlyContinue }
+    if ($testRootsOwned) { Remove-Item -Recurse -Force $testRoot -ErrorAction SilentlyContinue }
 }
