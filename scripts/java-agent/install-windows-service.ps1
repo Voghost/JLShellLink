@@ -33,6 +33,12 @@ function Set-PrivateAcl([string]$Path, [string]$ServiceAccount, [string]$Service
         "BUILTIN\Administrators:(OI)(CI)F" "${ServiceAccount}:(OI)(CI)$ServiceRights" /T | Out-Null
     if ($LASTEXITCODE -ne 0) { Fail "无法保护目录权限: $Path" }
 }
+function Set-ProgramAcl([string]$Path, [string]$ServiceAccount) {
+    & icacls.exe $Path /inheritance:e | Out-Null
+    if ($LASTEXITCODE -ne 0) { Fail "无法保留程序目录继承权限: $Path" }
+    & icacls.exe $Path /grant "${ServiceAccount}:(OI)(CI)RX" /T | Out-Null
+    if ($LASTEXITCODE -ne 0) { Fail "无法授予服务账号程序读取权限: $Path" }
+}
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
@@ -129,7 +135,7 @@ switch ($Action) {
         if ($LASTEXITCODE -ne 0) {
             Fail "无法将服务账号设置为专属虚拟服务身份：$($accountResult -join ' ')"
         }
-        Set-PrivateAcl $programRoot $serviceSid 'RX'
+        Set-ProgramAcl $programRoot $serviceSid
         Set-PrivateAcl $stateRoot $serviceSid 'M'
         Set-PrivateAcl (Join-Path $dataRoot 'logs') $serviceSid 'M'
         & $wrapperPath start
