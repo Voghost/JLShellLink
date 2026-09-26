@@ -10,5 +10,13 @@ public interface UsageRecorder {
 
     void record(LinkSessionId sessionId, TunnelId tunnelId, Direction direction, long bytes);
 
+    /** Atomically reserves quota before a ciphertext frame enters the outbound queue. */
+    default boolean reserve(LinkSessionId sessionId, TunnelId tunnelId, Direction direction, long bytes) {
+        return true;
+    }
+
+    /** Releases an unforwarded frame's quota reservation. */
+    default void release(LinkSessionId sessionId, TunnelId tunnelId, Direction direction, long bytes) { }
+
     enum Direction { CLIENT_TO_AGENT, AGENT_TO_CLIENT }
 }

@@ -1,5 +1,7 @@
 package com.jlshell.link.agent;
 
+import com.jlshell.link.core.signal.ControlSignal;
+import com.jlshell.link.core.model.LinkSessionId;
 import java.time.Duration;
 import java.util.Objects;
 import java.util.List;
@@ -28,10 +30,12 @@ public final class AgentControlSession implements AutoCloseable {
     private final Duration heartbeatInterval;
     private final Consumer<AgentLeaseSnapshot> leaseUpdates;
     private final Runnable closeActiveStreams;
+    private final Consumer<LinkSessionId> closeRevokedSession;
     private final Function<AgentControlPlaneClient.RelayOpenRequest, ? extends CompletionStage<Void>> relayOpenHandler;
     private final Consumer<UUID> relayCloseHandler;
     private final Runnable revokedAction;
     private final Consumer<String> statusCode;
+    private final SignalClientFactory signalClientFactory;
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicBoolean inFlight = new AtomicBoolean();
     private final AtomicLong revocationCursor = new AtomicLong();
@@ -40,6 +44,7 @@ public final class AgentControlSession implements AutoCloseable {
     private volatile ScheduledFuture<?> leaseExpiryTask;
     private volatile AgentLeaseSnapshot latestLease;
     private volatile int consecutiveFailures;
+    private volatile AgentControlSignalClient signalClient;
 
     public AgentControlSession(AgentControlPlaneClient api, String credential, UUID agentId,
             com.jlshell.link.core.model.NodeKeyFingerprint fingerprint, String version,
@@ -47,6 +52,30 @@ public final class AgentControlSession implements AutoCloseable {
             Consumer<AgentLeaseSnapshot> leaseUpdates, Runnable closeActiveStreams,
             Function<AgentControlPlaneClient.RelayOpenRequest, ? extends CompletionStage<Void>> relayOpenHandler,
             Consumer<UUID> relayCloseHandler, Runnable revokedAction, Consumer<String> statusCode) {
+        this(api, credential, agentId, fingerprint, version, capabilities, scheduler, heartbeatInterval,
+                leaseUpdates, closeActiveStreams, relayOpenHandler, relayCloseHandler, revokedAction,
+                statusCode, null, null);
+    }
+
+    public AgentControlSession(AgentControlPlaneClient api, String credential, UUID agentId,
+            com.jlshell.link.core.model.NodeKeyFingerprint fingerprint, String version,
+            Set<String> capabilities, ScheduledExecutorService scheduler, Duration heartbeatInterval,
+            Consumer<AgentLeaseSnapshot> leaseUpdates, Runnable closeActiveStreams,
+            Function<AgentControlPlaneClient.RelayOpenRequest, ? extends CompletionStage<Void>> relayOpenHandler,
+            Consumer<UUID> relayCloseHandler, Runnable revokedAction, Consumer<String> statusCode,
+            SignalClientFactory signalClientFactory) {
+        this(api, credential, agentId, fingerprint, version, capabilities, scheduler, heartbeatInterval,
+                leaseUpdates, closeActiveStreams, relayOpenHandler, relayCloseHandler, revokedAction,
+                statusCode, signalClientFactory, null);
+    }
+
+    public AgentControlSession(AgentControlPlaneClient api, String credential, UUID agentId,
+            com.jlshell.link.core.model.NodeKeyFingerprint fingerprint, String version,
+            Set<String> capabilities, ScheduledExecutorService scheduler, Duration heartbeatInterval,
+            Consumer<AgentLeaseSnapshot> leaseUpdates, Runnable closeActiveStreams,
+            Function<AgentControlPlaneClient.RelayOpenRequest, ? extends CompletionStage<Void>> relayOpenHandler,
+            Consumer<UUID> relayCloseHandler, Runnable revokedAction, Consumer<String> statusCode,
+            SignalClientFactory signalClientFactory, Consumer<LinkSessionId> closeRevokedSession) {
         this.api = Objects.requireNonNull(api, "api");
         if (credential == null || credential.isBlank()) throw new IllegalArgumentException("credential is required");
         this.credential = credential;
@@ -62,11 +91,13 @@ public final class AgentControlSession implements AutoCloseable {
         }
         this.leaseUpdates = Objects.requireNonNull(leaseUpdates, "leaseUpdates");
         this.closeActiveStreams = closeActiveStreams == null ? () -> { } : closeActiveStreams;
+        this.closeRevokedSession = closeRevokedSession == null ? ignored -> { } : closeRevokedSession;
         this.relayOpenHandler = relayOpenHandler == null
                 ? ignored -> java.util.concurrent.CompletableFuture.completedFuture(null) : relayOpenHandler;
         this.relayCloseHandler = relayCloseHandler == null ? ignored -> { } : relayCloseHandler;
         this.revokedAction = revokedAction == null ? () -> { } : revokedAction;
         this.statusCode = statusCode == null ? ignored -> { } : statusCode;
+        this.signalClientFactory = signalClientFactory;
     }
 
     public void start() {
@@ -106,6 +137,7 @@ public final class AgentControlSession implements AutoCloseable {
                 revokedAction.run();
                 return;
             }
+            ensureSignalConnection();
             consecutiveFailures = 0;
             safeStatus("online");
             schedule(heartbeatInterval);
@@ -134,6 +166,48 @@ public final class AgentControlSession implements AutoCloseable {
         long base = Math.min(60, 1L << Math.min(6, consecutiveFailures - 1));
         long jitter = java.util.concurrent.ThreadLocalRandom.current().nextLong(Math.max(1, base / 3 + 1));
         schedule(Duration.ofSeconds(base + jitter));
+    }
+
+    private void ensureSignalConnection() {
+        if (signalClientFactory == null || signalClient != null || closed.get()) return;
+        AgentControlSignalClient client;
+        try {
+            client = Objects.requireNonNull(signalClientFactory.create(this::signalDisconnected),
+                    "signal client factory returned null");
+        } catch (RuntimeException error) {
+            safeStatus("control-wss-unavailable");
+            return;
+        }
+        signalClient = client;
+        client.connect().whenComplete((ignored, error) -> {
+            if (error != null) {
+                if (signalClient == client) signalClient = null;
+                client.close();
+                safeStatus("control-wss-unavailable");
+            } else if (closed.get()) {
+                client.close();
+            } else {
+                safeStatus("control-wss-online");
+            }
+        });
+    }
+
+    /** Called by the WSS client when the live control connection drops. */
+    private void signalDisconnected(AgentControlSignalClient client) {
+        if (signalClient != client) return;
+        signalClient = null;
+        client.close();
+        if (!closed.get()) safeStatus("control-wss-disconnected");
+    }
+
+    /** Applies Website's immediate revocation notification before the next HTTPS poll. */
+    public void acceptSignal(ControlSignal signal) {
+        if (closed.get()) return;
+        if (signal instanceof ControlSignal.SessionRevoked revoked) {
+            try { closeRevokedSession.accept(revoked.sessionId()); }
+            catch (RuntimeException ignored) { safeStatus("relay-close-failed"); }
+            safeStatus("authorization-revoked");
+        }
     }
 
     private void safeStatus(String code) {
@@ -182,12 +256,12 @@ public final class AgentControlSession implements AutoCloseable {
                 opening.whenComplete((ignored, error) -> {
                     if (error != null) {
                         handledRelayRequests.remove(request.tunnelId(), request.authorizationLeaseExpiresAt());
-                        safeStatus("relay-open-failed");
+                        safeStatus("relay-open-failed/" + failureType(error));
                     }
                 });
             } catch (RuntimeException error) {
                 handledRelayRequests.remove(request.tunnelId(), request.authorizationLeaseExpiresAt());
-                safeStatus("relay-open-failed");
+                safeStatus("relay-open-failed/" + failureType(error));
             }
         }
         for (UUID missingTunnel : new java.util.HashSet<>(handledRelayRequests.keySet())) {
@@ -202,12 +276,34 @@ public final class AgentControlSession implements AutoCloseable {
         try { action.run(); } catch (RuntimeException ignored) { }
     }
 
+    private static String failureType(Throwable error) {
+        Throwable cause = error;
+        while ((cause instanceof java.util.concurrent.CompletionException
+                || cause instanceof java.util.concurrent.ExecutionException) && cause.getCause() != null) {
+            cause = cause.getCause();
+        }
+        // Class names are safe to expose in diagnostics; messages may contain sensitive headers.
+        if (cause instanceof RelayProofClient.ChallengeRejectedException rejected) {
+            return "challenge-http-" + rejected.statusCode();
+        }
+        return cause.getClass().getSimpleName();
+    }
+
     @Override
     public void close() {
         if (!closed.compareAndSet(false, true)) return;
+        AgentControlSignalClient client = signalClient;
+        signalClient = null;
+        if (client != null) client.close();
         ScheduledFuture<?> task = scheduled;
         if (task != null) task.cancel(true);
         ScheduledFuture<?> expiry = leaseExpiryTask;
         if (expiry != null) expiry.cancel(false);
+        safeRun(closeActiveStreams);
+    }
+
+    @FunctionalInterface
+    public interface SignalClientFactory {
+        AgentControlSignalClient create(Consumer<AgentControlSignalClient> disconnected);
     }
 }

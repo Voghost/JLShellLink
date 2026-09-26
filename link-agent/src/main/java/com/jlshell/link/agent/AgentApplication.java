@@ -16,7 +16,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
-/** Minimal secure CLI for preparing and enrolling a C node. Runtime service commands are added separately. */
+/** Secure CLI for preparing, enrolling, running and stopping a C gateway. */
 public final class AgentApplication {
     private AgentApplication() { }
 
@@ -32,16 +32,20 @@ public final class AgentApplication {
         }
         try {
             Options options = Options.parse(args);
-            if (!Set.of("init", "status", "enroll").contains(options.command())) {
+            if (!Set.of("init", "status", "enroll", "run", "stop", "diagnose")
+                    .contains(options.command())) {
                 System.err.println("未知命令：" + options.command());
                 printUsage();
                 return 2;
             }
             AgentIdentityStore identity = new AgentIdentityStore(options.stateDirectory());
             return switch (options.command()) {
-                case "init" -> initialize(identity);
+                case "init" -> initialize(identity, options);
                 case "status" -> status(identity);
                 case "enroll" -> enroll(identity, options, console);
+                case "run" -> run(identity, options);
+                case "stop" -> stop(options.stateDirectory());
+                case "diagnose" -> diagnose(identity, options);
                 default -> throw new IllegalStateException("validated command disappeared");
             };
         } catch (Exception failure) {
@@ -52,8 +56,19 @@ public final class AgentApplication {
         }
     }
 
-    private static int initialize(AgentIdentityStore identity) throws IOException, GeneralSecurityException {
-        Ed25519NodeKey key = identity.loadOrCreateKey();
+    private static int initialize(AgentIdentityStore identity, Options options)
+            throws IOException, GeneralSecurityException {
+        Ed25519NodeKey key;
+        if (options.value("--tls-identity-p12") != null) {
+            char[] password = AgentRuntimeService.readOwnerOnly(options.path("--tls-password-file"));
+            try { key = identity.importTlsIdentity(options.path("--tls-identity-p12"), password); }
+            finally { java.util.Arrays.fill(password, '\0'); }
+        } else {
+            if (options.value("--tls-password-file") != null) {
+                throw new IllegalArgumentException("--tls-password-file 需要同时提供 --tls-identity-p12");
+            }
+            key = identity.loadOrCreateKey();
+        }
         System.out.println("节点身份已就绪");
         System.out.println("公钥指纹：" + key.fingerprint().value());
         return 0;
@@ -70,7 +85,32 @@ public final class AgentApplication {
             System.out.println("Website：" + value.website());
             System.out.println("节点凭据：已保存（不显示）");
         });
-        System.out.println("运行状态：未启动；当前 CLI 版本尚未提供常驻服务命令");
+        System.out.println("运行状态：" + (AgentServiceControl.running(identityDirectory(identity))
+                ? "运行中" : "未运行"));
+        return 0;
+    }
+
+    private static Path identityDirectory(AgentIdentityStore identity) {
+        return identity.directory();
+    }
+
+    private static int run(AgentIdentityStore identity, Options options) throws Exception {
+        AgentRuntimeService.run(identity, options.stateDirectory(), options.linkWss(),
+                options.path("--tls-identity-p12"), options.path("--tls-password-file"),
+                options.path("--allowed-targets-file"), options.ticketIssuer(identity));
+        return 0;
+    }
+
+    private static int stop(Path stateDirectory) throws IOException {
+        AgentServiceControl.requestStop(stateDirectory.toAbsolutePath().normalize());
+        System.out.println("Agent 停止请求已发送");
+        return 0;
+    }
+
+    private static int diagnose(AgentIdentityStore identity, Options options) throws Exception {
+        AgentRuntimeService.diagnose(identity, options.linkWss(), options.path("--tls-identity-p12"),
+                options.path("--tls-password-file"), options.path("--allowed-targets-file"));
+        System.out.println("Agent 本地身份、TLS、目标范围与 Website 票据公钥检查通过");
         return 0;
     }
 
@@ -145,9 +185,12 @@ public final class AgentApplication {
 
     private static void printUsage() {
         System.out.println("JLShell Link Agent CLI");
-        System.out.println("  agent init [--state-dir <path>]");
+        System.out.println("  agent init [--tls-identity-p12 <path> --tls-password-file <path>] [--state-dir <path>]");
         System.out.println("  agent enroll --website <https-origin> --agent-id <uuid> [--token-file <path>] [--state-dir <path>]");
         System.out.println("  agent status [--state-dir <path>]");
+        System.out.println("  agent run --link-wss <wss-url> --tls-identity-p12 <path> --tls-password-file <path> --allowed-targets-file <path> [--ticket-issuer <https-origin>] [--state-dir <path>]");
+        System.out.println("  agent diagnose --link-wss <wss-url> --tls-identity-p12 <path> --tls-password-file <path> --allowed-targets-file <path> [--state-dir <path>]");
+        System.out.println("  agent stop [--state-dir <path>]");
         System.out.println("enrollment token 不接受命令行参数；可在交互终端隐藏输入，或从当前用户独占的 600 权限文件读取。");
     }
 
@@ -155,8 +198,12 @@ public final class AgentApplication {
         private static Options parse(String[] args) {
             Map<String, String> values = new HashMap<>();
             Set<String> allowed = switch (args[0]) {
-                case "init", "status" -> Set.of("--state-dir");
+                case "init" -> Set.of("--state-dir", "--tls-identity-p12", "--tls-password-file");
+                case "status" -> Set.of("--state-dir");
                 case "enroll" -> Set.of("--state-dir", "--website", "--agent-id", "--token-file");
+                case "stop" -> Set.of("--state-dir");
+                case "run", "diagnose" -> Set.of("--state-dir", "--link-wss", "--tls-identity-p12",
+                        "--tls-password-file", "--allowed-targets-file", "--ticket-issuer");
                 default -> Set.of("--state-dir", "--website", "--agent-id", "--token-file");
             };
             for (int i = 1; i < args.length; i++) {
@@ -180,6 +227,23 @@ public final class AgentApplication {
             String configured = value("--state-dir");
             if (configured != null) return Path.of(configured);
             return Path.of(System.getProperty("user.home"), ".jlshell-link-agent");
+        }
+
+        private Path path(String name) {
+            String value = value(name);
+            if (value == null) throw new IllegalArgumentException("缺少必要选项：" + name);
+            return Path.of(value).toAbsolutePath().normalize();
+        }
+
+        private URI linkWss() {
+            String value = value("--link-wss");
+            if (value == null) throw new IllegalArgumentException("缺少必要选项：--link-wss");
+            return URI.create(value);
+        }
+
+        private URI ticketIssuer(AgentIdentityStore identity) throws IOException {
+            String value = value("--ticket-issuer");
+            return value == null ? identity.loadRegistration().orElseThrow().website() : URI.create(value);
         }
     }
 }

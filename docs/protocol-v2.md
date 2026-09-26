@@ -21,7 +21,8 @@
 |---|---|---|
 | `HELLO` | A/C→B | 节点 ID、角色、协议范围、能力、凭据 ID |
 | `CHALLENGE` / `PROOF` | B↔A/C | 32 字节以上随机数、用途、节点 ID、可选 sessionId、Ed25519 签名 |
-| `SESSION_INVITE` | B→C | sessionId、generation、A/C 指纹、策略版本、过期时间 |
+| `SESSION_INVITE` | B→A/C | sessionId、generation、A/C 指纹、策略版本、过期时间；A/C 均从此消息取得当前代次 |
+| `SESSION_REVOKED` | B→A/C | sessionId、generation；Website 业务授权结束后立即停止本次会话的数据流 |
 | `ICE_CANDIDATE` | A/C↔B | generation、candidateId、类型、transport、IP、端口、priority、foundation |
 | `ICE_END` | A/C↔B | generation |
 | `PATH_READY` | A/C→B | `DIRECT`/`RELAY`、generation、选中候选 ID；不发送 ICE 密码到日志 |
@@ -30,6 +31,26 @@
 | `PING` / `PONG` | 双向 | messageId 与单调时间戳 |
 
 B 只能在同账号且已授权的 A/C 间路由候选。旧 generation、跨 session 或身份不匹配的候选返回错误且不进入 ICE Agent。
+
+### 控制 WSS 身份与在线会话
+
+内置 Java Link Server 与 Relay 共用同一个 TLS 1.3 端口，提供
+`POST /link/v2/control-challenges` 和 `GET /link/v2/control`。两次请求均带
+`Authorization: Bearer ...`、`X-Link-Role`（`client`/`agent`）、
+`X-Link-Node-Id`、`X-Link-Key-Fingerprint`；Upgrade 额外带
+`X-Link-Challenge-Id` 与 `X-Link-Proof`。节点签名输入采用
+`NodeProofContext("control-channel", nodeId, empty sessionId)`，随机挑战至少 32 字节、
+短时有效且只能消费一次。B 在签发挑战和 Upgrade 时均查询 Website 当前凭据、账号权限、
+设备或 Agent 公钥及指纹；C 还必须有当前控制租约。WebSocket 运行期间每 30 秒重新鉴权，
+凭据撤销、控制租约到期或身份变化即断开。
+
+Upgrade 后第一条文本帧必须是 `HELLO`，包含 `role`、`nodeId`、`keyFingerprint`、
+`minProtocol`、`maxProtocol`、`capabilities` 和 `sentAt`。当前范围必须精确为 `link-v2`，
+否则 B 返回稳定错误码并关闭。`READY` 含节点 ID 和本次控制连接代次；之后仅接受
+`ICE_CANDIDATE`、`ICE_END`、`PATH_READY` 文本帧。候选地址必须为数值 IPv4/IPv6，
+主机名、未知消息类型、二进制帧和越界字段均拒绝。Website 的访问授权在数据库提交后才给
+信令路由器；节点尚未上线时授权有界暂存，到期或撤销即删除。旧控制连接断开/被替换后，
+旧会话信令立即失效，重建目标流必须再次申请业务授权。
 
 ## 选路与重试
 

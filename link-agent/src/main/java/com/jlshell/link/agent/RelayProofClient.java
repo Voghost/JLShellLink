@@ -35,7 +35,7 @@ import io.netty.channel.Channel;
 import io.netty.channel.EventLoopGroup;
 
 /** Requests a one-use B challenge, signs the role/session/tunnel-bound proof, then opens a WSS A—C carrier. */
-public final class RelayProofClient {
+public final class RelayProofClient implements AutoCloseable {
     private static final int MAX_RESPONSE_BYTES = 16 * 1024;
     private final HttpClient http;
     private final NodeProofService proofs;
@@ -107,8 +107,11 @@ public final class RelayProofClient {
             HttpResponse<InputStream> response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
             try (InputStream input = response.body()) {
                 byte[] bytes = input.readNBytes(MAX_RESPONSE_BYTES + 1);
-                if (bytes.length > MAX_RESPONSE_BYTES || response.statusCode() != 201) {
-                    throw new IllegalStateException("B did not issue a relay proof challenge");
+                if (bytes.length > MAX_RESPONSE_BYTES) {
+                    throw new IllegalStateException("B relay proof response exceeded the size limit");
+                }
+                if (response.statusCode() != 201) {
+                    throw new ChallengeRejectedException(response.statusCode());
                 }
                 var json = JSONObjectUtils.parse(new String(bytes, StandardCharsets.UTF_8));
                 UUID challengeId = UUID.fromString(JSONObjectUtils.getString(json, "challengeId"));
@@ -148,6 +151,20 @@ public final class RelayProofClient {
         Objects.requireNonNull(duration, "duration");
         if (duration.isZero() || duration.isNegative()) throw new IllegalArgumentException("timeout must be positive");
         return duration;
+    }
+
+    @Override public void close() { http.shutdown(); }
+
+    /** Redacted diagnostic: only the HTTP status is retained, never credentials or bodies. */
+    public static final class ChallengeRejectedException extends IllegalStateException {
+        private final int statusCode;
+
+        public ChallengeRejectedException(int statusCode) {
+            super("B rejected the relay proof challenge (HTTP " + statusCode + ")");
+            this.statusCode = statusCode;
+        }
+
+        public int statusCode() { return statusCode; }
     }
 
     /** Secret-bearing value object deliberately has a redacted printable representation. */
