@@ -3,6 +3,8 @@ package com.jlshell.link.agent;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import com.jlshell.link.core.model.NodeKeyFingerprint;
+import com.jlshell.link.core.model.LinkSessionId;
+import com.jlshell.link.core.signal.ControlSignal;
 import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
@@ -16,6 +18,32 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 class AgentControlSessionTest {
+    @Test
+    void pushedWebsiteRevocationClosesOnlyItsSession() {
+        UUID agentId = UUID.randomUUID();
+        NodeKeyFingerprint fingerprint = new NodeKeyFingerprint("a".repeat(64));
+        AtomicInteger closedStreams = new AtomicInteger();
+        LinkSessionId revokedSession = LinkSessionId.random();
+        var closedSessions = new java.util.ArrayList<LinkSessionId>();
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        AgentControlSession session = new AgentControlSession(
+                new AgentControlPlaneClient(URI.create("https://website.example"),
+                        Duration.ofSeconds(1), Duration.ofSeconds(1)),
+                "credential", agentId, fingerprint, "test", Set.of("tcp-connect"), scheduler,
+                Duration.ofSeconds(10), ignored -> { }, closedStreams::incrementAndGet,
+                ignored -> CompletableFuture.completedFuture(null), ignored -> { }, () -> { }, ignored -> { },
+                null, closedSessions::add);
+        try {
+            session.acceptSignal(new ControlSignal.SessionRevoked(UUID.randomUUID(),
+                    revokedSession, 1));
+            assertEquals(List.of(revokedSession), closedSessions);
+            assertEquals(0, closedStreams.get());
+        } finally {
+            session.close();
+            scheduler.shutdownNow();
+        }
+    }
+
     @Test
     void failedRelayOpenIsRetriedWhileWebsiteKeepsAuthorizationLeaseActive() {
         UUID agentId = UUID.randomUUID();

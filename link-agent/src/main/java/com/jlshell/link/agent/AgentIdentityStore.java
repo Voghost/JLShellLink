@@ -12,6 +12,10 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.PosixFilePermission;
 import java.security.GeneralSecurityException;
+import java.security.KeyPair;
+import java.security.KeyStore;
+import java.security.PrivateKey;
+import java.security.cert.X509Certificate;
 import java.util.Base64;
 import java.util.EnumSet;
 import java.util.Objects;
@@ -31,6 +35,8 @@ public final class AgentIdentityStore {
     private final Path credentialFile;
     private final NodeKeyStore keys;
 
+    public Path directory() { return directory; }
+
     public AgentIdentityStore(Path directory) throws IOException {
         this.directory = Objects.requireNonNull(directory, "directory").toAbsolutePath().normalize();
         Files.createDirectories(this.directory);
@@ -47,6 +53,49 @@ public final class AgentIdentityStore {
         Ed25519NodeKey generated = Ed25519NodeKey.generate();
         keys.store(generated);
         return generated;
+    }
+
+    /** Imports the certificate's Ed25519 key as the node identity before enrollment. */
+    public Ed25519NodeKey importTlsIdentity(Path pkcs12, char[] password)
+            throws IOException, GeneralSecurityException {
+        if (loadRegistration().isPresent()) {
+            throw new IllegalStateException("Cannot replace an enrolled Agent node identity");
+        }
+        if (Files.isSymbolicLink(pkcs12) || !Files.isRegularFile(pkcs12,
+                java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("TLS identity must be a regular PKCS12 file");
+        }
+        if (Files.getFileAttributeView(pkcs12, java.nio.file.attribute.PosixFileAttributeView.class) != null
+                && Files.getPosixFilePermissions(pkcs12).stream().anyMatch(permission ->
+                    permission.name().startsWith("GROUP_") || permission.name().startsWith("OTHERS_"))) {
+            throw new IOException("TLS identity must be owner-only (chmod 600)");
+        }
+        try {
+            KeyStore store = KeyStore.getInstance("PKCS12");
+            try (var input = Files.newInputStream(pkcs12)) { store.load(input, password); }
+            Ed25519NodeKey imported = null;
+            for (var aliases = store.aliases(); aliases.hasMoreElements();) {
+                String alias = aliases.nextElement();
+                if (!store.isKeyEntry(alias)
+                        || !(store.getCertificate(alias) instanceof X509Certificate certificate)
+                        || !(store.getKey(alias, password) instanceof PrivateKey privateKey)) continue;
+                if (imported != null) throw new IOException("TLS identity contains more than one private key");
+                certificate.checkValidity();
+                imported = new Ed25519NodeKey(
+                        new KeyPair(certificate.getPublicKey(), privateKey));
+            }
+            if (imported == null) throw new IOException("TLS identity lacks an Ed25519 key and certificate");
+            Ed25519NodeKey existing = keys.load().orElse(null);
+            if (existing != null && !existing.fingerprint().equals(imported.fingerprint())) {
+                throw new IllegalStateException("Existing node key differs from TLS certificate");
+            }
+            if (existing == null) keys.store(imported);
+            return imported;
+        } catch (IOException | GeneralSecurityException failure) {
+            throw failure;
+        } catch (Exception invalid) {
+            throw new GeneralSecurityException("Invalid Agent TLS identity", invalid);
+        }
     }
 
     public Optional<Ed25519NodeKey> loadKey() throws IOException, GeneralSecurityException {

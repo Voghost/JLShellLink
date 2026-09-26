@@ -83,6 +83,21 @@ public final class RelayFrameBridgeHandler extends ChannelDuplexHandler {
             closePair(context);
             return;
         }
+        try {
+            if (!usage.reserve(sessionId, tunnelId, direction, bytes)) {
+                pairBudget.release(bytes);
+                serverBudget.release(bytes);
+                frame.release();
+                closePair(context);
+                return;
+            }
+        } catch (RuntimeException rejected) {
+            pairBudget.release(bytes);
+            serverBudget.release(bytes);
+            frame.release();
+            closePair(context);
+            return;
+        }
         if (!peer.isWritable()) context.channel().config().setAutoRead(false);
         peer.writeAndFlush(new BinaryWebSocketFrame(payload.retainedDuplicate())).addListener(result -> {
             pairBudget.release(bytes);
@@ -90,8 +105,9 @@ public final class RelayFrameBridgeHandler extends ChannelDuplexHandler {
             if (result.isSuccess()) {
                 try {
                     usage.record(sessionId, tunnelId, direction, bytes);
-                } catch (RuntimeException ignored) {
-                    // Usage recording must never block or change an already-authorized data path.
+                } catch (RuntimeException rejected) {
+                    closePair(context);
+                    return;
                 }
                 if (context.channel().isActive() && peer.isWritable()
                         && pairBudget.inUseBytes() < pairBudget.limitBytes() / 2
@@ -99,6 +115,7 @@ public final class RelayFrameBridgeHandler extends ChannelDuplexHandler {
                     context.channel().eventLoop().execute(() -> context.channel().config().setAutoRead(true));
                 }
             } else {
+                usage.release(sessionId, tunnelId, direction, bytes);
                 closePair(context);
             }
         });

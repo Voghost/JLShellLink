@@ -20,7 +20,7 @@ import java.util.TreeSet;
 import java.util.UUID;
 
 /** HTTPS adapter for the implemented JLShell Website v2 Agent heartbeat and revocation APIs. */
-public final class AgentControlPlaneClient {
+public final class AgentControlPlaneClient implements AutoCloseable {
     private static final int MAX_RESPONSE_BYTES = 64 * 1024;
     private final URI baseUri;
     private final HttpClient http;
@@ -216,4 +216,6 @@ public final class AgentControlPlaneClient {
         }
         public int statusCode() { return statusCode; }
     }
+
+    @Override public void close() { http.shutdown(); }
 }

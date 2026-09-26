@@ -1,8 +1,11 @@
 package com.jlshell.link.server;
 
 import com.jlshell.link.core.model.LinkSessionId;
+import com.jlshell.link.core.model.NodeKeyFingerprint;
 import com.jlshell.link.core.model.NodeRole;
 import com.jlshell.link.core.model.TunnelId;
+import com.jlshell.link.core.signal.ControlSignal;
+import com.jlshell.link.core.signal.ControlSignalJsonCodec;
 import com.jlshell.link.core.transport.TransportBufferBudget;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.Channel;
@@ -25,6 +28,13 @@ import io.netty.handler.codec.http.HttpObjectAggregator;
 import io.netty.handler.codec.http.HttpVersion;
 import io.netty.handler.codec.http.websocketx.WebSocketServerProtocolConfig;
 import io.netty.handler.codec.http.websocketx.WebSocketServerProtocolHandler;
+import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
+import io.netty.handler.codec.http.websocketx.PingWebSocketFrame;
+import io.netty.handler.codec.http.websocketx.PongWebSocketFrame;
+import io.netty.handler.codec.http.websocketx.BinaryWebSocketFrame;
+import io.netty.handler.codec.http.websocketx.CloseWebSocketFrame;
+import io.netty.handler.codec.http.websocketx.WebSocketFrame;
+import io.netty.handler.codec.http.websocketx.WebSocketCloseStatus;
 import io.netty.handler.ssl.SslHandler;
 import io.netty.util.AttributeKey;
 import io.netty.util.concurrent.GlobalEventExecutor;
@@ -34,12 +44,15 @@ import java.net.URI;
 import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Base64;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLParameters;
@@ -48,8 +61,12 @@ import javax.net.ssl.SSLParameters;
 public final class WssRelayServer implements AutoCloseable {
     public static final String RELAY_PATH = "/link/v2/relay";
     public static final String CHALLENGE_PATH = "/link/v2/relay-challenges";
+    public static final String CONTROL_PATH = "/link/v2/control";
+    public static final String CONTROL_CHALLENGE_PATH = "/link/v2/control-challenges";
     private static final AttributeKey<RelayPairingService.AuthorizedPeer> AUTHORIZED_PEER =
             AttributeKey.valueOf("jlshell-link-authorized-relay-peer");
+    private static final AttributeKey<ControlAuthContext> AUTHORIZED_CONTROL_PEER =
+            AttributeKey.valueOf("jlshell-link-authorized-control-peer");
 
     private final InetSocketAddress bindAddress;
     private final SSLContext tlsContext;
@@ -60,9 +77,17 @@ public final class WssRelayServer implements AutoCloseable {
     private final TransportBufferBudget serverBuffers;
     private final int maxFrameBytes;
     private final Duration handshakeTimeout;
+    private final ControlPeerAuthenticator controlAuthenticator;
+    private final ControlChallengeStore controlChallenges;
+    private final SignalRouter signalRouter;
+    private final ControlSignalJsonCodec controlCodec = new ControlSignalJsonCodec();
     private final EventLoopGroup boss = new NioEventLoopGroup(1);
     private final EventLoopGroup workers;
     private final ChannelGroup channels = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE);
+    private final java.util.concurrent.ConcurrentHashMap<LinkSessionId, java.util.Set<Channel>> relaySessions =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.concurrent.ConcurrentHashMap<LinkSessionId, Long> revokedRelaySessions =
+            new java.util.concurrent.ConcurrentHashMap<>();
     private volatile Channel serverChannel;
 
     public WssRelayServer(InetSocketAddress bindAddress, SSLContext tlsContext,
@@ -70,6 +95,17 @@ public final class WssRelayServer implements AutoCloseable {
             RelayChallengeStore challenges, UsageRecorder usage,
             TransportBufferBudget serverBuffers, int maxFrameBytes,
             Duration handshakeTimeout, int workerThreads) {
+        this(bindAddress, tlsContext, authenticator, pairings, challenges, usage, serverBuffers,
+                maxFrameBytes, handshakeTimeout, workerThreads, null, null, null);
+    }
+
+    public WssRelayServer(InetSocketAddress bindAddress, SSLContext tlsContext,
+            RelayControlAuthenticator authenticator, RelayPairingService pairings,
+            RelayChallengeStore challenges, UsageRecorder usage,
+            TransportBufferBudget serverBuffers, int maxFrameBytes,
+            Duration handshakeTimeout, int workerThreads,
+            ControlPeerAuthenticator controlAuthenticator, ControlChallengeStore controlChallenges,
+            SignalRouter signalRouter) {
         this.bindAddress = Objects.requireNonNull(bindAddress, "bindAddress");
         this.tlsContext = Objects.requireNonNull(tlsContext, "tlsContext");
         this.authenticator = Objects.requireNonNull(authenticator, "authenticator");
@@ -82,6 +118,13 @@ public final class WssRelayServer implements AutoCloseable {
         }
         this.maxFrameBytes = maxFrameBytes;
         this.handshakeTimeout = Objects.requireNonNull(handshakeTimeout, "handshakeTimeout");
+        if ((controlAuthenticator == null) != (controlChallenges == null)
+                || (controlAuthenticator == null) != (signalRouter == null)) {
+            throw new IllegalArgumentException("control WSS requires authenticator, challenge store, and router together");
+        }
+        this.controlAuthenticator = controlAuthenticator;
+        this.controlChallenges = controlChallenges;
+        this.signalRouter = signalRouter;
         if (handshakeTimeout.isZero() || handshakeTimeout.isNegative()) {
             throw new IllegalArgumentException("handshakeTimeout must be positive");
         }
@@ -115,8 +158,8 @@ public final class WssRelayServer implements AutoCloseable {
                         channel.pipeline().addLast("jlshell-link-auth", new AuthAndRouteHandler());
                         channel.pipeline().addLast("jlshell-link-websocket",
                                 new WebSocketServerProtocolHandler(WebSocketServerProtocolConfig.newBuilder()
-                                        .websocketPath(RELAY_PATH)
-                                        .checkStartsWith(false)
+                                        .websocketPath("/")
+                                        .checkStartsWith(true)
                                         .allowExtensions(false)
                                         .maxFramePayloadLength(maxFrameBytes)
                                         .handshakeTimeoutMillis(timeoutMillis(handshakeTimeout))
@@ -143,19 +186,83 @@ public final class WssRelayServer implements AutoCloseable {
         return channel != null && channel.isActive();
     }
 
+    /** Closes the listening socket while leaving existing authenticated carriers alive. */
+    public void stopAccepting() {
+        Channel listener = serverChannel;
+        serverChannel = null;
+        if (listener != null) listener.close().syncUninterruptibly();
+    }
+
+    /** Waits only for established relay carriers; control channels are closed at final shutdown. */
+    public void awaitRelayDrain(Duration timeout) {
+        Objects.requireNonNull(timeout, "timeout");
+        long deadline = System.nanoTime() + timeout.toNanos();
+        while (!relaySessions.isEmpty() && System.nanoTime() < deadline) {
+            java.util.concurrent.locks.LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(25));
+            if (Thread.currentThread().isInterrupted()) break;
+        }
+    }
+
+    /** Terminates an authorized session's active data carriers immediately after Website revocation commits. */
+    public void closeSession(LinkSessionId sessionId) {
+        Objects.requireNonNull(sessionId, "sessionId");
+        revokedRelaySessions.put(sessionId, System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(5));
+        if (revokedRelaySessions.size() > 100_000) {
+            long now = System.currentTimeMillis();
+            revokedRelaySessions.entrySet().removeIf(entry -> entry.getValue() < now);
+        }
+        java.util.Set<Channel> active = relaySessions.remove(sessionId);
+        if (active != null) active.forEach(Channel::close);
+    }
+
+    private boolean registerRelaySession(LinkSessionId sessionId, Channel first, Channel second) {
+        Long revokedUntil = revokedRelaySessions.get(sessionId);
+        if (revokedUntil != null && revokedUntil >= System.currentTimeMillis()) return false;
+        java.util.Set<Channel> active = relaySessions.computeIfAbsent(sessionId,
+                ignored -> java.util.concurrent.ConcurrentHashMap.newKeySet());
+        active.add(first);
+        active.add(second);
+        first.closeFuture().addListener(ignored -> {
+            active.remove(first);
+            if (active.isEmpty()) relaySessions.remove(sessionId, active);
+        });
+        second.closeFuture().addListener(ignored -> {
+            active.remove(second);
+            if (active.isEmpty()) relaySessions.remove(sessionId, active);
+        });
+        revokedUntil = revokedRelaySessions.get(sessionId);
+        if (revokedUntil != null && revokedUntil >= System.currentTimeMillis()) {
+            closeSession(sessionId);
+            return false;
+        }
+        return true;
+    }
+
     @Override
     public void close() {
-        Channel channel = serverChannel;
-        serverChannel = null;
+        stopAccepting();
         channels.close().awaitUninterruptibly();
-        if (channel != null) channel.close().syncUninterruptibly();
+        relaySessions.clear();
+        revokedRelaySessions.clear();
+        if (signalRouter != null) signalRouter.close();
         boss.shutdownGracefully().syncUninterruptibly();
         workers.shutdownGracefully().syncUninterruptibly();
     }
 
     private final class AuthAndRouteHandler extends io.netty.channel.ChannelInboundHandlerAdapter {
+        private boolean upgraded;
+
         @Override
         public void channelRead(ChannelHandlerContext context, Object message) {
+            if (upgraded) {
+                if (message instanceof FullHttpRequest) {
+                    ReferenceCountUtil.release(message);
+                    context.close();
+                } else {
+                    context.fireChannelRead(message);
+                }
+                return;
+            }
             if (!(message instanceof FullHttpRequest request)) {
                 ReferenceCountUtil.release(message);
                 respond(context, HttpResponseStatus.BAD_REQUEST, "invalid_request");
@@ -167,8 +274,50 @@ public final class WssRelayServer implements AutoCloseable {
                     throw new IllegalArgumentException("relay URI query and fragment are not accepted");
                 }
                 String path = requestUri.getPath();
-                RelayHandshake handshake = parseHandshake(request);
                 String bearer = bearer(request);
+                if ("POST".equals(request.method().name()) && CONTROL_CHALLENGE_PATH.equals(path)) {
+                    if (controlAuthenticator == null || request.content().isReadable()) {
+                        respond(context, controlAuthenticator == null
+                                ? HttpResponseStatus.NOT_FOUND : HttpResponseStatus.BAD_REQUEST,
+                                controlAuthenticator == null ? "not_found" : "invalid_request_body");
+                        return;
+                    }
+                    ControlHandshake handshake = parseControlHandshake(request);
+                    CompletionStage<ControlPeerAuthenticator.AuthenticatedPeer> auth =
+                            controlAuthenticator.authenticate(handshake, bearer);
+                    auth.whenComplete((principal, error) -> execute(context, () -> {
+                        if (error != null || principal == null || !principal.matches(handshake)) {
+                            respond(context, HttpResponseStatus.UNAUTHORIZED, "control_authentication_failed");
+                            return;
+                        }
+                        try {
+                            ControlChallengeStore.ChallengeResponse challenge =
+                                    controlChallenges.issue(handshake, principal);
+                            respond(context, HttpResponseStatus.CREATED,
+                                    "{\"challengeId\":\"" + challenge.challengeId()
+                                            + "\",\"challenge\":\"" + challenge.challenge()
+                                            + "\",\"expiresAt\":\"" + challenge.expiresAt() + "\"}");
+                        } catch (RuntimeException failure) {
+                            respond(context, HttpResponseStatus.TOO_MANY_REQUESTS,
+                                    "control_challenge_unavailable");
+                        }
+                    }, context::close));
+                    return;
+                }
+                if ("GET".equals(request.method().name()) && CONTROL_PATH.equals(path)) {
+                    if (controlAuthenticator == null) {
+                        respond(context, HttpResponseStatus.NOT_FOUND, "not_found");
+                        return;
+                    }
+                    startControlUpgrade(context, request, bearer);
+                    return;
+                }
+                if (!("POST".equals(request.method().name()) && CHALLENGE_PATH.equals(path))
+                        && !("GET".equals(request.method().name()) && RELAY_PATH.equals(path))) {
+                    respond(context, HttpResponseStatus.NOT_FOUND, "not_found");
+                    return;
+                }
+                RelayHandshake handshake = parseHandshake(request);
                 if ("POST".equals(request.method().name()) && CHALLENGE_PATH.equals(path)) {
                     CompletionStage<RelayControlAuthenticator.AuthenticatedPeer> auth =
                             authenticator.authenticate(handshake, bearer);
@@ -224,6 +373,7 @@ public final class WssRelayServer implements AutoCloseable {
                             handshake.tunnelId(), principal.keyFingerprint(), principal.clientKeyFingerprint(),
                             principal.agentKeyFingerprint(), principal.ticketExpiresAt());
                     context.channel().attr(AUTHORIZED_PEER).set(peer);
+                    upgraded = true;
                     context.fireChannelRead(retainedRequest);
                 }, () -> {
                     ReferenceCountUtil.release(retainedRequest);
@@ -234,6 +384,44 @@ public final class WssRelayServer implements AutoCloseable {
             } finally {
                 ReferenceCountUtil.release(request);
             }
+        }
+
+        private void startControlUpgrade(ChannelHandlerContext context, FullHttpRequest request, String bearer) {
+            ControlHandshake handshake = parseControlHandshake(request);
+            String challengeId = requiredHeader(request, "X-Link-Challenge-Id");
+            String proof = requiredHeader(request, "X-Link-Proof");
+            CompletionStage<ControlPeerAuthenticator.AuthenticatedPeer> auth =
+                    controlAuthenticator.authenticate(handshake, bearer);
+            FullHttpRequest retainedRequest = request.retain();
+            auth.whenComplete((principal, error) -> execute(context, () -> {
+                if (!context.channel().isActive()) {
+                    ReferenceCountUtil.release(retainedRequest);
+                    return;
+                }
+                if (error != null || principal == null || !principal.matches(handshake)) {
+                    ReferenceCountUtil.release(retainedRequest);
+                    respond(context, HttpResponseStatus.UNAUTHORIZED, "control_authentication_failed");
+                    return;
+                }
+                boolean valid;
+                try {
+                    valid = controlChallenges.consume(UUID.fromString(challengeId), handshake, principal, proof);
+                } catch (RuntimeException invalid) {
+                    valid = false;
+                }
+                if (!valid) {
+                    ReferenceCountUtil.release(retainedRequest);
+                    respond(context, HttpResponseStatus.UNAUTHORIZED, "control_proof_rejected");
+                    return;
+                }
+                context.channel().attr(AUTHORIZED_CONTROL_PEER)
+                        .set(new ControlAuthContext(handshake, bearer, principal));
+                upgraded = true;
+                context.fireChannelRead(retainedRequest);
+            }, () -> {
+                ReferenceCountUtil.release(retainedRequest);
+                context.close();
+            }));
         }
 
         private void execute(ChannelHandlerContext context, Runnable action, Runnable rejected) {
@@ -273,6 +461,16 @@ public final class WssRelayServer implements AutoCloseable {
                             requiredHeader(request, "X-Link-Key-Fingerprint")));
         }
 
+        private ControlHandshake parseControlHandshake(FullHttpRequest request) {
+            NodeRole role = switch (requiredHeader(request, "X-Link-Role")) {
+                case "client" -> NodeRole.CLIENT;
+                case "agent" -> NodeRole.AGENT;
+                default -> throw new IllegalArgumentException("invalid role");
+            };
+            return new ControlHandshake(role, UUID.fromString(requiredHeader(request, "X-Link-Node-Id")),
+                    new NodeKeyFingerprint(requiredHeader(request, "X-Link-Key-Fingerprint")));
+        }
+
         private String bearer(FullHttpRequest request) {
             String value = requiredHeader(request, HttpHeaderNames.AUTHORIZATION.toString());
             if (!value.startsWith("Bearer ") || value.length() < 8 || value.length() > 8192) {
@@ -298,6 +496,12 @@ public final class WssRelayServer implements AutoCloseable {
                 context.fireUserEventTriggered(event);
                 return;
             }
+            ControlAuthContext controlPeer = context.channel().attr(AUTHORIZED_CONTROL_PEER).getAndSet(null);
+            if (controlPeer != null) {
+                context.pipeline().remove(this);
+                context.pipeline().addLast("jlshell-link-control-channel", new ControlWebSocketHandler(controlPeer));
+                return;
+            }
             RelayPairingService.AuthorizedPeer peer = context.channel().attr(AUTHORIZED_PEER).getAndSet(null);
             if (peer == null) {
                 context.close();
@@ -314,6 +518,11 @@ public final class WssRelayServer implements AutoCloseable {
             joining.whenComplete((pair, error) -> {
                 if (error != null || pair == null) {
                     context.close();
+                    return;
+                }
+                if (!registerRelaySession(peer.sessionId(), pair.aChannel(), pair.cChannel())) {
+                    pair.aChannel().close();
+                    pair.cChannel().close();
                     return;
                 }
                 try {
@@ -354,6 +563,156 @@ public final class WssRelayServer implements AutoCloseable {
             });
         }
     }
+
+    private final class ControlWebSocketHandler extends io.netty.channel.SimpleChannelInboundHandler<WebSocketFrame> {
+        private final ControlAuthContext auth;
+        private SignalRouter.ControlConnection connection;
+        private ScheduledFuture<?> helloTimeout;
+        private ScheduledFuture<?> reauthentication;
+        private boolean helloAccepted;
+
+        private ControlWebSocketHandler(ControlAuthContext auth) {
+            this.auth = auth;
+        }
+
+        @Override
+        public void handlerAdded(ChannelHandlerContext context) {
+            helloTimeout = context.executor().schedule(() -> {
+                if (!helloAccepted) reject(context, "PROTOCOL_ERROR");
+            }, timeoutMillis(handshakeTimeout), java.util.concurrent.TimeUnit.MILLISECONDS);
+        }
+
+        @Override
+        protected void channelRead0(ChannelHandlerContext context, WebSocketFrame frame) {
+            if (frame instanceof PingWebSocketFrame ping) {
+                context.writeAndFlush(new PongWebSocketFrame(ping.content().retain()));
+                return;
+            }
+            if (frame instanceof PongWebSocketFrame) return;
+            if (frame instanceof CloseWebSocketFrame) {
+                context.close();
+                return;
+            }
+            if (!(frame instanceof TextWebSocketFrame text)) {
+                reject(context, "PROTOCOL_ERROR");
+                return;
+            }
+            if (!helloAccepted) {
+                acceptHello(context, text.text());
+                return;
+            }
+            try {
+                signalRouter.route(connection, controlCodec.decodeSignal(text.text()));
+            } catch (SecurityException rejected) {
+                reject(context, "AUTH_DENIED");
+            } catch (RuntimeException invalid) {
+                reject(context, "PROTOCOL_ERROR");
+            }
+        }
+
+        private void acceptHello(ChannelHandlerContext context, String payload) {
+            try {
+                ControlSignalJsonCodec.Hello hello = controlCodec.decodeHello(payload);
+                if (hello.role() != auth.handshake().role()
+                        || !hello.nodeId().equals(auth.handshake().nodeId())
+                        || !hello.keyFingerprint().equals(auth.handshake().keyFingerprint())) {
+                    reject(context, "IDENTITY_MISMATCH");
+                    return;
+                }
+                if (!"link-v2".equals(hello.minProtocol())
+                        || !"link-v2".equals(hello.maxProtocol())) {
+                    reject(context, "PROTOCOL_UNSUPPORTED");
+                    return;
+                }
+                ControlPeerAuthenticator.AuthenticatedPeer principal = auth.principal();
+                SignalRouter.ControlPeer peer = new SignalRouter.ControlPeer(principal.role(),
+                        principal.accountId(), principal.nodeId(), principal.agentId(), principal.keyFingerprint());
+                connection = signalRouter.register(peer, signal -> send(context, signal), context.channel()::close);
+                helloAccepted = true;
+                helloTimeout.cancel(false);
+                context.writeAndFlush(new TextWebSocketFrame(
+                        controlCodec.encodeReady(peer.nodeId(), connection.generation())));
+                reauthentication = context.executor().scheduleAtFixedRate(
+                        () -> reauthenticate(context), 30, 30, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (RuntimeException invalid) {
+                reject(context, "PROTOCOL_ERROR");
+            }
+        }
+
+        private void send(ChannelHandlerContext context, ControlSignal signal) {
+            if (!context.channel().isActive()) throw new IllegalStateException("control channel is closed");
+            Runnable write = () -> {
+                if (context.channel().isActive()) {
+                    context.writeAndFlush(new TextWebSocketFrame(controlCodec.encode(signal)));
+                }
+            };
+            context.executor().execute(write);
+        }
+
+        private void reauthenticate(ChannelHandlerContext context) {
+            if (!context.channel().isActive()) return;
+            CompletionStage<ControlPeerAuthenticator.AuthenticatedPeer> stage;
+            try {
+                stage = controlAuthenticator.authenticate(auth.handshake(), auth.bearerCredential());
+            } catch (RuntimeException rejected) {
+                context.close();
+                return;
+            }
+            stage.whenComplete((current, error) -> executeOnEventLoop(context, () -> {
+                if (error != null || current == null || !sameIdentity(auth.principal(), current)) {
+                    context.close();
+                }
+            }, context::close));
+        }
+
+        private void reject(ChannelHandlerContext context, String code) {
+            if (!context.channel().isActive()) return;
+            if (helloTimeout != null) helloTimeout.cancel(false);
+            if (reauthentication != null) reauthentication.cancel(false);
+            context.writeAndFlush(new TextWebSocketFrame(controlCodec.encodeError(code)))
+                    .addListener(ignored -> context.writeAndFlush(
+                            new CloseWebSocketFrame(WebSocketCloseStatus.PROTOCOL_ERROR))
+                            .addListener(done -> context.close()));
+        }
+
+        @Override
+        public void channelInactive(ChannelHandlerContext context) throws Exception {
+            if (helloTimeout != null) helloTimeout.cancel(false);
+            if (reauthentication != null) reauthentication.cancel(false);
+            if (connection != null) connection.close();
+            super.channelInactive(context);
+        }
+
+        @Override
+        public void exceptionCaught(ChannelHandlerContext context, Throwable cause) {
+            context.close();
+        }
+    }
+
+    private static boolean sameIdentity(ControlPeerAuthenticator.AuthenticatedPeer left,
+                                        ControlPeerAuthenticator.AuthenticatedPeer right) {
+        return left.role() == right.role() && left.accountId().equals(right.accountId())
+                && left.nodeId().equals(right.nodeId())
+                && Objects.equals(left.agentId(), right.agentId())
+                && left.keyFingerprint().equals(right.keyFingerprint())
+                && java.security.MessageDigest.isEqual(
+                        left.nodePublicKey().getEncoded(), right.nodePublicKey().getEncoded());
+    }
+
+    private static void executeOnEventLoop(ChannelHandlerContext context, Runnable action, Runnable rejected) {
+        if (context.executor().inEventLoop()) {
+            action.run();
+            return;
+        }
+        try {
+            context.executor().execute(action);
+        } catch (java.util.concurrent.RejectedExecutionException stopping) {
+            rejected.run();
+        }
+    }
+
+    private record ControlAuthContext(ControlHandshake handshake, String bearerCredential,
+                                      ControlPeerAuthenticator.AuthenticatedPeer principal) { }
 
     private static long timeoutMillis(Duration duration) {
         return Math.max(1, Math.min(Integer.MAX_VALUE, duration.toMillis()));

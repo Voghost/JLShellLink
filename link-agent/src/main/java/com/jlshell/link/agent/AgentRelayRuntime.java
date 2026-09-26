@@ -220,6 +220,14 @@ public final class AgentRelayRuntime implements AutoCloseable {
         relay.channel().close();
     }
 
+    /** A session revocation only affects carriers bound to that session. */
+    public void closeSession(LinkSessionId sessionId) {
+        Objects.requireNonNull(sessionId, "sessionId");
+        active.forEach((tunnelId, relay) -> {
+            if (relay.binding.sessionId().equals(sessionId.value())) closeTunnel(tunnelId);
+        });
+    }
+
     @Override
     public void close() {
         if (closed) return;

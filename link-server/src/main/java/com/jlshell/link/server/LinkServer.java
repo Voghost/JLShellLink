@@ -1,7 +1,9 @@
 package com.jlshell.link.server;
 
+import com.jlshell.link.core.model.LinkSessionId;
 import java.net.InetSocketAddress;
 import java.util.Objects;
+import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -33,11 +35,17 @@ public final class LinkServer implements AutoCloseable {
         return running.get() && relay.isRunning();
     }
 
-    /** Stop accepting work, discard half-open pairs, then close listeners and their event loops. */
+    public void closeSession(LinkSessionId sessionId) {
+        relay.closeSession(sessionId);
+    }
+
+    /** Stop admission first, allow established carriers five seconds to drain, then close them. */
     @Override
     public void close() {
         if (!running.getAndSet(false)) return;
+        relay.stopAccepting();
         pairings.close();
+        relay.awaitRelayDrain(Duration.ofSeconds(5));
         relay.close();
         if (stun != null) stun.close();
     }
