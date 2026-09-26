@@ -82,7 +82,7 @@ public final class LinkClientEngine implements AutoCloseable {
         if (!scope.equals(request.scope())) {
             return CompletableFuture.failedFuture(new SecurityException("Tunnel request uses another Link scope"));
         }
-        if (!scope.equals(currentScope.get())) {
+        if (!scopeStillCurrent()) {
             close();
             return CompletableFuture.failedFuture(new SecurityException("Link account or node identity changed"));
         }
@@ -111,36 +111,38 @@ public final class LinkClientEngine implements AutoCloseable {
         });
         connecting.whenComplete((connection, error) -> {
             pending.remove(result);
-            if (error != null || result.isDone() || closed.get() || !scope.equals(currentScope.get())) {
-                if (!scope.equals(currentScope.get())) close();
+            boolean current = scopeStillCurrent();
+            if (error != null || result.isDone() || closed.get() || !current) {
+                if (!current) close();
                 if (connection != null) connection.close();
                 permits.release();
                 if (!result.isDone()) result.completeExceptionally(error == null
                         ? new SecurityException("Link engine or account scope changed") : error);
                 return;
             }
+            LocalTunnelLease lease = null;
             try {
                 ServerSocket listener = new ServerSocket();
                 try {
                     listener.bind(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0), 1);
-                    LocalTunnelLease lease = new LocalTunnelLease(flow.sessionId().orElseThrow(),
+                    lease = new LocalTunnelLease(flow.sessionId().orElseThrow(),
                             connection, listener, permits::release);
                     leases.add(lease);
-                    lease.closed().whenComplete((ignored, failure) -> leases.remove(lease));
-                    if (result.complete(lease)) {
-                        try { lease.start(); }
-                        catch (RuntimeException startFailure) { lease.close(); }
-                        connection.channel().closed().whenComplete((ignored, failure) -> lease.close());
-                    } else {
-                        lease.close();
-                    }
+                    LocalTunnelLease activeLease = lease;
+                    lease.closed().whenComplete((ignored, failure) -> leases.remove(activeLease));
+                    lease.start();
+                    connection.channel().closed().whenComplete((ignored, failure) -> activeLease.close());
+                    if (!result.complete(lease)) lease.close();
                 } catch (Throwable failure) {
-                    listener.close();
+                    if (lease == null) listener.close();
                     throw failure;
                 }
             } catch (Throwable failure) {
-                connection.close();
-                permits.release();
+                if (lease != null) lease.close();
+                else {
+                    connection.close();
+                    permits.release();
+                }
                 result.completeExceptionally(failure);
             }
         });
@@ -154,6 +156,11 @@ public final class LinkClientEngine implements AutoCloseable {
     public CompletionStage<Void> shutdown() {
         close();
         return CompletableFuture.completedFuture(null);
+    }
+
+    private boolean scopeStillCurrent() {
+        try { return scope.equals(currentScope.get()); }
+        catch (RuntimeException unavailableSession) { return false; }
     }
 
     @Override public void close() {
