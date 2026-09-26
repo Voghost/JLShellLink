@@ -28,6 +28,50 @@ jobs:
         env:
           JLSHELL_LINK_ICE_TEST_ENABLED: ${{ matrix.runner != 'windows-2025' }}
         run: mvn -B -ntp verify
+      - name: Parse Windows Agent service installer
+        if: matrix.runner == 'windows-2025'
+        shell: pwsh
+        run: |
+          foreach ($path in @(
+            "$PWD/scripts/java-agent/install-windows-service.ps1",
+            "$PWD/scripts/java-agent/test-windows-service.ps1"
+          )) {
+            $tokens = $null
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $path,
+              [ref]$tokens,
+              [ref]$parseErrors
+            ) | Out-Null
+            if ($parseErrors.Count -gt 0) {
+              $parseErrors | ForEach-Object { Write-Error $_.Message }
+              exit 1
+            }
+          }
+      - name: Exercise Windows Agent service lifecycle
+        if: matrix.runner == 'windows-2025'
+        shell: pwsh
+        run: ./scripts/java-agent/test-windows-service.ps1 -AgentJarPath ./link-agent/target/link-agent-0.1.0-SNAPSHOT.jar
+      - name: Validate Java Agent shell scripts
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          sh -n scripts/java-agent/run-agent.sh
+          sh -n scripts/java-agent/stop-agent.sh
+          sh -n scripts/java-agent/install-user-service.sh
+          sh -n scripts/java-agent/test-macos-service.sh
+          sh -n scripts/package-java-agent.sh
+      - name: Exercise macOS Agent LaunchAgent lifecycle
+        if: matrix.runner == 'macos-15'
+        shell: bash
+        run: sh scripts/java-agent/test-macos-service.sh
+      - name: Build and inspect Java Agent archives
+        if: matrix.runner == 'ubuntu-24.04'
+        shell: bash
+        run: |
+          scripts/package-java-agent.sh 0.1.0-CI link-agent/target/link-agent-0.1.0-SNAPSHOT.jar
+          tar -tzf link-agent/target/distribution/jlshell-link-agent-java-0.1.0-CI.tar.gz >/dev/null
+          unzip -tq link-agent/target/distribution/jlshell-link-agent-java-0.1.0-CI.zip
 
   quality:
     runs-on: ubuntu-24.04

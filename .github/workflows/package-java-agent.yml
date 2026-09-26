@@ -1,0 +1,52 @@
+name: Package Java Agent
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Agent package version, for example 0.1.1
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    if: github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Validate branch and version
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "$GITHUB_REF" != refs/heads/develop ]]; then
+            echo 'Agent packages may only be built from develop after review.' >&2
+            exit 1
+          fi
+          if [[ ! "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo 'Version must be an explicit Maven release or prerelease version.' >&2
+            exit 1
+          fi
+      - name: Verify Link modules
+        run: mvn -B -ntp verify
+      - name: Set release version and package Agent
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          mvn -B -ntp org.codehaus.mojo:versions-maven-plugin:2.18.0:set \
+            -DnewVersion="$RELEASE_VERSION" -DgenerateBackupPoms=false
+          mvn -B -ntp -pl link-agent -am -DskipTests package
+          scripts/package-java-agent.sh "$RELEASE_VERSION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jlshell-link-agent-java-${{ inputs.version }}
+          path: link-agent/target/distribution/*
+          if-no-files-found: error
+          retention-days: 90

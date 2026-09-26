@@ -104,8 +104,13 @@ public final class RelayValidationClient {
                 Duration.ofSeconds(15), proofs, java.util.concurrent.ForkJoinPool.commonPool());
              ClientControl control = new ClientControl(controlCredential)) {
             control.connect();
-            for (TargetEndpoint target : TARGETS) {
-                exercise(target, controlCredential, budget, eventLoops, proof, control);
+            IssuedAccess previous = exercise(TARGETS.getFirst(), controlCredential,
+                    budget, eventLoops, proof, control, null);
+            exercise(TARGETS.getFirst(), controlCredential, budget, eventLoops, proof, control, previous);
+            exerciseRevocation(TARGETS.get(2), controlCredential, budget, eventLoops, proof, control);
+            exerciseParallelRevocation(controlCredential, budget, eventLoops, proof, control);
+            for (TargetEndpoint target : TARGETS.subList(1, TARGETS.size())) {
+                exercise(target, controlCredential, budget, eventLoops, proof, control, null);
             }
         } finally {
             eventLoops.shutdownGracefully(0, 5, TimeUnit.SECONDS).syncUninterruptibly();
@@ -130,8 +135,9 @@ public final class RelayValidationClient {
         System.out.println("A device identity bound to isolated Website");
     }
 
-    private void exercise(TargetEndpoint target, String credential, TransportBudget budget,
-                          NioEventLoopGroup loops, RelayProofClient proof, ClientControl control) throws Exception {
+    private IssuedAccess exercise(TargetEndpoint target, String credential, TransportBudget budget,
+                          NioEventLoopGroup loops, RelayProofClient proof, ClientControl control,
+                          IssuedAccess previous) throws Exception {
         Map<String, Object> access = post("/api/v2/link/access-requests",
                 Map.of("agentId", agentId.toString(), "targetIp", target.address(),
                         "targetPort", target.port(), "connectPolicy", "RELAY_ONLY"),
@@ -139,6 +145,10 @@ public final class RelayValidationClient {
         LinkSessionId session = LinkSessionId.parse(text(access, "sessionId"));
         TunnelId tunnel = TunnelId.parse(text(access, "tunnelId"));
         String ticket = text(access, "accessTicket");
+        if (previous != null && (previous.sessionId().equals(session)
+                || previous.tunnelId().equals(tunnel) || previous.ticket().equals(ticket))) {
+            throw new IllegalStateException("reconnect reused a prior Website authorization artifact");
+        }
         control.awaitInvite(session.value());
         post("/api/v2/link/sessions/" + session + "/relay-activation", Map.of(),
                 Map.of("X-Link-Control-Credential", credential), 200);
@@ -157,27 +167,206 @@ public final class RelayValidationClient {
                     new TransportBufferBudget(budget.maxBufferedBytesTotal()));
             try (ConnectClientMultiplexer.ConnectTunnel stream = multiplex.open(target, tunnel, ticket)
                     .toCompletableFuture().get(15, TimeUnit.SECONDS)) {
+                long returnedBytes = 0;
+                String prefix;
                 if (target.port() == 80) {
                     stream.write(ByteBuffer.wrap(("GET / HTTP/1.0\r\nHost: " + target.address()
                             + "\r\n\r\n").getBytes(StandardCharsets.US_ASCII)))
                             .toCompletableFuture().get(10, TimeUnit.SECONDS);
+                    stream.shutdownOutput().toCompletableFuture().get(10, TimeUnit.SECONDS);
+                    ByteBuffer first = stream.read(128).toCompletableFuture().get(10, TimeUnit.SECONDS);
+                    byte[] firstBytes = new byte[first.remaining()];
+                    first.get(firstBytes);
+                    prefix = new String(firstBytes, StandardCharsets.US_ASCII);
+                    returnedBytes += firstBytes.length;
                 }
-                ByteBuffer response = stream.read(128).toCompletableFuture().get(10, TimeUnit.SECONDS);
-                byte[] bytes = new byte[response.remaining()];
-                response.get(bytes);
-                String prefix = new String(bytes, StandardCharsets.US_ASCII);
+                else {
+                    ByteBuffer banner = stream.read(128).toCompletableFuture().get(10, TimeUnit.SECONDS);
+                    byte[] bannerBytes = new byte[banner.remaining()];
+                    banner.get(bannerBytes);
+                    prefix = new String(bannerBytes, StandardCharsets.US_ASCII);
+                    returnedBytes += bannerBytes.length;
+                    stream.write(ByteBuffer.wrap("SSH-2.0-JLShellValidation_1.0\r\n"
+                            .getBytes(StandardCharsets.US_ASCII))).toCompletableFuture()
+                            .get(10, TimeUnit.SECONDS);
+                    stream.shutdownOutput().toCompletableFuture().get(10, TimeUnit.SECONDS);
+                }
                 if (!(target.port() == 80 ? prefix.startsWith("HTTP/") : prefix.startsWith("SSH-"))) {
                     throw new IllegalStateException("target did not return expected protocol banner");
                 }
-                stream.shutdownOutput().toCompletableFuture().get(10, TimeUnit.SECONDS);
-                System.out.println("target=" + target + " path=A-B-C bytes=" + bytes.length
+                boolean inputEnded = false;
+                while (!inputEnded) {
+                    ByteBuffer response = stream.read(4096).toCompletableFuture().get(10, TimeUnit.SECONDS);
+                    if (!response.hasRemaining()) {
+                        inputEnded = true;
+                        continue;
+                    }
+                    returnedBytes = Math.addExact(returnedBytes, response.remaining());
+                    if (returnedBytes > 1_048_576) {
+                        throw new IllegalStateException("target response exceeded the validation bound");
+                    }
+                }
+                System.out.println("target=" + target + " path=A-B-C bytes=" + returnedBytes
                         + " connect_ms=" + TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
-                        + " half_close=sent signal_invite=received");
+                        + " half_close=bidirectional signal_invite=received"
+                        + (previous == null ? "" : " reconnect=reauthorized"));
             }
         } finally {
             if (carrier != null) carrier.close().syncUninterruptibly();
             post("/api/v2/link/sessions/" + session + "/close", Map.of(),
                     Map.of("X-Link-Control-Credential", credential), 204);
+        }
+        return new IssuedAccess(session, tunnel, ticket);
+    }
+
+    private record IssuedAccess(LinkSessionId sessionId, TunnelId tunnelId, String ticket) { }
+
+    private ActiveValidationTunnel openValidationTunnel(TargetEndpoint target, String credential,
+                                                        TransportBudget budget, NioEventLoopGroup loops,
+                                                        RelayProofClient proof, ClientControl control)
+            throws Exception {
+        Map<String, Object> access = post("/api/v2/link/access-requests",
+                Map.of("agentId", agentId.toString(), "targetIp", target.address(),
+                        "targetPort", target.port(), "connectPolicy", "RELAY_ONLY"),
+                Map.of("X-Link-Control-Credential", credential), 201);
+        LinkSessionId session = LinkSessionId.parse(text(access, "sessionId"));
+        TunnelId tunnel = TunnelId.parse(text(access, "tunnelId"));
+        String ticket = text(access, "accessTicket");
+        io.netty.channel.Channel carrier = null;
+        ConnectClientMultiplexer.ConnectTunnel stream = null;
+        try {
+            control.awaitInvite(session.value());
+            post("/api/v2/link/sessions/" + session + "/relay-activation", Map.of(),
+                    Map.of("X-Link-Control-Credential", credential), 200);
+            SSLContext inner = TlsPeerContext.create(keyManagers.getKeyManagers(), agentTrust,
+                    HexFormat.of().parseHex(agentFingerprint.value()));
+            carrier = proof.connectClient(loops, RELAY, credential, deviceId,
+                    agentId, session, tunnel, key, agentFingerprint, SSLContext.getDefault(), inner,
+                    "jlshell-agent-" + agentFingerprint.value(), 443, budget,
+                    new TlsHandshakeGate(budget.maxConcurrentHandshakes()))
+                    .toCompletableFuture().get(40, TimeUnit.SECONDS);
+            ConnectClientMultiplexer multiplex = new ConnectClientMultiplexer(carrier, budget,
+                    new TransportBufferBudget(budget.maxBufferedBytesTotal()));
+            stream = multiplex.open(target, tunnel, ticket).toCompletableFuture()
+                    .get(15, TimeUnit.SECONDS);
+            ByteBuffer banner = stream.read(128).toCompletableFuture().get(10, TimeUnit.SECONDS);
+            byte[] bannerBytes = new byte[banner.remaining()];
+            banner.get(bannerBytes);
+            if (!new String(bannerBytes, StandardCharsets.US_ASCII).startsWith("SSH-")) {
+                throw new IllegalStateException("parallel-revocation target did not return an SSH banner");
+            }
+            return new ActiveValidationTunnel(session, carrier, stream);
+        } catch (Exception failure) {
+            if (stream != null) stream.close();
+            if (carrier != null) carrier.close().syncUninterruptibly();
+            post("/api/v2/link/sessions/" + session + "/close", Map.of(),
+                    Map.of("X-Link-Control-Credential", credential), 204);
+            throw failure;
+        }
+    }
+
+    private void exerciseParallelRevocation(String credential, TransportBudget budget,
+                                            NioEventLoopGroup loops, RelayProofClient proof,
+                                            ClientControl control) throws Exception {
+        ActiveValidationTunnel revoked = openValidationTunnel(TARGETS.get(2), credential,
+                budget, loops, proof, control);
+        ActiveValidationTunnel survivor = null;
+        try {
+            survivor = openValidationTunnel(TARGETS.get(1), credential,
+                    budget, loops, proof, control);
+            long revokedAt = System.nanoTime();
+            post("/api/v2/link/sessions/" + revoked.session() + "/close", Map.of(),
+                    Map.of("X-Link-Control-Credential", credential), 204);
+            control.awaitRevocation(revoked.session().value());
+            revoked.stream().closed().toCompletableFuture().get(5, TimeUnit.SECONDS);
+            Thread.sleep(300);
+            if (survivor.stream().closed().toCompletableFuture().isDone()) {
+                throw new IllegalStateException("revoking one Website session also closed its sibling session");
+            }
+            survivor.stream().write(ByteBuffer.wrap("SSH-2.0-JLShellParallelValidation_1.0\r\n"
+                    .getBytes(StandardCharsets.US_ASCII))).toCompletableFuture().get(10, TimeUnit.SECONDS);
+            survivor.stream().shutdownOutput().toCompletableFuture().get(10, TimeUnit.SECONDS);
+            long bytes = 0;
+            boolean ended = false;
+            while (!ended) {
+                ByteBuffer response = survivor.stream().read(4096).toCompletableFuture()
+                        .get(10, TimeUnit.SECONDS);
+                if (!response.hasRemaining()) {
+                    ended = true;
+                } else {
+                    bytes = Math.addExact(bytes, response.remaining());
+                    if (bytes > 1_048_576) throw new IllegalStateException("parallel target response exceeded bound");
+                }
+            }
+            System.out.println("parallel_sessions=2 revoke=targeted survivor=active-then-completed"
+                    + " survivor_bytes=" + bytes
+                    + " revoked_stream_closed_ms="
+                    + TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - revokedAt));
+        } finally {
+            if (survivor != null) {
+                try {
+                    post("/api/v2/link/sessions/" + survivor.session() + "/close", Map.of(),
+                            Map.of("X-Link-Control-Credential", credential), 204);
+                } finally {
+                    survivor.close();
+                }
+            }
+            revoked.close();
+        }
+    }
+
+    private record ActiveValidationTunnel(LinkSessionId session,
+                                          io.netty.channel.Channel carrier,
+                                          ConnectClientMultiplexer.ConnectTunnel stream)
+            implements AutoCloseable {
+        @Override public void close() {
+            stream.close();
+            carrier.close().syncUninterruptibly();
+        }
+    }
+
+    private void exerciseRevocation(TargetEndpoint target, String credential, TransportBudget budget,
+                                    NioEventLoopGroup loops, RelayProofClient proof,
+                                    ClientControl control) throws Exception {
+        Map<String, Object> access = post("/api/v2/link/access-requests",
+                Map.of("agentId", agentId.toString(), "targetIp", target.address(),
+                        "targetPort", target.port(), "connectPolicy", "RELAY_ONLY"),
+                Map.of("X-Link-Control-Credential", credential), 201);
+        LinkSessionId session = LinkSessionId.parse(text(access, "sessionId"));
+        TunnelId tunnel = TunnelId.parse(text(access, "tunnelId"));
+        String ticket = text(access, "accessTicket");
+        control.awaitInvite(session.value());
+        post("/api/v2/link/sessions/" + session + "/relay-activation", Map.of(),
+                Map.of("X-Link-Control-Credential", credential), 200);
+        SSLContext inner = TlsPeerContext.create(keyManagers.getKeyManagers(), agentTrust,
+                HexFormat.of().parseHex(agentFingerprint.value()));
+        io.netty.channel.Channel carrier = null;
+        try {
+            carrier = proof.connectClient(loops, RELAY, credential, deviceId,
+                    agentId, session, tunnel, key, agentFingerprint, SSLContext.getDefault(), inner,
+                    "jlshell-agent-" + agentFingerprint.value(), 443, budget,
+                    new TlsHandshakeGate(budget.maxConcurrentHandshakes()))
+                    .toCompletableFuture().get(40, TimeUnit.SECONDS);
+            ConnectClientMultiplexer multiplex = new ConnectClientMultiplexer(carrier, budget,
+                    new TransportBufferBudget(budget.maxBufferedBytesTotal()));
+            try (ConnectClientMultiplexer.ConnectTunnel stream = multiplex.open(target, tunnel, ticket)
+                    .toCompletableFuture().get(15, TimeUnit.SECONDS)) {
+                ByteBuffer banner = stream.read(128).toCompletableFuture().get(10, TimeUnit.SECONDS);
+                byte[] bannerBytes = new byte[banner.remaining()];
+                banner.get(bannerBytes);
+                if (!new String(bannerBytes, StandardCharsets.US_ASCII).startsWith("SSH-")) {
+                    throw new IllegalStateException("revocation target did not return an SSH banner");
+                }
+                long revokedAt = System.nanoTime();
+                post("/api/v2/link/sessions/" + session + "/close", Map.of(),
+                        Map.of("X-Link-Control-Credential", credential), 204);
+                control.awaitRevocation(session.value());
+                stream.closed().toCompletableFuture().get(5, TimeUnit.SECONDS);
+                System.out.println("session=" + session + " revoke=website-to-agent-to-relay"
+                        + " closed_ms=" + TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - revokedAt));
+            }
+        } finally {
+            if (carrier != null) carrier.close().syncUninterruptibly();
         }
     }
 
@@ -213,6 +402,7 @@ public final class RelayValidationClient {
         private final String credential;
         private final CompletableFuture<Void> ready = new CompletableFuture<>();
         private final ConcurrentHashMap<UUID, CompletableFuture<Void>> invites = new ConcurrentHashMap<>();
+        private final ConcurrentHashMap<UUID, CompletableFuture<Void>> revocations = new ConcurrentHashMap<>();
         private final StringBuilder incoming = new StringBuilder();
         private WebSocket socket;
 
@@ -256,6 +446,11 @@ public final class RelayValidationClient {
                     .get(10, TimeUnit.SECONDS);
         }
 
+        private void awaitRevocation(UUID sessionId) throws Exception {
+            revocations.computeIfAbsent(sessionId, ignored -> new CompletableFuture<>())
+                    .get(5, TimeUnit.SECONDS);
+        }
+
         @Override public void onOpen(WebSocket webSocket) {
             webSocket.request(1);
             webSocket.sendText(JSONObjectUtils.toJSONString(Map.of(
@@ -281,6 +476,10 @@ public final class RelayValidationClient {
                     if ("SESSION_INVITE".equals(type)) {
                         UUID sessionId = UUID.fromString(text(message, "sessionId"));
                         invites.computeIfAbsent(sessionId, ignored -> new CompletableFuture<>()).complete(null);
+                    }
+                    if ("SESSION_REVOKED".equals(type)) {
+                        UUID sessionId = UUID.fromString(text(message, "sessionId"));
+                        revocations.computeIfAbsent(sessionId, ignored -> new CompletableFuture<>()).complete(null);
                     }
                 }
                 webSocket.request(1);
