@@ -666,6 +666,7 @@ class IceKcpTls13IntegrationTest {
 
     private static final class ReliableChannelPeer implements ReliablePeer {
         private final ReliableDuplexChannel channel;
+        private CompletableFuture<ByteBuffer> pendingRead;
 
         private ReliableChannelPeer(ReliableDuplexChannel channel) {
             this.channel = channel;
@@ -685,17 +686,21 @@ class IceKcpTls13IntegrationTest {
 
         @Override
         public byte[] pollReceived(long timeout, TimeUnit unit) throws InterruptedException, IOException {
-            var read = channel.read(65_536).toCompletableFuture();
+            if (pendingRead == null) {
+                pendingRead = channel.read(65_536).toCompletableFuture();
+            }
             try {
                 long timeoutMillis = Math.max(1, unit.toMillis(timeout));
-                ByteBuffer data = read.get(timeoutMillis, TimeUnit.MILLISECONDS);
+                ByteBuffer data = pendingRead.get(timeoutMillis, TimeUnit.MILLISECONDS);
+                pendingRead = null;
                 byte[] bytes = new byte[data.remaining()];
                 data.get(bytes);
                 return bytes;
             } catch (TimeoutException e) {
-                read.cancel(false);
+                // Keep the pending read: cancellation can race KCP delivery and discard TLS bytes.
                 return null;
             } catch (ExecutionException e) {
+                pendingRead = null;
                 throw new IOException("failed reading KCP TLS bytes", e.getCause());
             }
         }
