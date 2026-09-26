@@ -115,6 +115,7 @@ try {
     Copy-Item -Force $fakeJar $expectedJar
 
     for ($attempt = 1; $attempt -le 2; $attempt++) {
+        $attemptStarted = [DateTime]::UtcNow
         $runId = [guid]::NewGuid().ToString('N')
         Install-TestService $runId
         $startedMarker = Join-Path $stateRoot "ci-service-started-$runId"
@@ -134,6 +135,12 @@ try {
                     Get-Content -Path $_.FullName -Tail 80 -ErrorAction SilentlyContinue
                 }
             }
+            Get-WinEvent -FilterHashtable @{
+                LogName = 'System'
+                StartTime = $attemptStarted.AddSeconds(-5)
+                Id = @(7000, 7009, 7011, 7023, 7031, 7034, 7040, 7045)
+            } -MaxEvents 12 -ErrorAction SilentlyContinue |
+                Format-List TimeCreated, Id, ProviderName, Message | Out-String | Write-Host
             throw "Windows service failed to start on lifecycle attempt $attempt."
         }
         & pwsh -NoProfile -File $installer status
@@ -147,6 +154,17 @@ try {
         Assert (Test-Path (Join-Path $stateRoot "ci-service-stop-requested-$runId")) `
             'Service uninstall did not request the Agent graceful stop command.'
         Write-Host "Windows service lifecycle attempt $attempt passed."
+        if ($attempt -lt 2) {
+            $removalDeadline = [DateTime]::UtcNow.AddSeconds(10)
+            while ((Get-Service -Name $serviceId -ErrorAction SilentlyContinue) -and
+                   [DateTime]::UtcNow -lt $removalDeadline) {
+                Start-Sleep -Milliseconds 250
+            }
+            Assert (-not (Get-Service -Name $serviceId -ErrorAction SilentlyContinue)) `
+                'Windows Service Control Manager did not finish removing the previous service.'
+            # Let SCM release the deleted service identity before the reinstall cycle.
+            Start-Sleep -Seconds 5
+        }
     }
 }
 finally {
