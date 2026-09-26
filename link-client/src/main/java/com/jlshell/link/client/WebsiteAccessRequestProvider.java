@@ -2,6 +2,7 @@ package com.jlshell.link.client;
 
 import com.jlshell.link.core.model.ConnectPolicy;
 import com.jlshell.link.core.model.LinkSessionId;
+import com.jlshell.link.core.model.NodeKeyFingerprint;
 import com.jlshell.link.core.model.TargetEndpoint;
 import com.jlshell.link.core.model.TunnelId;
 import com.nimbusds.jose.util.JSONObjectUtils;
@@ -80,6 +81,7 @@ public final class WebsiteAccessRequestProvider implements ReauthorizingConnecti
                         throw new SecurityException("Website authorized a different Agent or target");
                     }
                     return new ReauthorizingConnectionFlow.AuthorizedTunnel(session, tunnel, returnedAgent,
+                            new NodeKeyFingerprint(JSONObjectUtils.getString(body, "agentKeyFingerprint")),
                             returnedTarget, JSONObjectUtils.getString(body, "accessTicket"),
                             Instant.parse(JSONObjectUtils.getString(body, "ticketExpiresAt")),
                             Instant.parse(JSONObjectUtils.getString(body, "authorizationLeaseExpiresAt")),

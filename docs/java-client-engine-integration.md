@@ -6,7 +6,7 @@
 
 - 通过宿主账号网关获取的当前账号/设备作用域；切换账号或 A 身份后创建新引擎。
 - 设备 Ed25519 私钥的宿主安全存储适配、短期控制凭据提供者，以及 `WebsiteAccessRequestProvider`。
-- 可验证 B 公签 TLS 与 C 内层 mTLS 身份的 `CarrierPlanFactory`。正式 relay-only 路径应使用一次性持钥挑战、`WssSecureConnector` 和 `ConnectClientMultiplexer`；不得把原型测试凭据或信任管理器用于产品。
+- 可验证 B 公签 TLS 与 C 内层 mTLS 身份的 `RelayCarrierPlanFactory`。它复用从 Agent 抽取的持钥挑战客户端、`WssSecureConnector` 和 `ConnectClientMultiplexer`，并复核内层证书公钥与 Website grant 的 Agent 指纹一致。调用方仍需为每次 grant 创建基于宿主安全存储的 A 身份及指纹固定的内层 TLS 上下文；不得使用原型测试凭据或信任管理器。
 - 明确的并发上限、握手预算与路径诊断观察者。事件不得包含票据、控制凭据或目标地址。
 
-当前分支只提供引擎生命周期和 loopback 数据桥，**尚未提供产品级 A 控制连接、C 身份发现、真实 relay carrier 的应用组装，也未完成客户端生产 SSH/SFTP 验收**。这些仍是 CLIENT-01/PLUGIN-01 的未完成项。集成前不得用此类宣称产品直连或中继已经可用。
+当前分支提供引擎生命周期、loopback 数据桥和 relay-only carrier 工厂，**尚未提供产品级 A 控制连接、A 设备身份/TLS 证书装载、插件应用组装，也未完成客户端生产 SSH/SFTP 验收**。这些仍是 CLIENT-01/PLUGIN-01 的未完成项。集成前不得用此类宣称产品直连或中继已经可用。

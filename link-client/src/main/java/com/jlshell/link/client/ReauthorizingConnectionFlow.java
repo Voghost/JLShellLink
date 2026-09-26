@@ -2,6 +2,7 @@ package com.jlshell.link.client;
 
 import com.jlshell.link.core.model.ConnectPolicy;
 import com.jlshell.link.core.model.LinkSessionId;
+import com.jlshell.link.core.model.NodeKeyFingerprint;
 import com.jlshell.link.core.model.TargetEndpoint;
 import com.jlshell.link.core.model.TunnelId;
 import java.time.Clock;
@@ -126,8 +127,16 @@ public final class ReauthorizingConnectionFlow {
 
     /** Ticket-bearing record deliberately redacts its default string representation. */
     public record AuthorizedTunnel(LinkSessionId sessionId, TunnelId tunnelId, UUID agentId,
-                                   TargetEndpoint target, String accessTicket, Instant ticketExpiresAt,
+                                   NodeKeyFingerprint agentKeyFingerprint, TargetEndpoint target,
+                                   String accessTicket, Instant ticketExpiresAt,
                                    Instant authorizationLeaseExpiresAt, long policyVersion) {
+        /** Compatibility constructor for existing test adapters; product relay plans require the fingerprint. */
+        public AuthorizedTunnel(LinkSessionId sessionId, TunnelId tunnelId, UUID agentId,
+                                TargetEndpoint target, String accessTicket, Instant ticketExpiresAt,
+                                Instant authorizationLeaseExpiresAt, long policyVersion) {
+            this(sessionId, tunnelId, agentId, null, target, accessTicket, ticketExpiresAt,
+                    authorizationLeaseExpiresAt, policyVersion);
+        }
         public AuthorizedTunnel {
             Objects.requireNonNull(sessionId, "sessionId");
             Objects.requireNonNull(tunnelId, "tunnelId");

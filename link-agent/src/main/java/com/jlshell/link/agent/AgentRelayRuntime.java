@@ -11,6 +11,7 @@ import com.jlshell.link.core.transport.TransportBufferBudget;
 import com.jlshell.link.core.transport.TransportBudget;
 import com.jlshell.link.transport.ConnectStreamMultiplexer;
 import com.jlshell.link.transport.TlsHandshakeGate;
+import com.jlshell.link.transport.RelayProofClient;
 import io.netty.channel.Channel;
 import io.netty.channel.EventLoopGroup;
 import java.net.URI;

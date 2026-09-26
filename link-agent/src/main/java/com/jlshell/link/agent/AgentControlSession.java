@@ -1,5 +1,7 @@
 package com.jlshell.link.agent;
 
+import com.jlshell.link.transport.RelayProofClient;
+
 import com.jlshell.link.core.signal.ControlSignal;
 import com.jlshell.link.core.model.LinkSessionId;
 import java.time.Duration;
