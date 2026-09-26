@@ -33,21 +33,30 @@ public final class FakeAgent {
         if (state == null) throw new IllegalArgumentException("missing state directory");
         Files.createDirectories(state);
         if ("run".equals(args[0])) {
-            int attempt = 1;
-            while (Files.exists(state.resolve("ci-service-started-" + attempt))) attempt++;
-            Path started = state.resolve("ci-service-started-" + attempt);
-            Path stop = state.resolve("ci-service-stop-requested-" + attempt);
+            String issuer = option(args, "--ticket-issuer");
+            int marker = issuer == null ? -1 : issuer.lastIndexOf("ci=");
+            if (marker < 0) throw new IllegalArgumentException("missing test run identifier");
+            String runId = issuer.substring(marker + 3);
+            Files.writeString(state.resolve("ci-current-run-id"), runId);
+            Path started = state.resolve("ci-service-started-" + runId);
+            Path stop = state.resolve("ci-service-stop-requested-" + runId);
             Files.writeString(started, "running");
             while (!Files.exists(stop)) Thread.sleep(100);
             return;
         }
         if ("stop".equals(args[0])) {
-            int attempt = 1;
-            while (Files.exists(state.resolve("ci-service-started-" + (attempt + 1)))) attempt++;
-            Files.writeString(state.resolve("ci-service-stop-requested-" + attempt), "stopped");
+            String runId = Files.readString(state.resolve("ci-current-run-id"));
+            Files.writeString(state.resolve("ci-service-stop-requested-" + runId), "stopped");
             return;
         }
         throw new IllegalArgumentException("unexpected test action");
+    }
+
+    private static String option(String[] args, String name) {
+        for (int i = 0; i + 1 < args.length; i++) {
+            if (name.equals(args[i])) return args[i + 1];
+        }
+        return null;
     }
 }
 '@
@@ -56,7 +65,7 @@ function Assert([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
 }
 
-function Install-TestService {
+function Install-TestService([string]$RunId) {
     New-Item -ItemType Directory -Force $programRoot | Out-Null
     $env:PATH = "$programRoot;$env:PATH"
     & pwsh -NoProfile -File $installer install -StateDirectory $sourceState `
@@ -64,7 +73,7 @@ function Install-TestService {
         -TlsIdentityP12 (Join-Path $testRoot 'agent.p12') `
         -TlsPasswordFile (Join-Path $testRoot 'tls.password') `
         -AllowedTargetsFile (Join-Path $testRoot 'allowed-targets') `
-        -TicketIssuer 'https://127.0.0.1:1'
+        -TicketIssuer "https://127.0.0.1:1/?ci=$RunId"
     if ($LASTEXITCODE -ne 0) { throw 'Windows service installer returned a failure exit code.' }
 }
 
@@ -106,8 +115,9 @@ try {
     Copy-Item -Force $fakeJar $expectedJar
 
     for ($attempt = 1; $attempt -le 2; $attempt++) {
-        Install-TestService
-        $startedMarker = Join-Path $stateRoot "ci-service-started-$attempt"
+        $runId = [guid]::NewGuid().ToString('N')
+        Install-TestService $runId
+        $startedMarker = Join-Path $stateRoot "ci-service-started-$runId"
         $deadline = [DateTime]::UtcNow.AddSeconds(30)
         while ((-not (Test-Path $startedMarker) -or
                 (Get-Service -Name $serviceId -ErrorAction SilentlyContinue).Status -ne 'Running') -and
@@ -125,7 +135,7 @@ try {
             "Windows service remained registered after lifecycle attempt $attempt."
         Assert (Test-Path (Join-Path $stateRoot 'agent.credential')) `
             'Uninstall removed the registered Agent state instead of preserving it.'
-        Assert (Test-Path (Join-Path $stateRoot "ci-service-stop-requested-$attempt")) `
+        Assert (Test-Path (Join-Path $stateRoot "ci-service-stop-requested-$runId")) `
             'Service uninstall did not request the Agent graceful stop command.'
         Write-Host "Windows service lifecycle attempt $attempt passed."
     }
