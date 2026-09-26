@@ -32,6 +32,7 @@
         <module>link-agent</module>
         <module>link-server</module>
         <module>link-server-spring</module>
+        <module>link-stun-server</module>
         <module>link-distribution</module>
     </modules>
 
