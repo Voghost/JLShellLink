@@ -33,8 +33,11 @@ public final class FakeAgent {
         if (state == null) throw new IllegalArgumentException("missing state directory");
         Files.createDirectories(state);
         if ("run".equals(args[0])) {
-            Files.writeString(state.resolve("ci-service-started"), "running");
+            Path started = state.resolve("ci-service-started");
             Path stop = state.resolve("ci-service-stop-requested");
+            int attempt = Files.exists(started) ? Integer.parseInt(Files.readString(started)) + 1 : 1;
+            Files.deleteIfExists(stop);
+            Files.writeString(started, Integer.toString(attempt));
             while (!Files.exists(stop)) Thread.sleep(100);
             return;
         }
@@ -101,17 +104,17 @@ try {
     Copy-Item -Force $fakeJar $expectedJar
 
     for ($attempt = 1; $attempt -le 2; $attempt++) {
-        Remove-Item -Force -Path @(
-            (Join-Path $stateRoot 'ci-service-started'),
-            (Join-Path $stateRoot 'ci-service-stop-requested')
-        ) -ErrorAction SilentlyContinue
         Install-TestService
         $startedMarker = Join-Path $stateRoot 'ci-service-started'
         $deadline = [DateTime]::UtcNow.AddSeconds(30)
-        while (-not (Test-Path $startedMarker) -and [DateTime]::UtcNow -lt $deadline) {
+        while ((-not (Test-Path $startedMarker) -or
+                (Get-Content -Raw $startedMarker).Trim() -ne [string]$attempt) -and
+                [DateTime]::UtcNow -lt $deadline) {
             Start-Sleep -Milliseconds 250
         }
-        Assert (Test-Path $startedMarker) "Windows service failed to start on lifecycle attempt $attempt."
+        Assert ((Test-Path $startedMarker) -and
+            (Get-Content -Raw $startedMarker).Trim() -eq [string]$attempt) `
+            "Windows service failed to start on lifecycle attempt $attempt."
         & pwsh -NoProfile -File $installer status
         if ($LASTEXITCODE -ne 0) { throw "Windows service status failed on lifecycle attempt $attempt." }
         & pwsh -NoProfile -File $installer uninstall

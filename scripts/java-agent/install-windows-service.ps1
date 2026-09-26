@@ -82,10 +82,24 @@ switch ($Action) {
         $java = (Get-Command java.exe -ErrorAction Stop).Source
         New-Item -ItemType Directory -Force $programRoot, $dataRoot, $stateRoot, (Join-Path $dataRoot 'logs') | Out-Null
         Copy-Item -Force (Join-Path $PSScriptRoot '..\..\link-agent.jar') (Join-Path $programRoot 'link-agent.jar')
-        Copy-Item -Recurse -Force (Join-Path $StateDirectory '*') $stateRoot
-        Copy-Item -Force $TlsIdentityP12 (Join-Path $stateRoot 'agent-identity.p12')
-        Copy-Item -Force $TlsPasswordFile (Join-Path $stateRoot 'tls.password')
-        Copy-Item -Force $AllowedTargetsFile (Join-Path $stateRoot 'allowed-targets')
+        $registrationFiles = @('agent.properties', 'agent.credential', 'node-key.ed25519')
+        $existingRegistrationFiles = @($registrationFiles | Where-Object {
+            Test-Path (Join-Path $stateRoot $_)
+        })
+        if ($existingRegistrationFiles.Count -eq 0) {
+            Copy-Item -Recurse -Force (Join-Path $StateDirectory '*') $stateRoot
+        }
+        elseif ($existingRegistrationFiles.Count -ne $registrationFiles.Count) {
+            Fail 'ProgramData 中的 Agent 身份不完整；为避免覆盖现有凭据，请先检查并恢复该状态目录。'
+        }
+        foreach ($file in @(
+            @{ Source = $TlsIdentityP12; Name = 'agent-identity.p12' },
+            @{ Source = $TlsPasswordFile; Name = 'tls.password' },
+            @{ Source = $AllowedTargetsFile; Name = 'allowed-targets' }
+        )) {
+            $destination = Join-Path $stateRoot $file.Name
+            if (-not (Test-Path $destination)) { Copy-Item -Force $file.Source $destination }
+        }
 
         $download = Join-Path $env:TEMP ('jlshell-winsw-' + [guid]::NewGuid().ToString('N') + '.exe')
         try {

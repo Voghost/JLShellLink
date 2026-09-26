@@ -44,7 +44,8 @@ scripts/java-agent/install-user-service.sh install \
 安装器会把密钥材料复制到 `ProgramData` 下的专属状态目录，ACL 仅允许
 `SYSTEM`、管理员和 `NT SERVICE\\JLShellLinkAgent` 访问；服务停止时调用 Agent CLI 的
 优雅停止命令。`status` 查询服务，`uninstall` 停止并删除服务和程序文件，状态目录与
-凭据保留，便于受控重装。
+凭据保留。再次安装时会沿用 `ProgramData` 中已有的完整 Agent 身份、TLS 材料与白名单；
+仅在首次安装时从 `-StateDirectory` 导入，避免重装时覆盖受保护的身份凭据。
 
 Windows Service 由 WinSW v2.12.0 包装。安装器从 WinSW 上游 release 下载 x64 文件，并
 固定校验 SHA-256 `05b82d46ad331cc16bdc00de5c6332c1ef818df8ceefcd49c726553209b3a0da`；
