@@ -75,12 +75,12 @@ try {
         'JLShell service data already exists on this runner.'
     Assert (Test-Path $AgentJarPath) 'The built Agent JAR was not found.'
     New-Item -ItemType Directory -Force $sourceState | Out-Null
-    Set-Content -NoNewline (Join-Path $sourceState 'agent.properties') 'ci-test=true'
-    Set-Content -NoNewline (Join-Path $sourceState 'agent.credential') 'ci-test-only'
-    Set-Content -NoNewline (Join-Path $sourceState 'node-key.ed25519') 'ci-test-only'
-    Set-Content -NoNewline (Join-Path $testRoot 'agent.p12') 'ci-test-only'
-    Set-Content -NoNewline (Join-Path $testRoot 'tls.password') 'ci-test-only'
-    Set-Content -NoNewline (Join-Path $testRoot 'allowed-targets') '192.0.2.1:22'
+    Set-Content -Path (Join-Path $sourceState 'agent.properties') -Value 'ci-test=true'
+    Set-Content -Path (Join-Path $sourceState 'agent.credential') -Value 'ci-test-only'
+    Set-Content -Path (Join-Path $sourceState 'node-key.ed25519') -Value 'ci-test-only'
+    Set-Content -Path (Join-Path $testRoot 'agent.p12') -Value 'ci-test-only'
+    Set-Content -Path (Join-Path $testRoot 'tls.password') -Value 'ci-test-only'
+    Set-Content -Path (Join-Path $testRoot 'allowed-targets') -Value '192.0.2.1:22'
     Copy-Item -Force $AgentJarPath $expectedJar
 
     for ($attempt = 1; $attempt -le 2; $attempt++) {
