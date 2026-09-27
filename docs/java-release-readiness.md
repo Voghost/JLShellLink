@@ -17,7 +17,9 @@ SSH 信息、凭据、票据或原始生产日志。
   这不替代 Jenkins 对 0.1.3 已发布制品的验证。
 - 本轮增加的 Java 专用 Website 上传与 manifest 校验代码，在本机使用 SNAPSHOT 依赖完成
   `mvn -DskipTests compile`；Link `Release Java Agent` workflow 的 YAML 语法检查通过。
-  这两项变更仍需各自仓库的 PR/MR 评审与 CI。
+  对应 [Link PR #53](https://github.com/Voghost/JLShellLink/pull/53) 与
+  [Website MR !54](https://gitlab.ooml.net/root/jlshellwebsite/-/merge_requests/54)
+  已创建，等待各自 CI 与手动合并。
 
 ## 仍未放行
 
@@ -38,8 +40,9 @@ SSH 信息、凭据、票据或原始生产日志。
 
 ## 当前发布入口
 
-待合并的实现为 Link 仓库 `.github/workflows/release-java-agent.yml` 与 Website 仓库的
-Java Runtime 上传接口。稳定发布工作流只允许从 `main` 手动运行，要求仓库配置
+Link PR #53 与 Website MR !54 分别实现 Link 仓库
+`.github/workflows/release-java-agent.yml` 和 Website Java Runtime 上传接口。稳定发布
+工作流只允许从 `main` 手动运行，要求仓库配置
 `JLSHELL_SITE_URL` 与已有的 `JLSHELL_ACTION_WEBHOOK_SECRET`；签名值本身不应写入此文档。
 发布前应确认 Website 对应变更已部署，并检查公开
 `/api/v1/link/java-agent/latest` 清单中的版本、源码 revision、平台资产名和摘要。
