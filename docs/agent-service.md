@@ -1,10 +1,14 @@
 # Java Agent 服务托管与安装包
 
-Java Agent 需要 Java 21 或更新版本，不携带 JRE。`scripts/package-java-agent.sh`
-接收版本号和 shade 后的 Agent JAR，生成同内容的 `.tar.gz` 与 `.zip`，包内包含
-CLI 文档、Linux/macOS 服务管理脚本、Windows Service 安装脚本和逐文件 SHA-256 清单。
-GitHub Actions 的 `Package Java Agent` 手动工作流会先运行 Link 全量 `mvn verify`，再
-上传 90 天有效的打包产物；此流程不会创建 GitHub Release 或部署到生产。
+Java Agent 发布包自带由 Java 21 `jlink` 生成的精简 runtime，使用者无需预装 JDK。
+`scripts/package-java-agent.sh` 接收版本号和 shade 后的 Agent JAR，为当前平台生成
+`.tar.gz` 与 `.zip`。包内包含 runtime、CLI 文档、Linux/macOS 服务管理脚本、Windows
+Service 安装脚本、带源码 SHA、平台/架构/协议版本和逐文件 SHA-256 的 `manifest.json`，以及
+`SHA256SUMS`。每个平台另输出包含归档大小与摘要的外部 `.manifest.json` 和 `.sha256` 文件。
+生成时会运行包内 Java 检查版本、运行 Agent CLI help，并校验两种归档。
+GitHub Actions 的 `Package Java Agent` 手动工作流在 Linux x64、macOS arm64、Windows x64
+分别运行 Link 全量 `mvn verify` 并生成独立构建产物，上传后保留 90 天；此流程不会创建
+GitHub Release 或部署到生产。发布签名和正式 Release 接入仍在后续任务中。
 
 ## Linux 与 macOS
 
@@ -18,7 +22,7 @@ scripts/java-agent/install-user-service.sh install \
   https://website.example
 ```
 
-脚本在 Linux 创建 systemd 用户服务，在 macOS 创建 LaunchAgent。`uninstall` 只停止并
+脚本优先安装包自带的 Java 21 runtime，在 Linux 创建 systemd 用户服务，在 macOS 创建 LaunchAgent。旧的 JAR-only 包仍可用已安装的 Java 21。`uninstall` 只停止并
 移除服务定义和配置，不会删除 Agent 注册身份、凭据、JAR 或日志。Java Agent 的 `stop`
 命令负责写入专属停止标记并优雅退出。身份 PKCS12、密码文件和目标白名单需归运行用户
 所有，POSIX 系统权限设为 `600`。可通过安装进程的 `JLSHELL_LINK_JAVA_TOOL_OPTIONS` 注入
@@ -53,6 +57,6 @@ Windows Service 由 WinSW v2.12.0 包装。安装器从 WinSW 上游 release 下
 
 ## 包含与不包含
 
-包中包含 Java 21 shaded Agent 和服务控制脚本。注册令牌、节点私钥、Agent 凭据、TLS
+包中包含 Java 21 runtime、shaded Agent 和服务控制脚本。注册令牌、节点私钥、Agent 凭据、TLS
 私钥/密码、节点白名单均由部署者提供，禁止放入发布包。Linux/macOS 采用用户级服务；
 Windows 使用专属虚拟服务账号。首版不自动添加防火墙规则，也不启动公网监听。

@@ -14,7 +14,17 @@ permissions:
 jobs:
   package:
     if: github.ref == 'refs/heads/develop'
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux-x64
+          - runner: macos-15
+            platform: macos-arm64
+          - runner: windows-2025
+            platform: windows-x64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -36,17 +46,29 @@ jobs:
           fi
       - name: Verify Link modules
         run: mvn -B -ntp verify
-      - name: Set release version and package Agent
+      - name: Set release version
+        run: mvn -B -ntp org.codehaus.mojo:versions-maven-plugin:2.18.0:set -DnewVersion=${{ inputs.version }} -DgenerateBackupPoms=false
+      - name: Build shaded Agent
+        run: mvn -B -ntp -pl link-agent -am -DskipTests package
+      - name: Package Java 21 Agent (Linux/macOS)
+        if: runner.os != 'Windows'
         env:
           RELEASE_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: scripts/package-java-agent.sh "$RELEASE_VERSION"
+      - name: Package Java 21 Agent (Windows)
+        if: runner.os == 'Windows'
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        shell: pwsh
         run: |
-          mvn -B -ntp org.codehaus.mojo:versions-maven-plugin:2.18.0:set \
-            -DnewVersion="$RELEASE_VERSION" -DgenerateBackupPoms=false
-          mvn -B -ntp -pl link-agent -am -DskipTests package
-          scripts/package-java-agent.sh "$RELEASE_VERSION"
+          python scripts/package-java-agent.py `
+            --version $env:RELEASE_VERSION `
+            --agent-jar "link-agent/target/link-agent-$env:RELEASE_VERSION.jar" `
+            --output-dir link-agent/target/distribution
       - uses: actions/upload-artifact@v4
         with:
-          name: jlshell-link-agent-java-${{ inputs.version }}
+          name: jlshell-link-agent-java-${{ inputs.version }}-${{ matrix.platform }}
           path: link-agent/target/distribution/*
           if-no-files-found: error
           retention-days: 90

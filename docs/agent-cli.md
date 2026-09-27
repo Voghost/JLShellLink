@@ -34,10 +34,14 @@ java -jar link-agent-0.1.0-SNAPSHOT.jar enroll \
 ```
 
 `run` 前台常驻，使用已注册的 Agent 身份对 Website 发心跳、轮询撤销及 Relay 请求，
-并与 B 建立独立的持钥证明 WSS 控制连接。当前数据路径支持出站 `relay-only`；
-WSS 信令已接入，但 Agent 尚未实现 ICE 候选收集和 direct KCP 承载。
+并与 B 建立独立的持钥证明 WSS 控制连接。收到仍有效且策略版本匹配的邀请后，会收集
+ICE 候选并尝试 Direct ICE/KCP、内层 TLS 1.3 和 HTTP/2 CONNECT；候选不可达时仍可通过
+已授权的 Relay 路径传输。可通过 `JLSHELL_LINK_STUN_SERVERS` 指定逗号分隔的数值
+`IP:UDP端口`，IPv6 写成 `[地址]:端口`。公网双出口的 A—C 直连产品验收仍待完成，
+旧 Rust 原型的结果不能替代 Java Agent 验收。
+
 `stop` 通过同一状态目录内的当前用户专属标记请求优雅退出；`status` 根据独占文件锁
-报告运行状态。系统服务安装器和自动凭据轮换仍属于后续工作。
+报告运行状态。Linux/macOS 用户服务与 Windows Service 安装脚本随 Agent 发布包提供。
 
 首次部署推荐先生成使用 **Ed25519** 的 TLS 身份 PKCS12，再导入为节点身份，以保证
 WSS 持钥身份和内层 mTLS 证书使用同一把公钥。例如在具备 JDK 的机器上：
