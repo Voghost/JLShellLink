@@ -56,6 +56,9 @@ public final class ControlSignalJsonCodec {
             LinkSessionId sessionId = LinkSessionId.parse(JSONObjectUtils.getString(value, "sessionId"));
             long generation = JSONObjectUtils.getLong(value, "generation");
             return switch (type) {
+                case "ICE_CREDENTIALS" -> new ControlSignal.IceCredentials(messageId, sessionId, generation,
+                        JSONObjectUtils.getString(value, "usernameFragment"),
+                        JSONObjectUtils.getString(value, "password"));
                 case "ICE_CANDIDATE" -> new ControlSignal.IceCandidate(messageId, sessionId, generation,
                         UUID.fromString(JSONObjectUtils.getString(value, "candidateId")),
                         ControlSignal.CandidateType.valueOf(JSONObjectUtils.getString(value, "candidateType")),
@@ -75,7 +78,8 @@ public final class ControlSignalJsonCodec {
                             new NodeKeyFingerprint(JSONObjectUtils.getString(value, "agentKeyFingerprint")),
                             new NodeKeyFingerprint(JSONObjectUtils.getString(value, "clientKeyFingerprint")),
                             JSONObjectUtils.getLong(value, "policyVersion"),
-                            Instant.parse(JSONObjectUtils.getString(value, "expiresAt")));
+                            Instant.parse(JSONObjectUtils.getString(value, "expiresAt")),
+                            optionalBoolean(value, "iceCredentialsSupported"));
                 }
                 case "SESSION_REVOKED" -> {
                     if (!acceptInvite) throw new IllegalArgumentException("SESSION_REVOKED is server-only");
@@ -91,6 +95,7 @@ public final class ControlSignalJsonCodec {
     public String encode(ControlSignal signal) {
         Map<String, Object> value = base(signal instanceof ControlSignal.SessionInvite ? "SESSION_INVITE"
                 : signal instanceof ControlSignal.SessionRevoked ? "SESSION_REVOKED"
+                : signal instanceof ControlSignal.IceCredentials ? "ICE_CREDENTIALS"
                 : signal instanceof ControlSignal.IceCandidate ? "ICE_CANDIDATE"
                 : signal instanceof ControlSignal.IceEnd ? "ICE_END" : "PATH_READY",
                 signal.messageId(), signal.sessionId(), signal.generation());
@@ -101,6 +106,7 @@ public final class ControlSignalJsonCodec {
             value.put("clientKeyFingerprint", invite.clientKeyFingerprint().value());
             value.put("policyVersion", invite.policyVersion());
             value.put("expiresAt", invite.expiresAt().toString());
+            value.put("iceCredentialsSupported", invite.iceCredentialsSupported());
         } else if (signal instanceof ControlSignal.IceCandidate candidate) {
             value.put("candidateId", candidate.candidateId().toString());
             value.put("candidateType", candidate.candidateType().name());
@@ -109,6 +115,9 @@ public final class ControlSignalJsonCodec {
             value.put("port", candidate.port());
             value.put("priority", candidate.priority());
             value.put("foundation", candidate.foundation());
+        } else if (signal instanceof ControlSignal.IceCredentials credentials) {
+            value.put("usernameFragment", credentials.usernameFragment());
+            value.put("password", credentials.password());
         } else if (signal instanceof ControlSignal.PathReady ready) {
             value.put("path", ready.path().name());
             if (ready.localCandidateId() != null) {
@@ -193,6 +202,13 @@ public final class ControlSignalJsonCodec {
         if (raw == null) return null;
         if (!(raw instanceof String text)) throw new IllegalArgumentException("missing " + name);
         return UUID.fromString(text);
+    }
+
+    private static boolean optionalBoolean(Map<String, Object> value, String name) {
+        Object raw = value.get(name);
+        if (raw == null) return false;
+        if (!(raw instanceof Boolean flag)) throw new IllegalArgumentException("invalid " + name);
+        return flag;
     }
 
     private static InetAddress parseNumericAddress(String value) {
