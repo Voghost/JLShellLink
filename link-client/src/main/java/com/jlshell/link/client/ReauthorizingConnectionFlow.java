@@ -2,6 +2,7 @@ package com.jlshell.link.client;
 
 import com.jlshell.link.core.model.ConnectPolicy;
 import com.jlshell.link.core.model.LinkSessionId;
+import com.jlshell.link.core.model.NodeKeyFingerprint;
 import com.jlshell.link.core.model.TargetEndpoint;
 import com.jlshell.link.core.model.TunnelId;
 import java.time.Clock;
@@ -36,6 +37,7 @@ public final class ReauthorizingConnectionFlow {
         Objects.requireNonNull(plans, "plans");
         LinkSessionId reuse = sessionId.get();
         CompletableFuture<ConnectionCoordinator.Connection> result = new CompletableFuture<>();
+        AtomicReference<ConnectionCoordinator.ConnectionAttempt> activeAttempt = new AtomicReference<>();
         CompletionStage<AuthorizedTunnel> pending;
         try {
             pending = Objects.requireNonNull(access.request(Optional.ofNullable(reuse), agentId, target, policy),
@@ -43,7 +45,15 @@ public final class ReauthorizingConnectionFlow {
         } catch (RuntimeException error) {
             return CompletableFuture.failedFuture(error);
         }
+        result.whenComplete((connection, error) -> {
+            if (result.isCancelled()) {
+                pending.toCompletableFuture().cancel(true);
+                ConnectionCoordinator.ConnectionAttempt attempt = activeAttempt.get();
+                if (attempt != null) attempt.cancel();
+            }
+        });
         pending.whenComplete((grant, authorizationError) -> {
+            if (result.isDone()) return;
             if (authorizationError != null) {
                 result.completeExceptionally(unwrap(authorizationError));
                 return;
@@ -60,9 +70,11 @@ public final class ReauthorizingConnectionFlow {
                 ConnectionCoordinator.ConnectionAttempt attempt = coordinator.connect(config, policy,
                         networkGeneration, targetRequest, pathPlan.direct(), pathPlan.relay(),
                         pathPlan.targetOpener(), observer);
+                activeAttempt.set(attempt);
+                if (result.isCancelled()) attempt.cancel();
                 attempt.result().whenComplete((connection, connectionError) -> {
                     if (connectionError != null) result.completeExceptionally(unwrap(connectionError));
-                    else result.complete(connection);
+                    else if (!result.complete(connection)) connection.close();
                 });
             } catch (Throwable invalid) {
                 result.completeExceptionally(invalid);
@@ -115,8 +127,16 @@ public final class ReauthorizingConnectionFlow {
 
     /** Ticket-bearing record deliberately redacts its default string representation. */
     public record AuthorizedTunnel(LinkSessionId sessionId, TunnelId tunnelId, UUID agentId,
-                                   TargetEndpoint target, String accessTicket, Instant ticketExpiresAt,
+                                   NodeKeyFingerprint agentKeyFingerprint, TargetEndpoint target,
+                                   String accessTicket, Instant ticketExpiresAt,
                                    Instant authorizationLeaseExpiresAt, long policyVersion) {
+        /** Compatibility constructor for existing test adapters; product relay plans require the fingerprint. */
+        public AuthorizedTunnel(LinkSessionId sessionId, TunnelId tunnelId, UUID agentId,
+                                TargetEndpoint target, String accessTicket, Instant ticketExpiresAt,
+                                Instant authorizationLeaseExpiresAt, long policyVersion) {
+            this(sessionId, tunnelId, agentId, null, target, accessTicket, ticketExpiresAt,
+                    authorizationLeaseExpiresAt, policyVersion);
+        }
         public AuthorizedTunnel {
             Objects.requireNonNull(sessionId, "sessionId");
             Objects.requireNonNull(tunnelId, "tunnelId");

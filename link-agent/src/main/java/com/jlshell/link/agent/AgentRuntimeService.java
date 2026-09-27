@@ -1,5 +1,7 @@
 package com.jlshell.link.agent;
 
+import com.jlshell.link.transport.RelayProofClient;
+
 import com.jlshell.link.core.auth.AccessGrantJwsService;
 import com.jlshell.link.core.auth.InMemoryReplayStore;
 import com.jlshell.link.core.identity.Ed25519NodeKey;
