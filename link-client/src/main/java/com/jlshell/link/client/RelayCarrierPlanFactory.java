@@ -2,6 +2,7 @@ package com.jlshell.link.client;
 
 import com.jlshell.link.core.identity.LocalNodeKey;
 import com.jlshell.link.core.model.LinkPath;
+import com.jlshell.link.core.model.LinkSessionId;
 import com.jlshell.link.core.model.NodeKeyFingerprint;
 import com.jlshell.link.core.transport.TransportBufferBudget;
 import com.jlshell.link.core.transport.TransportBudget;
@@ -13,7 +14,10 @@ import io.netty.channel.EventLoopGroup;
 import java.net.URI;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.function.Function;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import javax.net.ssl.SSLContext;
@@ -30,11 +34,13 @@ public final class RelayCarrierPlanFactory implements ReauthorizingConnectionFlo
     private final TransportBudget budget;
     private final TlsHandshakeGate gate;
     private final RelayProofClient proof;
+    private final Function<LinkSessionId, ? extends CompletionStage<Void>> activateRelay;
 
     public RelayCarrierPlanFactory(EventLoopGroup group, URI relayUri, UUID deviceId,
             LocalNodeKey nodeKey, Supplier<? extends CompletionStage<String>> controlCredential,
             SSLContext outerTls, Function<NodeKeyFingerprint, SSLContext> innerTlsForAgent,
-            TransportBudget budget, TlsHandshakeGate gate, RelayProofClient proof) {
+            TransportBudget budget, TlsHandshakeGate gate, RelayProofClient proof,
+            Function<LinkSessionId, ? extends CompletionStage<Void>> activateRelay) {
         this.group = Objects.requireNonNull(group, "group");
         this.relayUri = Objects.requireNonNull(relayUri, "relayUri");
         this.deviceId = Objects.requireNonNull(deviceId, "deviceId");
@@ -45,6 +51,7 @@ public final class RelayCarrierPlanFactory implements ReauthorizingConnectionFlo
         this.budget = Objects.requireNonNull(budget, "budget");
         this.gate = Objects.requireNonNull(gate, "gate");
         this.proof = Objects.requireNonNull(proof, "proof");
+        this.activateRelay = Objects.requireNonNull(activateRelay, "activateRelay");
         if (!"wss".equalsIgnoreCase(relayUri.getScheme()) || !"/link/v2/relay".equals(relayUri.getPath())
                 || relayUri.getHost() == null || relayUri.getUserInfo() != null
                 || relayUri.getRawQuery() != null || relayUri.getRawFragment() != null) {
@@ -60,12 +67,24 @@ public final class RelayCarrierPlanFactory implements ReauthorizingConnectionFlo
         // A fresh context per grant prevents one tunnel's inner TLS session from resuming on another.
         SSLContext innerTls = Objects.requireNonNull(innerTlsForAgent.apply(expectedAgent),
                 "inner TLS context must pin the Website-bound Agent key");
-        ConnectionCoordinator.CarrierConnector relay = context -> controlCredential.get()
-                .thenCompose(credential -> proof.connectClient(group, relayUri, credential, deviceId,
-                        grant.agentId(), grant.sessionId(), grant.tunnelId(), nodeKey, expectedAgent,
-                        outerTls, innerTls, relayUri.getHost(), relayUri.getPort() < 0 ? 443 : relayUri.getPort(),
-                        budget, gate))
-                .thenApply(channel -> (ConnectionCoordinator.SecureCarrier) new Carrier(channel));
+        ConnectionCoordinator.CarrierConnector relay = context -> {
+            CompletionStage<Void> activated;
+            try {
+                activated = Objects.requireNonNull(activateRelay.apply(grant.sessionId()),
+                        "Relay activation returned no stage");
+            } catch (RuntimeException failure) {
+                return CompletableFuture.failedFuture(failure);
+            }
+            return activated.thenCompose(ignored -> {
+                if (context.isCancelled()) {
+                    return CompletableFuture.failedFuture(new CancellationException("Relay setup was cancelled"));
+                }
+                return controlCredential.get().thenCompose(credential -> proof.connectClient(group, relayUri,
+                        credential, deviceId, grant.agentId(), grant.sessionId(), grant.tunnelId(), nodeKey,
+                        expectedAgent, outerTls, innerTls, relayUri.getHost(),
+                        relayUri.getPort() < 0 ? 443 : relayUri.getPort(), budget, gate));
+            }).thenApply(channel -> (ConnectionCoordinator.SecureCarrier) new Carrier(channel));
+        };
         ConnectionCoordinator.TargetOpener open = (carrier, request, context) -> {
             if (!(carrier instanceof Carrier selected)) {
                 throw new IllegalArgumentException("relay target opener requires a relay carrier");

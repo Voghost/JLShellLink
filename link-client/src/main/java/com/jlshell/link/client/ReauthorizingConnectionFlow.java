@@ -12,20 +12,24 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
-/** Obtains a fresh Website grant before every new tunnel, including every reconnect after a drop. */
+/** Owns one Website authorization session and obtains a fresh grant before its single tunnel attempt. */
 public final class ReauthorizingConnectionFlow {
     private final ConnectionCoordinator coordinator;
     private final Clock clock;
     private final AtomicReference<LinkSessionId> sessionId = new AtomicReference<>();
+    private final AtomicReference<AccessRequestProvider> accessProvider = new AtomicReference<>();
+    private final AtomicBoolean started = new AtomicBoolean();
+    private final AtomicBoolean sessionClosed = new AtomicBoolean();
 
     public ReauthorizingConnectionFlow(ConnectionCoordinator coordinator, Clock clock) {
         this.coordinator = Objects.requireNonNull(coordinator, "coordinator");
         this.clock = Objects.requireNonNull(clock, "clock");
     }
 
-    /** Every invocation requests a new tunnel ticket; the old tunnelId/JTI is never reused. */
+    /** A flow is single-use; each new attempt obtains a new session, tunnel ticket, and JTI. */
     public CompletionStage<ConnectionCoordinator.Connection> connect(
             ConnectionCoordinator.Config config, ConnectPolicy policy, long networkGeneration,
             UUID agentId, TargetEndpoint target, AccessRequestProvider access,
@@ -35,35 +39,40 @@ public final class ReauthorizingConnectionFlow {
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(access, "access");
         Objects.requireNonNull(plans, "plans");
-        LinkSessionId reuse = sessionId.get();
+        if (!started.compareAndSet(false, true)) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "A Link authorization session can create only one target tunnel"));
+        }
+        accessProvider.set(access);
         CompletableFuture<ConnectionCoordinator.Connection> result = new CompletableFuture<>();
         AtomicReference<ConnectionCoordinator.ConnectionAttempt> activeAttempt = new AtomicReference<>();
         CompletionStage<AuthorizedTunnel> pending;
         try {
-            pending = Objects.requireNonNull(access.request(Optional.ofNullable(reuse), agentId, target, policy),
+            pending = Objects.requireNonNull(access.request(Optional.empty(), agentId, target, policy),
                     "access request provider returned null");
         } catch (RuntimeException error) {
             return CompletableFuture.failedFuture(error);
         }
         result.whenComplete((connection, error) -> {
             if (result.isCancelled()) {
-                pending.toCompletableFuture().cancel(true);
                 ConnectionCoordinator.ConnectionAttempt attempt = activeAttempt.get();
                 if (attempt != null) attempt.cancel();
             }
+            if (result.isCancelled() || error != null) closeSession();
         });
         pending.whenComplete((grant, authorizationError) -> {
-            if (result.isDone()) return;
             if (authorizationError != null) {
                 result.completeExceptionally(unwrap(authorizationError));
                 return;
             }
-            try {
-                validateGrant(grant, reuse, target);
+            if (grant != null && result.isDone()) {
                 sessionId.compareAndSet(null, grant.sessionId());
-                if (!grant.sessionId().equals(sessionId.get())) {
-                    throw new SecurityException("Concurrent access request created a different session");
-                }
+                closeSession();
+                return;
+            }
+            try {
+                if (grant != null) sessionId.compareAndSet(null, grant.sessionId());
+                validateGrant(grant, target);
                 PathPlan pathPlan = Objects.requireNonNull(plans.create(grant), "path plan factory returned null");
                 ConnectionCoordinator.TargetRequest targetRequest = new ConnectionCoordinator.TargetRequest(
                         grant.target(), grant.tunnelId(), grant.accessTicket());
@@ -87,12 +96,23 @@ public final class ReauthorizingConnectionFlow {
         return Optional.ofNullable(sessionId.get());
     }
 
-    private void validateGrant(AuthorizedTunnel grant, LinkSessionId prior, TargetEndpoint requestedTarget) {
+    /** Revokes the one-shot Website session; safe to call from every teardown path. */
+    public CompletionStage<Void> closeSession() {
+        LinkSessionId current = sessionId.get();
+        AccessRequestProvider provider = accessProvider.get();
+        if (current == null || provider == null || !sessionClosed.compareAndSet(false, true)) {
+            return CompletableFuture.completedFuture(null);
+        }
+        try {
+            return Objects.requireNonNull(provider.closeSession(current), "close session provider returned null");
+        } catch (RuntimeException error) {
+            return CompletableFuture.failedFuture(error);
+        }
+    }
+
+    private void validateGrant(AuthorizedTunnel grant, TargetEndpoint requestedTarget) {
         Objects.requireNonNull(grant, "access request returned no grant");
         if (!grant.target().equals(requestedTarget)) throw new SecurityException("Website authorized a different target");
-        if (prior != null && !prior.equals(grant.sessionId())) {
-            throw new SecurityException("Website returned a different reused session");
-        }
         if (!grant.ticketExpiresAt().isAfter(clock.instant())) {
             throw new SecurityException("Website returned an expired access ticket");
         }
@@ -109,9 +129,14 @@ public final class ReauthorizingConnectionFlow {
 
     @FunctionalInterface
     public interface AccessRequestProvider {
-        /** Adapter calls Website POST /api/v2/link/access-requests using the current short control credential. */
+        /** Adapter calls Website POST /api/v2/link/access-requests with sessionId=null for a new tunnel session. */
         CompletionStage<AuthorizedTunnel> request(Optional<LinkSessionId> reuseSessionId,
                 UUID agentId, TargetEndpoint target, ConnectPolicy policy);
+
+        /** Revokes the one-shot session on tunnel shutdown. */
+        default CompletionStage<Void> closeSession(LinkSessionId sessionId) {
+            return CompletableFuture.completedFuture(null);
+        }
     }
 
     @FunctionalInterface

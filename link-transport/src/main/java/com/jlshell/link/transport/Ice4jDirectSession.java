@@ -142,6 +142,10 @@ public final class Ice4jDirectSession implements AutoCloseable {
         return selectedPath;
     }
 
+    public LinkSessionId sessionId() { return sessionId; }
+
+    public long generation() { return generation; }
+
     private void acceptCredentials(ControlSignal.IceCredentials credentials) {
         if (remoteCredentialsReceived || remoteEnd) {
             throw new IllegalArgumentException("remote ICE credentials must be published once before ICE_END");
@@ -322,6 +326,11 @@ public final class Ice4jDirectSession implements AutoCloseable {
             // Link uses explicitly configured STUN servers; do not probe cloud
             // instance metadata while ice4j initializes its optional AWS mapper.
             System.setProperty("ice4j.harvest.mapping.aws.enabled", "false");
+            // ice4j INFO records include raw candidate addresses and ICE credentials.
+            // Keep those library details out of desktop/server logs; Link exposes only
+            // bounded outcome codes through its own diagnostics surface.
+            java.util.logging.Logger.getLogger("org.ice4j").setLevel(java.util.logging.Level.WARNING);
+            java.util.logging.Logger.getLogger("org.jitsi").setLevel(java.util.logging.Level.WARNING);
             ice4jPrepared = true;
         }
     }

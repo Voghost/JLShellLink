@@ -1,22 +1,36 @@
-# NET-02 ICE 会话基础
+# NET-02：ICE 直连、自动选路与生命周期
 
-## 本次实现
+## 已实现
 
-`link-transport` 新增 `Ice4jDirectSession`，为单个 Website 授权的 A—C session generation 创建有界 ICE Agent：
+`JLShellLink` 和 `JLShellLinkPlugin` 当前工作分支已将 ICE 传输接入授权客户端与 Agent：
 
-- 本地创建 ICE credentials，收集 UDP host/server-reflexive/peer-reflexive 候选，并生成本代次唯一的 candidate ID。
-- 只接受当前 `sessionId` 和 `generation` 的远端 ICE 消息；远端凭据先于候选，`ICE_END` 后开始 connectivity checks。
-- 候选数、STUN 服务器数、nominated path 检查时限、数据报上限和接收轮询时限均受配置约束。
-- 不发布 loopback、link-local、any-local 或 multicast 地址；只允许引用本次授权交换中已登记的候选对。
-- 选中候选对后返回 `IceSelectedDatagramPath` 和 `DIRECT` `PATH_READY` 消息；关闭会释放 ICE Agent、定时器和数据报接收适配器。
-- Link 实现不主动记录 ICE credentials、候选地址或 STUN 地址；对应信号和配置的默认 `toString()` 也会脱敏。ice4j 的可选 AWS 地址映射器在初始化前关闭；Link 候选由显式配置的 STUN server 收集。发布前仍需检查 ice4j 自身日志及最终日志配置。
+- A 与 C 使用 Website 控制 WSS 完成身份绑定后的 ICE 凭据、候选及路径选择交换。只接受当前授权 `sessionId + generation`，双方的 `PATH_READY` 必须引用同一对已交换候选。
+- A/C 分别以 ice4j 收集受限 UDP 候选，并将选中路径接入 KCP、TLS 1.3、HTTP/2 CONNECT。TLS 对端公钥必须与 Website 授权返回的节点指纹一致。
+- `ReliableCarrierBridge` 提供有界双向字节流桥接。业务票据与目标只交给最终选中的目标建流操作；ICE 信令组件不接触访问票据或目标。
+- `AUTO` 同时准备直连和 WSS Relay。一个安全 carrier 获胜后取消另一条路径；迟到 carrier 关闭。只有目标 CONNECT 前的可重试网络错误可以回退，授权、身份、票据和协议错误失败关闭。
+- Website Relay 在并行准备前按 session 激活额度，使 Agent 能领取对应 Relay 请求；若直连获胜，Website 结算已转发的 carrier 字节、释放未用额度并关闭未选中的 WSS Relay。Relay 配额不足不能覆盖成功的直连，也不会被伪装成网络成功。
+- `DIRECT_ONLY` 不尝试 Relay；`RELAY_ONLY` 跳过 ICE。插件高级设置可选择策略及填写最多四个数值 STUN 地址。
+- 每条目标 TCP 隧道使用独立 Website session/generation，避免同一 Agent 上后续授权覆盖并发隧道的 ICE 会话。建连失败、用户关闭或隧道结束后撤销 Website session；重连重新申请 session 和一次性票据。
+- 插件每五秒在内存中比较网卡状态摘要。检测到网络变化时取消旧 generation 的候选建连；已建立流保持当前路径，重建流重新授权。
+- Client WSS 信令具有指数退避重连。连接中断会使未完成 ICE generation 失败，后续隧道重新授权。插件显示控制信令状态、路径、耗时及固定失败类别。
+- ice4j/Jitsi 的 INFO 日志会包含 ICE 候选地址和凭据，因此运行时将相关 JUL logger 降到 WARNING；Link 诊断只保留固定状态码，不输出候选、凭据或目标信息。
 
-`maxCandidates` 限制信令发布和远端候选输入数量；ice4j 会先按本机可用网卡收集候选并绑定 socket，再由 Link 过滤和限制发布数量。因此本类尚未对 ice4j 初始绑定的 socket 数量提供硬上限，这项资源预算需在后续运行时集成和平台验收中处理。
+## 本地验证
 
-`link-transport/pom.xml` 将固定版本的 `org.jitsi:ice4j:3.2-17-geea6cd3` 从测试依赖提升为运行依赖。上游许可证为 Apache-2.0，来源为 [ice4j 上游仓库](https://github.com/jitsi/ice4j)；编译依赖树包括 `java-sdp-nist-bridge`、`weupnp`、`jitsi-utils` 和 `jicoco-config` 及其编译传递依赖。最终发行物仍需逐项核对所有传递依赖许可证。
+当前实现已运行以下验证：
 
-## 完成边界
+- `JLShellLink`：`mvn -o -pl link-client,link-agent,link-server,link-transport -am verify`。
+- `JLShellLinkPlugin`：将 Link `0.1.0-SNAPSHOT` 安装到本机 Maven 仓库后，运行 `mvn -o -Djlshell.link.version=0.1.0-SNAPSHOT verify`。
+- `JLShellWebsite/frontend`：`npm run build`，包括 Vue/TypeScript 类型检查和 Vite 生产构建。
+- KCP 桥测试覆盖双向大载荷回显；协调器测试覆盖 AUTO 并行胜出及迟到路径清理；授权与信令测试覆盖邀请身份、generation 和网络失败边界。
 
-这是可复用的 ICE 会话层，不代表桌面客户端或 Java Agent 已完成产品接线。后续仍需实现 A/C 控制信令会话和邀请处理，把选中的 ICE 数据报路径接入 KCP、双向 TLS 1.3、HTTP/2 CONNECT 与目标 ACL，再交给 `ConnectionCoordinator` 执行 AUTO/RELAY_ONLY/DIRECT_ONLY。当前没有真实公网产品路径验收，也不能用此前的原型结果替代该验收。
+## 尚待外部验收
 
-此版本已通过 `link-transport` 离线编译；没有运行测试。Java 21 与 Linux/macOS/Windows 的运行时兼容性、Windows 可用网卡下的 ICE 行为、长时间运行及传递依赖许可检查仍待验证。
+本地测试未替代产品公网验收。仍需用不同公网出口的 A/C、正式 Website 票据及在线 Java Agent 验证：
+
+1. 两侧 STUN 映射、最终候选对、建连耗时和数据路径；证明直连业务流量不经 B。
+2. 禁止或阻断 UDP 后，`AUTO` 是否只因网络失败降级到 Relay；`DIRECT_ONLY` 是否明确失败且不经 B。
+3. Website 授权拒绝、撤销和重连后重新授权；并发目标流彼此独立。
+4. 长时间运行、账号/策略变化、网络切换、控制 WSS 重连和各平台运行时行为。
+
+正式验证记录不得包含账号资料、主机名、私网地址、访问令牌或原始候选日志。当前分支尚未合并、发布或部署，故不能标记为已通过公网产品验收。

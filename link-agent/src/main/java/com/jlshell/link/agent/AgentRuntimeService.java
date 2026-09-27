@@ -13,10 +13,14 @@ import com.jlshell.link.core.model.CidrBlock;
 import com.jlshell.link.core.model.TargetEndpoint;
 import com.jlshell.link.core.model.TunnelId;
 import com.jlshell.link.core.transport.TransportBudget;
+import com.jlshell.link.transport.Ice4jDirectSession;
 import com.jlshell.link.transport.TlsHandshakeGate;
+import io.netty.channel.DefaultEventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
 import java.io.IOException;
 import java.net.ConnectException;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.NoRouteToHostException;
 import java.net.URI;
 import java.net.Socket;
@@ -84,9 +88,16 @@ final class AgentRuntimeService {
             thread.setDaemon(true);
             return thread;
         });
+        var directWorker = Executors.newFixedThreadPool(2, task -> {
+            Thread thread = new Thread(task, "jlshell-link-agent-direct");
+            thread.setDaemon(true);
+            return thread;
+        });
         var activeDiagnostics = java.util.concurrent.ConcurrentHashMap.<java.util.UUID>newKeySet();
         var eventLoops = new NioEventLoopGroup(2);
+        var localCarrierLoops = new DefaultEventLoopGroup(2);
         var relay = new AtomicReference<AgentRelayRuntime>();
+        var direct = new AtomicReference<AgentDirectSessionRuntime>();
         var control = new AtomicReference<AgentControlSession>();
         var stopping = new AtomicBoolean();
         var stopped = new java.util.concurrent.CountDownLatch(1);
@@ -106,7 +117,8 @@ final class AgentRuntimeService {
             var grants = new AccessGrantJwsService(clock, Duration.ofSeconds(30), new InMemoryReplayStore());
             AgentControlSession session = new AgentControlSession(
                     api, registration.credential(), registration.agentId(),
-                    nodeKey.fingerprint(), "0.1.0-SNAPSHOT", Set.of("tcp-connect", "target-diagnostic"), scheduler,
+                    nodeKey.fingerprint(), "0.1.0-SNAPSHOT",
+                    Set.of("tcp-connect", "target-diagnostic", "ice-credentials-v1"), scheduler,
                     Duration.ofSeconds(10), lease -> {
                         AgentRelayRuntime current = relay.get();
                         if (current == null) {
@@ -119,9 +131,23 @@ final class AgentRuntimeService {
                         } else {
                             current.updateLease(lease);
                         }
+                        AgentDirectSessionRuntime directRuntime = direct.get();
+                        if (directRuntime == null) {
+                            AgentDirectSessionRuntime created = new AgentDirectSessionRuntime(ticketIssuer,
+                                    registration.agentId(), nodeKey, innerIdentity::forClient,
+                                    () -> localPolicy, lease, localCarrierLoops, directWorker, scheduler,
+                                    grants, authority, budget, iceConfig(),
+                                    new TlsHandshakeGate(budget.maxConcurrentHandshakes()), clock,
+                                    AgentRuntimeService::reportStatus);
+                            if (!direct.compareAndSet(null, created)) created.close();
+                        } else {
+                            directRuntime.updateLease(lease);
+                        }
                     }, () -> {
                         AgentRelayRuntime current = relay.get();
                         if (current != null) current.closeAll();
+                        AgentDirectSessionRuntime directRuntime = direct.get();
+                        if (directRuntime != null) directRuntime.closeAll();
                     }, request -> {
                         AgentRelayRuntime current = relay.get();
                         return current == null
@@ -132,14 +158,34 @@ final class AgentRuntimeService {
                         AgentRelayRuntime current = relay.get();
                         if (current != null) current.closeTunnel(TunnelId.parse(tunnelId.toString()));
                     }, () -> stopping.set(true), AgentRuntimeService::reportStatus,
-                    disconnected -> new AgentControlSignalClient(controlUri, registration.agentId(),
-                            nodeKey, registration.credential(), outerTls,
-                            ignored -> { }, signal -> {
-                                AgentControlSession live = control.get();
-                                if (live != null) live.acceptSignal(signal);
-                            }, disconnected), revokedSession -> {
+                    disconnected -> {
+                        AtomicReference<AgentControlSignalClient> holder = new AtomicReference<>();
+                        AgentControlSignalClient client = new AgentControlSignalClient(controlUri,
+                                registration.agentId(), nodeKey, registration.credential(), outerTls,
+                                Set.of("tcp-connect", com.jlshell.link.core.signal.ControlSignal
+                                        .ICE_CREDENTIALS_CAPABILITY), invite -> {
+                                    AgentDirectSessionRuntime current = direct.get();
+                                    AgentControlSignalClient signalClient = holder.get();
+                                    if (current != null && signalClient != null) {
+                                        current.acceptInvite(invite, signalClient);
+                                    }
+                                }, signal -> {
+                                    AgentDirectSessionRuntime directRuntime = direct.get();
+                                    if (directRuntime != null) directRuntime.acceptSignal(signal);
+                                    AgentControlSession live = control.get();
+                                    if (live != null) live.acceptSignal(signal);
+                                }, lost -> {
+                                    AgentDirectSessionRuntime current = direct.get();
+                                    if (current != null) current.closeAll();
+                                    disconnected.accept(lost);
+                                });
+                        holder.set(client);
+                        return client;
+                    }, revokedSession -> {
                         AgentRelayRuntime current = relay.get();
                         if (current != null) current.closeSession(revokedSession);
+                        AgentDirectSessionRuntime directRuntime = direct.get();
+                        if (directRuntime != null) directRuntime.closeSession(revokedSession);
                     }, (requests, lease) -> requests.forEach(request -> {
                         if (!activeDiagnostics.add(request.id())) return;
                         try {
@@ -173,10 +219,15 @@ final class AgentRuntimeService {
                 session.close();
             }
         } finally {
+            AgentDirectSessionRuntime directRuntime = direct.getAndSet(null);
+            if (directRuntime != null) directRuntime.close();
             AgentRelayRuntime current = relay.getAndSet(null);
             if (current != null) current.close();
+            localCarrierLoops.shutdownGracefully(0, 5, java.util.concurrent.TimeUnit.SECONDS)
+                    .syncUninterruptibly();
             eventLoops.shutdownGracefully(0, 5, java.util.concurrent.TimeUnit.SECONDS).syncUninterruptibly();
             diagnosticExecutor.shutdownNow();
+            directWorker.shutdownNow();
             scheduler.shutdownNow();
             stopped.countDown();
             try { Runtime.getRuntime().removeShutdownHook(shutdownHook); }
@@ -219,6 +270,45 @@ final class AgentRuntimeService {
         }
         if (rules.isEmpty()) throw new IOException("local target allowlist denies every target");
         return new AccessPolicy(true, false, 1, rules);
+    }
+
+    private static Ice4jDirectSession.Config iceConfig() {
+        String raw = System.getProperty("jlshell.link.stun-servers",
+                System.getenv().getOrDefault("JLSHELL_LINK_STUN_SERVERS", "")).trim();
+        List<InetSocketAddress> servers = new ArrayList<>();
+        if (!raw.isEmpty()) {
+            for (String entry : raw.split(",")) {
+                String value = entry.trim();
+                String host;
+                String port;
+                if (value.startsWith("[")) {
+                    int end = value.indexOf(']');
+                    if (end < 0 || end + 1 >= value.length() || value.charAt(end + 1) != ':') {
+                        throw new IllegalArgumentException("STUN servers must use numeric IP:port entries");
+                    }
+                    host = value.substring(1, end);
+                    port = value.substring(end + 2);
+                } else {
+                    int separator = value.lastIndexOf(':');
+                    if (separator <= 0) throw new IllegalArgumentException(
+                            "STUN servers must use numeric IP:port entries");
+                    host = value.substring(0, separator);
+                    port = value.substring(separator + 1);
+                }
+                if (!host.matches("[0-9a-fA-F:.]+")) {
+                    throw new IllegalArgumentException("STUN server addresses must be numeric IPs");
+                }
+                try {
+                    InetAddress address = InetAddress.getByName(host);
+                    int numericPort = Integer.parseInt(port);
+                    if (numericPort < 1 || numericPort > 65_535) throw new NumberFormatException();
+                    servers.add(new InetSocketAddress(address, numericPort));
+                } catch (Exception invalid) {
+                    throw new IllegalArgumentException("STUN server entry is invalid");
+                }
+            }
+        }
+        return new Ice4jDirectSession.Config(servers, 16, Duration.ofSeconds(8), 1_200, 100);
     }
 
     private static ProbeOutcome probeTarget(AccessPolicy localPolicy,

@@ -16,10 +16,12 @@ import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
@@ -41,6 +43,7 @@ public final class AgentControlSignalClient implements AutoCloseable {
     private final Consumer<ControlSignal.SessionInvite> invitations;
     private final Consumer<ControlSignal> signals;
     private final Consumer<AgentControlSignalClient> disconnected;
+    private final List<String> capabilities;
     private final AtomicBoolean started = new AtomicBoolean();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicBoolean disconnectNotified = new AtomicBoolean();
@@ -49,6 +52,14 @@ public final class AgentControlSignalClient implements AutoCloseable {
 
     public AgentControlSignalClient(URI controlUri, UUID agentId, LocalNodeKey nodeKey,
             String credential, SSLContext tls, Consumer<ControlSignal.SessionInvite> invitations,
+            Consumer<ControlSignal> signals, Consumer<AgentControlSignalClient> disconnected) {
+        this(controlUri, agentId, nodeKey, credential, tls, Set.of("tcp-connect"),
+                invitations, signals, disconnected);
+    }
+
+    public AgentControlSignalClient(URI controlUri, UUID agentId, LocalNodeKey nodeKey,
+            String credential, SSLContext tls, Set<String> capabilities,
+            Consumer<ControlSignal.SessionInvite> invitations,
             Consumer<ControlSignal> signals, Consumer<AgentControlSignalClient> disconnected) {
         this.controlUri = requireControlUri(controlUri);
         this.challengeUri = challengeUri(controlUri);
@@ -65,6 +76,13 @@ public final class AgentControlSignalClient implements AutoCloseable {
         this.invitations = Objects.requireNonNull(invitations, "invitations");
         this.signals = Objects.requireNonNull(signals, "signals");
         this.disconnected = disconnected == null ? ignored -> { } : disconnected;
+        Set<String> supported = Set.copyOf(Objects.requireNonNull(capabilities, "capabilities"));
+        if (!supported.contains("tcp-connect") || supported.size() > 32
+                || supported.stream().anyMatch(capability -> capability == null
+                        || !capability.matches("[a-z][a-z0-9-]{0,63}"))) {
+            throw new IllegalArgumentException("control capabilities are invalid");
+        }
+        this.capabilities = supported.stream().sorted(Comparator.naturalOrder()).toList();
     }
 
     public CompletionStage<Void> connect() {
@@ -150,7 +168,7 @@ public final class AgentControlSignalClient implements AutoCloseable {
                 "type", "HELLO", "role", "agent", "nodeId", agentId.toString(),
                 "keyFingerprint", nodeKey.fingerprint().value(),
                 "minProtocol", "link-v2", "maxProtocol", "link-v2",
-                "capabilities", List.of("tcp-connect"), "sentAt", Instant.now().toString()));
+                "capabilities", capabilities, "sentAt", Instant.now().toString()));
     }
 
     private final class Listener implements WebSocket.Listener {

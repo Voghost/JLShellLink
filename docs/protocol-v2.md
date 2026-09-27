@@ -60,6 +60,7 @@ Upgrade 后第一条文本帧必须是 `HELLO`，包含 `role`、`nodeId`、`key
 - `RELAY_ONLY`：跳过 ICE 数据路径，但仍执行相同的端到端 TLS 和 CONNECT 授权。
 - 授权、身份、票据、协议、配额和用户取消错误不得通过换路径重试。
 - 首版不做活跃 tunnel 的无损换路。路径失败后关闭旧 session，重新取票并建立新 session/tunnel。
+- `AUTO` 并行准备 Relay 时，客户端先调用 Website Relay activation，Agent 才能领取 Relay 请求。若直连先胜出且尚未向 Relay 发起目标 CONNECT，Website 结算已经转发的 carrier 握手字节、释放余下 Relay 额度并关闭失败的 Relay carrier。
 
 ### 掉线后的重新授权
 
