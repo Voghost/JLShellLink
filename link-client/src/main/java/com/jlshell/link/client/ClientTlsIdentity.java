@@ -1,14 +1,23 @@
 package com.jlshell.link.client;
 
 import com.jlshell.link.core.identity.LocalNodeKey;
+import com.jlshell.link.core.identity.Ed25519NodeKey;
+import com.jlshell.link.core.identity.NodeKeyStore;
 import com.jlshell.link.core.identity.SecureSecretStore;
 import com.jlshell.link.core.model.NodeKeyFingerprint;
+import java.io.ByteArrayOutputStream;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.security.KeyPair;
 import java.security.KeyStore;
 import java.security.PrivateKey;
 import java.security.SecureRandom;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.Date;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
 import java.util.Arrays;
@@ -17,9 +26,20 @@ import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509ExtendedTrustManager;
+import org.bouncycastle.asn1.x500.X500Name;
+import org.bouncycastle.asn1.x509.BasicConstraints;
+import org.bouncycastle.asn1.x509.ExtendedKeyUsage;
+import org.bouncycastle.asn1.x509.Extension;
+import org.bouncycastle.asn1.x509.KeyPurposeId;
+import org.bouncycastle.asn1.x509.KeyUsage;
+import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
+import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
+import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 
 /** A's inner mTLS identity, loaded from the host's protected storage and bound to its node key. */
 public final class ClientTlsIdentity {
+    private static final String PKCS12_ALIAS = "jlshell-link-client";
+    private static final String PASSWORD_CONTEXT = "JLSHELL-LINK-CLIENT-PKCS12-V1";
     private final javax.net.ssl.KeyManager[] keyManagers;
 
     private ClientTlsIdentity(javax.net.ssl.KeyManager[] keyManagers) {
@@ -70,6 +90,132 @@ public final class ClientTlsIdentity {
         KeyManagerFactory factory = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
         factory.init(keys, password);
         return new ClientTlsIdentity(factory.getKeyManagers());
+    }
+
+    /**
+     * Creates A's Ed25519 node key and self-signed TLS certificate on first use, then keeps both
+     * only in the host's encrypted secure storage. No certificate file or user-managed password
+     * is required. Repeated calls reuse the same enrolled node identity.
+     */
+    public static LocalIdentity loadOrCreate(SecureSecretStore secrets, String tlsIdentityName,
+            NodeKeyStore nodeKeys) throws Exception {
+        Objects.requireNonNull(secrets, "secrets");
+        if (tlsIdentityName == null || tlsIdentityName.isBlank()) {
+            throw new IllegalArgumentException("TLS identity name is required");
+        }
+        Objects.requireNonNull(nodeKeys, "nodeKeys");
+        Ed25519NodeKey nodeKey = nodeKeys.load().orElse(null);
+        if (nodeKey == null) {
+            nodeKey = Ed25519NodeKey.generate();
+            nodeKeys.store(nodeKey);
+        }
+        char[] password = deriveStorePassword(nodeKey);
+        try {
+            if (needsRenewal(secrets, tlsIdentityName, password, nodeKey)) {
+                byte[] identity = createPkcs12(nodeKey, password);
+                try { secrets.write(tlsIdentityName, identity); }
+                finally { Arrays.fill(identity, (byte) 0); }
+            }
+            return new LocalIdentity(nodeKey, load(secrets, tlsIdentityName, password, nodeKey));
+        } finally {
+            Arrays.fill(password, '\0');
+        }
+    }
+
+    private static boolean needsRenewal(SecureSecretStore secrets, String name,
+            char[] password, LocalNodeKey nodeKey) throws Exception {
+        var stored = secrets.read(name);
+        if (stored.isEmpty()) return true;
+        byte[] encoded = stored.orElseThrow().clone();
+        try {
+            if (encoded.length == 0 || encoded.length > 64 * 1024) {
+                throw new IOException("Client TLS identity size is invalid");
+            }
+            KeyStore keys = KeyStore.getInstance("PKCS12");
+            keys.load(new ByteArrayInputStream(encoded), password);
+            int entries = 0;
+            boolean renew = false;
+            for (var aliases = keys.aliases(); aliases.hasMoreElements();) {
+                String alias = aliases.nextElement();
+                if (!keys.isKeyEntry(alias)) continue;
+                entries++;
+                if (!(keys.getCertificate(alias) instanceof X509Certificate certificate)
+                        || keys.getCertificateChain(alias) == null
+                        || keys.getCertificateChain(alias).length != 1) {
+                    throw new SecurityException("Client TLS identity certificate is invalid");
+                }
+                certificate.verify(certificate.getPublicKey());
+                if (!NodeKeyFingerprint.from(certificate.getPublicKey()).equals(nodeKey.fingerprint())) {
+                    throw new SecurityException("Stored client TLS identity belongs to another node key");
+                }
+                if (!(keys.getKey(alias, password) instanceof PrivateKey privateKey)) {
+                    throw new SecurityException("Client TLS identity has no private key");
+                }
+                new Ed25519NodeKey(new KeyPair(certificate.getPublicKey(), privateKey));
+                if (certificate.getNotBefore().after(Date.from(Instant.now().plusSeconds(30)))) {
+                    throw new SecurityException("Client TLS identity is not valid yet");
+                }
+                if (!certificate.getNotAfter().toInstant().isAfter(Instant.now().plus(30, ChronoUnit.DAYS))) {
+                    renew = true;
+                }
+            }
+            if (entries != 1) throw new SecurityException("Client TLS identity must contain one node key");
+            return renew;
+        } finally {
+            Arrays.fill(encoded, (byte) 0);
+        }
+    }
+
+    private static byte[] createPkcs12(LocalNodeKey nodeKey, char[] password) throws Exception {
+        Instant now = Instant.now();
+        X500Name subject = new X500Name("CN=JLShell Link Client "
+                + nodeKey.fingerprint().value().substring(0, 16));
+        BigInteger serial;
+        SecureRandom random = new SecureRandom();
+        do { serial = new BigInteger(159, random); } while (serial.signum() == 0);
+        JcaX509v3CertificateBuilder builder = new JcaX509v3CertificateBuilder(subject, serial,
+                Date.from(now.minus(5, ChronoUnit.MINUTES)), Date.from(now.plus(3650, ChronoUnit.DAYS)),
+                subject, nodeKey.publicKey());
+        builder.addExtension(Extension.basicConstraints, true, new BasicConstraints(false));
+        builder.addExtension(Extension.keyUsage, true, new KeyUsage(KeyUsage.digitalSignature));
+        builder.addExtension(Extension.extendedKeyUsage, false,
+                new ExtendedKeyUsage(KeyPurposeId.id_kp_clientAuth));
+        var holder = builder.build(new JcaContentSignerBuilder("Ed25519").build(nodeKey.privateKey()));
+        var certificate = new JcaX509CertificateConverter().getCertificate(holder);
+        certificate.verify(nodeKey.publicKey());
+        certificate.checkValidity();
+
+        KeyStore keys = KeyStore.getInstance("PKCS12");
+        keys.load(null, password);
+        keys.setKeyEntry(PKCS12_ALIAS, nodeKey.privateKey(), password,
+                new java.security.cert.Certificate[] { certificate });
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        keys.store(output, password);
+        return output.toByteArray();
+    }
+
+    private static char[] deriveStorePassword(LocalNodeKey key) throws Exception {
+        byte[] privateKey = key.privateKey().getEncoded();
+        byte[] context = PASSWORD_CONTEXT.getBytes(StandardCharsets.US_ASCII);
+        byte[] digest;
+        try {
+            MessageDigest sha256 = MessageDigest.getInstance("SHA-256");
+            sha256.update(context);
+            digest = sha256.digest(privateKey);
+        } finally {
+            Arrays.fill(privateKey, (byte) 0);
+            Arrays.fill(context, (byte) 0);
+        }
+        try { return java.util.HexFormat.of().formatHex(digest).toCharArray(); }
+        finally { Arrays.fill(digest, (byte) 0); }
+    }
+
+    public record LocalIdentity(Ed25519NodeKey nodeKey, ClientTlsIdentity tlsIdentity) {
+        public LocalIdentity {
+            Objects.requireNonNull(nodeKey, "nodeKey");
+            Objects.requireNonNull(tlsIdentity, "tlsIdentity");
+        }
+        @Override public String toString() { return "LocalIdentity[<redacted>]"; }
     }
 
     /** Create a fresh context per grant, pinning C's exact Website-authorized node key. */
