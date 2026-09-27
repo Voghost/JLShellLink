@@ -7,8 +7,12 @@ Service 安装脚本、带源码 SHA、平台/架构/协议版本和逐文件 SH
 `SHA256SUMS`。每个平台另输出包含归档大小与摘要的外部 `.manifest.json` 和 `.sha256` 文件。
 生成时会运行包内 Java 检查版本、运行 Agent CLI help，并校验两种归档。
 GitHub Actions 的 `Package Java Agent` 手动工作流在 Linux x64、macOS arm64、Windows x64
-分别运行 Link 全量 `mvn verify` 并生成独立构建产物，上传后保留 90 天；此流程不会创建
-GitHub Release 或部署到生产。发布签名和正式 Release 接入仍在后续任务中。
+分别运行 Link 全量 `mvn verify` 并生成独立构建产物，供 develop 候选验收使用。稳定包由
+`Release Java Agent` 工作流从 `main` 手动构建，上传到 Website 的 Java 专用 Runtime 入口；
+需要配置仓库变量 `JLSHELL_SITE_URL` 和已有的 `JLSHELL_ACTION_WEBHOOK_SECRET` Secret。
+Website 会核对三平台 manifest、源码 revision、checksum sidecar 和归档摘要后切换 latest。
+SHA-256 只能发现文件损坏，尚未替代客户端可验证的数字签名；正式启用前仍须完成签名
+和客户端验签。
 
 ## Linux 与 macOS
 
