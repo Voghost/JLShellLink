@@ -18,6 +18,7 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.BiConsumer;
 
 /** Heartbeats C's Website lease, applies ordered revocations, and retries transient failures with bounded backoff. */
 public final class AgentControlSession implements AutoCloseable {
@@ -38,6 +39,8 @@ public final class AgentControlSession implements AutoCloseable {
     private final Runnable revokedAction;
     private final Consumer<String> statusCode;
     private final SignalClientFactory signalClientFactory;
+    private final BiConsumer<List<AgentControlPlaneClient.ConnectivityDiagnosticRequest>, AgentLeaseSnapshot>
+            diagnosticHandler;
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicBoolean inFlight = new AtomicBoolean();
     private final AtomicLong revocationCursor = new AtomicLong();
@@ -56,7 +59,7 @@ public final class AgentControlSession implements AutoCloseable {
             Consumer<UUID> relayCloseHandler, Runnable revokedAction, Consumer<String> statusCode) {
         this(api, credential, agentId, fingerprint, version, capabilities, scheduler, heartbeatInterval,
                 leaseUpdates, closeActiveStreams, relayOpenHandler, relayCloseHandler, revokedAction,
-                statusCode, null, null);
+                statusCode, null, null, null);
     }
 
     public AgentControlSession(AgentControlPlaneClient api, String credential, UUID agentId,
@@ -68,7 +71,7 @@ public final class AgentControlSession implements AutoCloseable {
             SignalClientFactory signalClientFactory) {
         this(api, credential, agentId, fingerprint, version, capabilities, scheduler, heartbeatInterval,
                 leaseUpdates, closeActiveStreams, relayOpenHandler, relayCloseHandler, revokedAction,
-                statusCode, signalClientFactory, null);
+                statusCode, signalClientFactory, null, null);
     }
 
     public AgentControlSession(AgentControlPlaneClient api, String credential, UUID agentId,
@@ -78,6 +81,19 @@ public final class AgentControlSession implements AutoCloseable {
             Function<AgentControlPlaneClient.RelayOpenRequest, ? extends CompletionStage<Void>> relayOpenHandler,
             Consumer<UUID> relayCloseHandler, Runnable revokedAction, Consumer<String> statusCode,
             SignalClientFactory signalClientFactory, Consumer<LinkSessionId> closeRevokedSession) {
+        this(api, credential, agentId, fingerprint, version, capabilities, scheduler, heartbeatInterval,
+                leaseUpdates, closeActiveStreams, relayOpenHandler, relayCloseHandler, revokedAction,
+                statusCode, signalClientFactory, closeRevokedSession, null);
+    }
+
+    public AgentControlSession(AgentControlPlaneClient api, String credential, UUID agentId,
+            com.jlshell.link.core.model.NodeKeyFingerprint fingerprint, String version,
+            Set<String> capabilities, ScheduledExecutorService scheduler, Duration heartbeatInterval,
+            Consumer<AgentLeaseSnapshot> leaseUpdates, Runnable closeActiveStreams,
+            Function<AgentControlPlaneClient.RelayOpenRequest, ? extends CompletionStage<Void>> relayOpenHandler,
+            Consumer<UUID> relayCloseHandler, Runnable revokedAction, Consumer<String> statusCode,
+            SignalClientFactory signalClientFactory, Consumer<LinkSessionId> closeRevokedSession,
+            BiConsumer<List<AgentControlPlaneClient.ConnectivityDiagnosticRequest>, AgentLeaseSnapshot> diagnosticHandler) {
         this.api = Objects.requireNonNull(api, "api");
         if (credential == null || credential.isBlank()) throw new IllegalArgumentException("credential is required");
         this.credential = credential;
@@ -100,6 +116,7 @@ public final class AgentControlSession implements AutoCloseable {
         this.revokedAction = revokedAction == null ? () -> { } : revokedAction;
         this.statusCode = statusCode == null ? ignored -> { } : statusCode;
         this.signalClientFactory = signalClientFactory;
+        this.diagnosticHandler = diagnosticHandler == null ? (ignored, lease) -> { } : diagnosticHandler;
     }
 
     public void start() {
@@ -133,6 +150,15 @@ public final class AgentControlSession implements AutoCloseable {
                 safeStatus("authorization-revoked");
             }
             handleRelayRequests(relayRequests, current);
+            try {
+                var diagnosticRequests = api.claimConnectivityDiagnostics(credential, controlSessionId);
+                if (!diagnosticRequests.isEmpty()) diagnosticHandler.accept(diagnosticRequests, current);
+            } catch (AgentControlPlaneClient.ApiException unsupported) {
+                // Older Website deployments do not expose the optional diagnostics endpoint.
+                if (unsupported.statusCode() != 404) throw unsupported;
+            } catch (RuntimeException handlerFailure) {
+                safeStatus("diagnostic-handler-failed");
+            }
             if (heartbeat.revoked() || batch.events().stream()
                     .anyMatch(event -> "agent-revoked".equals(event.reason()))) {
                 close();

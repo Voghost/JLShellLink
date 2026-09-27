@@ -72,6 +72,17 @@ Upgrade 后第一条文本帧必须是 `HELLO`，包含 `role`、`nodeId`、`key
 失败不进入另一条路径；CONNECT 已尝试后也不重放一次性票据。已建立的 tunnel 掉线后，
 无论沿用还是新建 session，都重新向 Website 授权并使用新的 tunnel/JTI。
 
+## Website Agent 连通性诊断
+
+启用 `target-diagnostic` 能力的 C 会通过 HTTPS 轮询 Website 的诊断请求接口；领取和回传都
+携带当前 Agent 控制会话 ID，旧控制会话不能领取或完成任务。每条任务只包含一个数值 IP、TCP
+端口和 Website 策略版本，有效期 90 秒。Agent 在拨号前复核当前策略版本以及本地精确目标
+白名单，只尝试 TCP 握手，不发送应用数据。结果使用固定原因码和耗时，不带目标地址或异常文本。
+
+Website 仅接受当前在线、已授权的 v2 Agent 结果；策略版本变化、控制租约失效或请求过期时
+失败关闭。请求目标只在待处理期间暂存，完成时立即清除，过期任务由回收任务清理；历史结果
+不保留目标地址。
+
 ## WSS Relay 身份证明与配对
 
 本实现的 Relay listener 提供 `POST /link/v2/relay-challenges` 和

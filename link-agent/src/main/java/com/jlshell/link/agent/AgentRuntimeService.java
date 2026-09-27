@@ -3,6 +3,7 @@ package com.jlshell.link.agent;
 import com.jlshell.link.transport.RelayProofClient;
 
 import com.jlshell.link.core.auth.AccessGrantJwsService;
+import com.jlshell.link.core.auth.AccessPolicyEvaluator;
 import com.jlshell.link.core.auth.InMemoryReplayStore;
 import com.jlshell.link.core.identity.Ed25519NodeKey;
 import com.jlshell.link.core.identity.NodeProofService;
@@ -15,7 +16,11 @@ import com.jlshell.link.core.transport.TransportBudget;
 import com.jlshell.link.transport.TlsHandshakeGate;
 import io.netty.channel.nio.NioEventLoopGroup;
 import java.io.IOException;
+import java.net.ConnectException;
+import java.net.NoRouteToHostException;
 import java.net.URI;
+import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
@@ -74,6 +79,12 @@ final class AgentRuntimeService {
             thread.setDaemon(true);
             return thread;
         });
+        var diagnosticExecutor = Executors.newSingleThreadExecutor(task -> {
+            Thread thread = new Thread(task, "jlshell-link-agent-diagnostic");
+            thread.setDaemon(true);
+            return thread;
+        });
+        var activeDiagnostics = java.util.concurrent.ConcurrentHashMap.<java.util.UUID>newKeySet();
         var eventLoops = new NioEventLoopGroup(2);
         var relay = new AtomicReference<AgentRelayRuntime>();
         var control = new AtomicReference<AgentControlSession>();
@@ -95,7 +106,7 @@ final class AgentRuntimeService {
             var grants = new AccessGrantJwsService(clock, Duration.ofSeconds(30), new InMemoryReplayStore());
             AgentControlSession session = new AgentControlSession(
                     api, registration.credential(), registration.agentId(),
-                    nodeKey.fingerprint(), "0.1.0-SNAPSHOT", Set.of("tcp-connect"), scheduler,
+                    nodeKey.fingerprint(), "0.1.0-SNAPSHOT", Set.of("tcp-connect", "target-diagnostic"), scheduler,
                     Duration.ofSeconds(10), lease -> {
                         AgentRelayRuntime current = relay.get();
                         if (current == null) {
@@ -129,7 +140,29 @@ final class AgentRuntimeService {
                             }, disconnected), revokedSession -> {
                         AgentRelayRuntime current = relay.get();
                         if (current != null) current.closeSession(revokedSession);
-                    });
+                    }, (requests, lease) -> requests.forEach(request -> {
+                        if (!activeDiagnostics.add(request.id())) return;
+                        try {
+                            diagnosticExecutor.execute(() -> {
+                                try {
+                                    ProbeOutcome outcome = probeTarget(localPolicy, request, lease);
+                                    AgentControlSession live = control.get();
+                                    if (live != null) {
+                                        api.completeConnectivityDiagnostic(registration.credential(),
+                                                live.controlSessionId(), request.id(), outcome.result(),
+                                                outcome.roundTripMillis());
+                                    }
+                                } catch (Exception reportFailure) {
+                                    reportStatus("connectivity-diagnostic-report-failed");
+                                } finally {
+                                    activeDiagnostics.remove(request.id());
+                                }
+                            });
+                        } catch (java.util.concurrent.RejectedExecutionException rejected) {
+                            activeDiagnostics.remove(request.id());
+                            reportStatus("connectivity-diagnostic-queue-full");
+                        }
+                    }));
             control.set(session);
             try {
                 session.start();
@@ -143,6 +176,7 @@ final class AgentRuntimeService {
             AgentRelayRuntime current = relay.getAndSet(null);
             if (current != null) current.close();
             eventLoops.shutdownGracefully(0, 5, java.util.concurrent.TimeUnit.SECONDS).syncUninterruptibly();
+            diagnosticExecutor.shutdownNow();
             scheduler.shutdownNow();
             stopped.countDown();
             try { Runtime.getRuntime().removeShutdownHook(shutdownHook); }
@@ -186,6 +220,45 @@ final class AgentRuntimeService {
         if (rules.isEmpty()) throw new IOException("local target allowlist denies every target");
         return new AccessPolicy(true, false, 1, rules);
     }
+
+    private static ProbeOutcome probeTarget(AccessPolicy localPolicy,
+            AgentControlPlaneClient.ConnectivityDiagnosticRequest request, AgentLeaseSnapshot lease) {
+        long started = System.nanoTime();
+        if (!request.expiresAt().isAfter(java.time.Instant.now())) {
+            return new ProbeOutcome(AgentControlPlaneClient.ConnectivityDiagnosticResult.REQUEST_EXPIRED, 0);
+        }
+        if (request.policyVersion() != lease.policyVersion()) {
+            return new ProbeOutcome(AgentControlPlaneClient.ConnectivityDiagnosticResult.POLICY_CHANGED, 0);
+        }
+        if (!new AccessPolicyEvaluator().isAllowed(localPolicy, request.target())) {
+            return new ProbeOutcome(AgentControlPlaneClient.ConnectivityDiagnosticResult.LOCAL_POLICY_DENIED, 0);
+        }
+        try (Socket socket = new Socket()) {
+            socket.connect(request.target().socketAddress(), 1_500);
+            return new ProbeOutcome(AgentControlPlaneClient.ConnectivityDiagnosticResult.CONNECTED,
+                    elapsedMillis(started));
+        } catch (SocketTimeoutException timeout) {
+            return new ProbeOutcome(AgentControlPlaneClient.ConnectivityDiagnosticResult.TIMEOUT,
+                    elapsedMillis(started));
+        } catch (NoRouteToHostException unreachable) {
+            return new ProbeOutcome(AgentControlPlaneClient.ConnectivityDiagnosticResult.NETWORK_UNREACHABLE,
+                    elapsedMillis(started));
+        } catch (ConnectException refused) {
+            return new ProbeOutcome(AgentControlPlaneClient.ConnectivityDiagnosticResult.CONNECTION_REFUSED,
+                    elapsedMillis(started));
+        } catch (IOException failed) {
+            return new ProbeOutcome(AgentControlPlaneClient.ConnectivityDiagnosticResult.CONNECT_FAILED,
+                    elapsedMillis(started));
+        }
+    }
+
+    private static long elapsedMillis(long started) {
+        return Math.min(5_000, Math.max(0,
+                java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)));
+    }
+
+    private record ProbeOutcome(AgentControlPlaneClient.ConnectivityDiagnosticResult result,
+                                long roundTripMillis) { }
 
     static char[] readOwnerOnly(Path file) throws IOException {
         verifyOwnerOnlyFile(file);

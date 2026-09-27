@@ -39,6 +39,8 @@ public final class LinkClientEngine implements AutoCloseable {
     private final ConnectionCoordinator.Observer observer;
     private final java.util.concurrent.ScheduledExecutorService scheduler;
     private final ConnectionCoordinator coordinator;
+    private final Object networkLock = new Object();
+    private long networkGeneration;
     private final ConcurrentHashMap<UUID, ReauthorizingConnectionFlow> flows = new ConcurrentHashMap<>();
     private final Set<CompletableFuture<LocalTunnelLease>> pending = ConcurrentHashMap.newKeySet();
     private final Set<LocalTunnelLease> leases = ConcurrentHashMap.newKeySet();
@@ -99,7 +101,11 @@ public final class LinkClientEngine implements AutoCloseable {
                 ignored -> new ReauthorizingConnectionFlow(coordinator, Clock.systemUTC()));
         CompletionStage<ConnectionCoordinator.Connection> connecting;
         try {
-            connecting = flow.connect(config, request.policy(), 0, request.agentId(), request.target(),
+            long generation;
+            synchronized (networkLock) {
+                generation = networkGeneration;
+            }
+            connecting = flow.connect(config, request.policy(), generation, request.agentId(), request.target(),
                     access, plans, observer);
         } catch (RuntimeException error) {
             pending.remove(result);
@@ -151,6 +157,29 @@ public final class LinkClientEngine implements AutoCloseable {
 
     public CompletionStage<RuntimeSnapshot> status() {
         return CompletableFuture.completedFuture(new RuntimeSnapshot(!closed.get(), leases.size(), pending.size()));
+    }
+
+    /**
+     * Invalidates path setup started on an older network. The host should call this
+     * after its operating system reports a network change; established tunnels stay
+     * on their current carrier and any later reconnect obtains a fresh Website grant.
+     *
+     * @return the new monotonically increasing network generation
+     */
+    public long networkChanged() {
+        synchronized (networkLock) {
+            if (closed.get()) return networkGeneration;
+            long next = Math.addExact(networkGeneration, 1);
+            coordinator.updateNetworkGeneration(next);
+            networkGeneration = next;
+            return next;
+        }
+    }
+
+    public long networkGeneration() {
+        synchronized (networkLock) {
+            return networkGeneration;
+        }
     }
 
     public CompletionStage<Void> shutdown() {
