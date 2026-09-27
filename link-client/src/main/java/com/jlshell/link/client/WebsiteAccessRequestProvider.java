@@ -47,6 +47,10 @@ public final class WebsiteAccessRequestProvider implements ReauthorizingConnecti
     public CompletionStage<ReauthorizingConnectionFlow.AuthorizedTunnel> request(
             Optional<LinkSessionId> reuseSessionId, UUID agentId, TargetEndpoint target, ConnectPolicy policy) {
         Objects.requireNonNull(reuseSessionId, "reuseSessionId");
+        if (reuseSessionId.isPresent()) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException(
+                    "Link direct signaling requires a fresh Website session for every target tunnel"));
+        }
         Objects.requireNonNull(agentId, "agentId");
         Objects.requireNonNull(target, "target");
         Objects.requireNonNull(policy, "policy");
@@ -92,6 +96,87 @@ public final class WebsiteAccessRequestProvider implements ReauthorizingConnecti
                 throw new java.util.concurrent.CompletionException(error);
             }
         }, worker));
+    }
+
+    @Override
+    public CompletionStage<Void> closeSession(LinkSessionId sessionId) {
+        Objects.requireNonNull(sessionId, "sessionId");
+        return controlCredential.get().thenCompose(credential -> {
+            if (credential == null || credential.isBlank() || credential.length() > 4096) {
+                return CompletableFuture.failedFuture(new IllegalStateException(
+                        "Host did not provide a valid Link control credential"));
+            }
+            HttpRequest request = HttpRequest.newBuilder(websiteOrigin.resolve(
+                            "/api/v2/link/sessions/" + sessionId.value() + "/close"))
+                    .timeout(timeout)
+                    .header("X-Link-Control-Credential", credential)
+                    .POST(HttpRequest.BodyPublishers.noBody())
+                    .build();
+            return http.sendAsync(request, HttpResponse.BodyHandlers.discarding()).thenApply(response -> {
+                if (response.statusCode() != 204) {
+                    throw new java.util.concurrent.CompletionException(
+                            new AccessRequestException(response.statusCode()));
+                }
+                return null;
+            });
+        });
+    }
+
+    /** Activates the prepared Website Relay quota before the Agent may pair a fallback path. */
+    public CompletionStage<Void> activateRelay(LinkSessionId sessionId) {
+        Objects.requireNonNull(sessionId, "sessionId");
+        return controlCredential.get().thenCompose(credential -> {
+            if (credential == null || credential.isBlank() || credential.length() > 4096) {
+                return CompletableFuture.failedFuture(new IllegalStateException(
+                        "Host did not provide a valid Link control credential"));
+            }
+            HttpRequest request = HttpRequest.newBuilder(websiteOrigin.resolve(
+                            "/api/v2/link/sessions/" + sessionId.value() + "/relay-activation"))
+                    .timeout(timeout)
+                    .header("X-Link-Control-Credential", credential)
+                    .POST(HttpRequest.BodyPublishers.noBody())
+                    .build();
+            return http.sendAsync(request, HttpResponse.BodyHandlers.ofInputStream()).thenApply(response -> {
+                try (InputStream stream = response.body()) {
+                    byte[] bytes = stream.readNBytes(16_385);
+                    if (bytes.length > 16_384 || response.statusCode() != 200) {
+                        throw new AccessRequestException(response.statusCode());
+                    }
+                    var body = JSONObjectUtils.parse(new String(bytes, StandardCharsets.UTF_8));
+                    if (!sessionId.value().equals(JSONObjectUtils.getString(body, "sessionId"))
+                            || !"ACTIVE".equals(JSONObjectUtils.getString(body, "state"))) {
+                        throw new SecurityException("Website did not activate the expected Relay reservation");
+                    }
+                    return null;
+                } catch (IOException | ParseException invalid) {
+                    throw new java.util.concurrent.CompletionException(invalid);
+                }
+            });
+        });
+    }
+
+    /** Releases an unused parallel Relay reservation when the direct carrier wins. */
+    public CompletionStage<Void> releaseUnusedRelay(LinkSessionId sessionId) {
+        Objects.requireNonNull(sessionId, "sessionId");
+        return controlCredential.get().thenCompose(credential -> {
+            if (credential == null || credential.isBlank() || credential.length() > 4096) {
+                return CompletableFuture.failedFuture(new IllegalStateException(
+                        "Host did not provide a valid Link control credential"));
+            }
+            HttpRequest request = HttpRequest.newBuilder(websiteOrigin.resolve(
+                            "/api/v2/link/sessions/" + sessionId.value() + "/relay-release"))
+                    .timeout(timeout)
+                    .header("X-Link-Control-Credential", credential)
+                    .POST(HttpRequest.BodyPublishers.noBody())
+                    .build();
+            return http.sendAsync(request, HttpResponse.BodyHandlers.discarding()).thenApply(response -> {
+                if (response.statusCode() != 204) {
+                    throw new java.util.concurrent.CompletionException(
+                            new AccessRequestException(response.statusCode()));
+                }
+                return null;
+            });
+        });
     }
 
     private static URI validateOrigin(URI uri) {

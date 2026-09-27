@@ -243,6 +243,7 @@ public final class ConnectionCoordinator implements AutoCloseable {
         private volatile LinkFailure directFailure;
         private volatile LinkPath activePath;
         private volatile long activeStartedAt;
+        private volatile ParallelRace parallelRace;
 
         private Operation(Config config, ConnectPolicy policy, long generation,
                 TargetRequest targetRequest, CarrierConnector direct, CarrierConnector relay,
@@ -258,8 +259,177 @@ public final class ConnectionCoordinator implements AutoCloseable {
         }
 
         private void start() {
-            LinkPath first = policy == ConnectPolicy.RELAY_ONLY ? LinkPath.RELAY : LinkPath.DIRECT;
-            tryPath(first);
+            if (policy == ConnectPolicy.AUTO) {
+                ParallelRace race = new ParallelRace();
+                parallelRace = race;
+                race.start();
+            } else {
+                tryPath(policy == ConnectPolicy.RELAY_ONLY ? LinkPath.RELAY : LinkPath.DIRECT);
+            }
+        }
+
+        /** Starts both secure carriers together, then opens the target on exactly one winner. */
+        private final class ParallelRace {
+            private final AtomicReference<LinkPath> winner = new AtomicReference<>();
+            private final java.util.concurrent.ConcurrentHashMap<LinkPath, RaceAttempt> attempts =
+                    new java.util.concurrent.ConcurrentHashMap<>();
+            private final java.util.concurrent.atomic.AtomicInteger failures =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            private final AtomicReference<LinkFailure> directError = new AtomicReference<>();
+            private final AtomicReference<LinkFailure> relayError = new AtomicReference<>();
+
+            private void start() {
+                launch(LinkPath.DIRECT);
+                if (!result.isDone() && winner.get() == null) launch(LinkPath.RELAY);
+            }
+
+            private void launch(LinkPath path) {
+                if (result.isDone() || winner.get() != null) return;
+                CarrierConnector connector = path == LinkPath.DIRECT ? direct : relay;
+                Duration timeout = path == LinkPath.DIRECT ? config.directTimeout() : config.relayTimeout();
+                RaceAttempt attempt = new RaceAttempt(path, new AttemptContextImpl(generation,
+                        config.maxCandidates()));
+                attempts.put(path, attempt);
+                CompletionStage<? extends SecureCarrier> setup;
+                try {
+                    setup = Objects.requireNonNull(connector.connect(attempt.context),
+                            "connector returned null stage");
+                } catch (RuntimeException error) {
+                    onFailure(attempt, error, false);
+                    return;
+                }
+
+                CompletableFuture<SecureCarrier> bounded = new CompletableFuture<>();
+                try {
+                    attempt.timer = scheduler.schedule(() -> {
+                        bounded.completeExceptionally(new LinkFailure(
+                                path == LinkPath.DIRECT ? "direct.timeout" : "relay.timeout",
+                                path == LinkPath.DIRECT ? LinkFailure.Category.DIRECT_TIMEOUT
+                                        : LinkFailure.Category.TRANSIENT_NETWORK,
+                                "Secure carrier setup timed out"));
+                        attempt.context.cancel();
+                    }, timeout.toNanos(), TimeUnit.NANOSECONDS);
+                } catch (RuntimeException schedulerFailure) {
+                    onFailure(attempt, new LinkFailure("coordinator.timeout_unavailable",
+                            LinkFailure.Category.PROTOCOL, "Carrier timeout could not be scheduled"), false);
+                    return;
+                }
+                setup.whenComplete((carrier, error) -> {
+                    if (error != null) {
+                        bounded.completeExceptionally(unwrap(error));
+                    } else if (carrier == null) {
+                        bounded.completeExceptionally(new LinkFailure("carrier.empty",
+                                LinkFailure.Category.PROTOCOL, "Carrier connector returned no carrier"));
+                    } else {
+                        LinkPath actualPath;
+                        try { actualPath = carrier.path(); }
+                        catch (RuntimeException invalid) {
+                            closeQuietly(carrier);
+                            bounded.completeExceptionally(new LinkFailure("carrier.invalid",
+                                    LinkFailure.Category.PROTOCOL, "Carrier metadata could not be read"));
+                            return;
+                        }
+                        if (actualPath != path) {
+                            closeQuietly(carrier);
+                            bounded.completeExceptionally(new LinkFailure("carrier.path_mismatch",
+                                    LinkFailure.Category.PROTOCOL, "Carrier path did not match its connector"));
+                        } else if (!bounded.complete(carrier)) {
+                            closeQuietly(carrier);
+                        }
+                    }
+                });
+                bounded.whenComplete((carrier, error) -> {
+                    ScheduledFuture<?> timer = attempt.timer;
+                    if (timer != null) timer.cancel(false);
+                    if (error != null) onFailure(attempt, unwrap(error), isSetupTimeout(error));
+                    else onReady(attempt, carrier);
+                });
+            }
+
+            private void onReady(RaceAttempt attempt, SecureCarrier carrier) {
+                if (!attempt.finished.compareAndSet(false, true)) {
+                    closeQuietly(carrier);
+                    return;
+                }
+                if (result.isDone()) {
+                    closeQuietly(carrier);
+                    return;
+                }
+                if (!winner.compareAndSet(null, attempt.path)) {
+                    closeQuietly(carrier);
+                    return;
+                }
+                activeContext.set(attempt.context);
+                activePath = attempt.path;
+                activeStartedAt = attempt.startedAt;
+                selectedCarrier.set(carrier);
+                notifyObserver(attempt.path, PathOutcome.READY, attempt.startedAt, null);
+                cancelLosers(attempt.path);
+                openTarget(attempt.path, carrier, attempt.context);
+            }
+
+            private void onFailure(RaceAttempt attempt, Throwable error, boolean timedOut) {
+                if (!attempt.finished.compareAndSet(false, true)) return;
+                attempt.context.cancel();
+                LinkFailure failure = asLinkFailure(attempt.path, error, timedOut);
+                PathOutcome outcome = error instanceof CancellationException
+                        || failure.category() == LinkFailure.Category.CANCELLED
+                        ? PathOutcome.CANCELLED : timedOut ? PathOutcome.TIMED_OUT : PathOutcome.FAILED;
+                notifyObserver(attempt.path, outcome, attempt.startedAt, failure);
+                if (result.isDone() || winner.get() != null) return;
+                if (attempt.path == LinkPath.DIRECT) {
+                    directError.set(failure);
+                    if (!failure.retryableAcrossPath()) {
+                        finishFailure(failure);
+                        return;
+                    }
+                } else {
+                    relayError.set(failure);
+                }
+                if (failures.incrementAndGet() == 2 && winner.get() == null) {
+                    LinkFailure directFailure = directError.get();
+                    LinkFailure relayFailure = relayError.get();
+                    if (relayFailure != null && directFailure != null) relayFailure.addSuppressed(directFailure);
+                    finishFailure(relayFailure == null ? directFailure : relayFailure);
+                }
+            }
+
+            private void cancelLosers(LinkPath selected) {
+                attempts.values().stream().filter(attempt -> attempt.path != selected).forEach(attempt -> {
+                    if (!attempt.finished.compareAndSet(false, true)) return;
+                    ScheduledFuture<?> timer = attempt.timer;
+                    if (timer != null) timer.cancel(false);
+                    attempt.context.cancel();
+                    notifyObserver(attempt.path, PathOutcome.CANCELLED, attempt.startedAt,
+                            new LinkFailure("connection.path_not_selected", LinkFailure.Category.CANCELLED,
+                                    "Another secure path became ready first"));
+                });
+            }
+
+            private void cancelAll() {
+                attempts.values().forEach(attempt -> {
+                    if (!attempt.finished.compareAndSet(false, true)) return;
+                    ScheduledFuture<?> timer = attempt.timer;
+                    if (timer != null) timer.cancel(false);
+                    attempt.context.cancel();
+                    notifyObserver(attempt.path, PathOutcome.CANCELLED, attempt.startedAt,
+                            new LinkFailure("connection.cancelled", LinkFailure.Category.CANCELLED,
+                                    "Connection attempt was cancelled"));
+                });
+            }
+
+            private final class RaceAttempt {
+                private final LinkPath path;
+                private final AttemptContextImpl context;
+                private final long startedAt = System.nanoTime();
+                private final AtomicBoolean finished = new AtomicBoolean();
+                private volatile ScheduledFuture<?> timer;
+
+                private RaceAttempt(LinkPath path, AttemptContextImpl context) {
+                    this.path = path;
+                    this.context = context;
+                }
+            }
         }
 
         private void tryPath(LinkPath path) {
@@ -435,6 +605,8 @@ public final class ConnectionCoordinator implements AutoCloseable {
         }
 
         private void finishFailure(Throwable failure) {
+            ParallelRace race = parallelRace;
+            if (race != null) race.cancelAll();
             SecureCarrier carrier = selectedCarrier.getAndSet(null);
             if (carrier != null) closeQuietly(carrier);
             result.completeExceptionally(failure);
@@ -460,6 +632,8 @@ public final class ConnectionCoordinator implements AutoCloseable {
                 }
                 AttemptContextImpl context = activeContext.getAndSet(null);
                 if (context != null) context.cancel();
+                ParallelRace race = parallelRace;
+                if (race != null) race.cancelAll();
                 SecureCarrier carrier = selectedCarrier.getAndSet(null);
                 if (carrier != null) closeQuietly(carrier);
                 result.completeExceptionally(new LinkFailure("connection.cancelled",

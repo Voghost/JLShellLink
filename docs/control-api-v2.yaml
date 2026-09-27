@@ -257,6 +257,20 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/RelayReservation' }
         '429': { $ref: '#/components/responses/QuotaExceeded' }
+  /api/v2/link/sessions/{sessionId}/relay-release:
+    post:
+      operationId: releaseUnusedRelay
+      description: Settles bytes already forwarded and closes the Relay carrier when a direct path wins before target CONNECT.
+      security:
+        - linkControlCredential: []
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: Unused Relay reservation released }
+        '409': { description: Relay reservation is no longer active }
   /api/v2/link/sessions/{sessionId}/close:
     post:
       operationId: closeSession

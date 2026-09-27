@@ -41,7 +41,6 @@ public final class LinkClientEngine implements AutoCloseable {
     private final ConnectionCoordinator coordinator;
     private final Object networkLock = new Object();
     private long networkGeneration;
-    private final ConcurrentHashMap<UUID, ReauthorizingConnectionFlow> flows = new ConcurrentHashMap<>();
     private final Set<CompletableFuture<LocalTunnelLease>> pending = ConcurrentHashMap.newKeySet();
     private final Set<LocalTunnelLease> leases = ConcurrentHashMap.newKeySet();
     private final Semaphore permits;
@@ -97,8 +96,9 @@ public final class LinkClientEngine implements AutoCloseable {
         }
         CompletableFuture<LocalTunnelLease> result = new CompletableFuture<>();
         pending.add(result);
-        ReauthorizingConnectionFlow flow = flows.computeIfAbsent(request.agentId(),
-                ignored -> new ReauthorizingConnectionFlow(coordinator, Clock.systemUTC()));
+        // One Website session maps to one signaling generation and one target tunnel.
+        // A fresh flow per open prevents concurrent targets from invalidating each other's ICE sessions.
+        ReauthorizingConnectionFlow flow = new ReauthorizingConnectionFlow(coordinator, Clock.systemUTC());
         CompletionStage<ConnectionCoordinator.Connection> connecting;
         try {
             long generation;
@@ -121,6 +121,7 @@ public final class LinkClientEngine implements AutoCloseable {
             if (error != null || result.isDone() || closed.get() || !current) {
                 if (!current) close();
                 if (connection != null) connection.close();
+                flow.closeSession();
                 permits.release();
                 if (!result.isDone()) result.completeExceptionally(error == null
                         ? new SecurityException("Link engine or account scope changed") : error);
@@ -135,7 +136,10 @@ public final class LinkClientEngine implements AutoCloseable {
                             connection, listener, permits::release);
                     leases.add(lease);
                     LocalTunnelLease activeLease = lease;
-                    lease.closed().whenComplete((ignored, failure) -> leases.remove(activeLease));
+                    lease.closed().whenComplete((ignored, failure) -> {
+                        leases.remove(activeLease);
+                        flow.closeSession();
+                    });
                     lease.start();
                     connection.channel().closed().whenComplete((ignored, failure) -> activeLease.close());
                     if (!result.complete(lease)) lease.close();
@@ -147,6 +151,7 @@ public final class LinkClientEngine implements AutoCloseable {
                 if (lease != null) lease.close();
                 else {
                     connection.close();
+                    flow.closeSession();
                     permits.release();
                 }
                 result.completeExceptionally(failure);
@@ -198,7 +203,6 @@ public final class LinkClientEngine implements AutoCloseable {
         leases.forEach(LocalTunnelLease::close);
         coordinator.close();
         scheduler.shutdownNow();
-        flows.clear();
     }
 
     /** A scope is bound to one Website, account, A identity and protocol generation. */

@@ -63,6 +63,36 @@ class ConnectionCoordinatorTest {
     }
 
     @Test
+    void autoPreparesBothPathsAndClosesTheLateUnselectedCarrier() throws Exception {
+        CompletableFuture<ConnectionCoordinator.SecureCarrier> directPending = new CompletableFuture<>();
+        CompletableFuture<ConnectionCoordinator.SecureCarrier> relayPending = new CompletableFuture<>();
+        AtomicInteger directCalls = new AtomicInteger();
+        AtomicInteger relayCalls = new AtomicInteger();
+        AtomicInteger targetCalls = new AtomicInteger();
+        DummyCarrier direct = new DummyCarrier(LinkPath.DIRECT);
+        DummyCarrier lateRelay = new DummyCarrier(LinkPath.RELAY);
+        var attempt = connect(ConnectPolicy.AUTO,
+                context -> { directCalls.incrementAndGet(); return directPending; },
+                context -> { relayCalls.incrementAndGet(); return relayPending; },
+                (carrier, request, context) -> {
+                    targetCalls.incrementAndGet();
+                    assertEquals(direct, carrier);
+                    return CompletableFuture.completedFuture(new DummyTunnel());
+                });
+
+        assertEquals(1, directCalls.get());
+        assertEquals(1, relayCalls.get());
+        directPending.complete(direct);
+        ConnectionCoordinator.Connection connection = attempt.result().toCompletableFuture()
+                .get(2, TimeUnit.SECONDS);
+        relayPending.complete(lateRelay);
+        assertEquals(LinkPath.DIRECT, connection.path());
+        assertEquals(1, targetCalls.get());
+        assertTrue(lateRelay.closed);
+        connection.close();
+    }
+
+    @Test
     void autoFallsBackOnlyForRetryableDirectNetworkFailure() throws Exception {
         AtomicInteger targetCalls = new AtomicInteger();
         List<ConnectionCoordinator.PathAttemptEvent> events = new ArrayList<>();
@@ -199,12 +229,14 @@ class ConnectionCoordinatorTest {
     @Test
     void networkGenerationChangeCancelsPendingPathAndRejectsLateCandidate() throws Exception {
         CompletableFuture<ConnectionCoordinator.SecureCarrier> directPending = new CompletableFuture<>();
+        CompletableFuture<ConnectionCoordinator.SecureCarrier> relayPending = new CompletableFuture<>();
         AtomicInteger relayCalls = new AtomicInteger();
         AtomicInteger targetCalls = new AtomicInteger();
         AtomicReferenceHolder<ConnectionCoordinator.AttemptContext> context = new AtomicReferenceHolder<>();
+        AtomicReferenceHolder<ConnectionCoordinator.AttemptContext> relayContext = new AtomicReferenceHolder<>();
         ConnectionCoordinator.ConnectionAttempt attempt = connect(ConnectPolicy.AUTO,
                 current -> { context.value = current; return directPending; },
-                current -> { relayCalls.incrementAndGet(); return CompletableFuture.completedFuture(new DummyCarrier(LinkPath.RELAY)); },
+                current -> { relayCalls.incrementAndGet(); relayContext.value = current; return relayPending; },
                 (carrier, request, current) -> {
                     targetCalls.incrementAndGet();
                     return CompletableFuture.completedFuture(new DummyTunnel());
@@ -213,11 +245,15 @@ class ConnectionCoordinatorTest {
         coordinator.updateNetworkGeneration(5);
         assertEquals(4, attempt.networkGeneration());
         assertTrue(context.value.cancellation().isCancelled());
+        assertTrue(relayContext.value.cancellation().isCancelled());
         assertEquals(LinkFailure.Category.CANCELLED, failure(attempt).category());
         DummyCarrier late = new DummyCarrier(LinkPath.DIRECT);
+        DummyCarrier lateRelay = new DummyCarrier(LinkPath.RELAY);
         directPending.complete(late);
+        relayPending.complete(lateRelay);
         assertTrue(late.closed);
-        assertEquals(0, relayCalls.get());
+        assertTrue(lateRelay.closed);
+        assertEquals(1, relayCalls.get());
         assertEquals(0, targetCalls.get());
     }
 
