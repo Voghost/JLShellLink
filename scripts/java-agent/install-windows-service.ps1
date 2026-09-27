@@ -21,6 +21,7 @@ $wrapperSha256 = '05b82d46ad331cc16bdc00de5c6332c1ef818df8ceefcd49c726553209b3a0
 $wrapperPath = Join-Path $programRoot 'JLShellLinkAgent.exe'
 $wrapperXml = Join-Path $programRoot 'JLShellLinkAgent.xml'
 $serviceSid = "NT SERVICE\$serviceId"
+$packageRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 
 function Fail([string]$Message) { throw "JLShell Link Agent: $Message" }
 function Xml([string]$Value) { [System.Security.SecurityElement]::Escape($Value) }
@@ -81,9 +82,16 @@ switch ($Action) {
         if (Get-Service -Name $serviceId -ErrorAction SilentlyContinue) {
             Fail '服务已存在；请先执行 uninstall，再重新安装。'
         }
-        $java = (Get-Command java.exe -ErrorAction Stop).Source
         New-Item -ItemType Directory -Force $programRoot, $dataRoot, $stateRoot, (Join-Path $dataRoot 'logs') | Out-Null
         Copy-Item -Force (Join-Path $PSScriptRoot '..\..\link-agent.jar') (Join-Path $programRoot 'link-agent.jar')
+        $runtimeSource = Join-Path $packageRoot 'runtime'
+        if (Test-Path (Join-Path $runtimeSource 'bin\java.exe')) {
+            Copy-Item -Recurse -Force $runtimeSource (Join-Path $programRoot 'runtime')
+            $java = Join-Path $programRoot 'runtime\bin\java.exe'
+        }
+        else {
+            $java = (Get-Command java.exe -ErrorAction Stop).Source
+        }
         $registrationFiles = @('agent.properties', 'agent.credential', 'node-key.ed25519')
         $existingRegistrationFiles = @($registrationFiles | Where-Object {
             Test-Path (Join-Path $stateRoot $_)

@@ -7,6 +7,7 @@ APP_DIR="$HOME/.local/lib/jlshell-link-agent"
 ENV_FILE="$CONFIG_DIR/agent.env"
 UNIT_NAME=jlshell-link-agent
 PLIST_NAME=com.jlshell.link.agent
+PACKAGE_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
 
 fail() { printf '安装失败：%s\n' "$*" >&2; exit 1; }
 quote_shell() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
@@ -26,9 +27,25 @@ case "$ACTION" in
             && [ -f "$ALLOWED_TARGETS" ] || fail 'JAR、TLS 文件或目标白名单不存在'
         case "$WSS_URI" in wss://*) ;; *) fail 'WSS 地址必须以 wss:// 开头' ;; esac
         case "$TICKET_ISSUER" in ''|https://*) ;; *) fail '票据签发者必须以 https:// 开头' ;; esac
+        if [ -n "${JLSHELL_LINK_JAVA:-}" ]; then
+            BUNDLED_JAVA=$JLSHELL_LINK_JAVA
+            command -v "$BUNDLED_JAVA" >/dev/null 2>&1 || fail 'JLSHELL_LINK_JAVA 不可执行'
+        elif [ -d "$PACKAGE_ROOT/runtime" ]; then
+            [ -x "$PACKAGE_ROOT/runtime/bin/java" ] || fail '发布包内的 Java 21 runtime 不完整'
+            BUNDLED_JAVA="$APP_DIR/runtime/bin/java"
+        else
+            BUNDLED_JAVA=${JLSHELL_LINK_JAVA:-java}
+            command -v "$BUNDLED_JAVA" >/dev/null 2>&1 || fail '需要 Java 21；请使用包含 runtime 的发布包或设置 JLSHELL_LINK_JAVA'
+        fi
         mkdir -p "$CONFIG_DIR" "$APP_DIR" "$HOME/.local/state/jlshell-link-agent" "$HOME/.local/share/jlshell-link-agent/logs"
         chmod 700 "$CONFIG_DIR" "$APP_DIR" "$HOME/.local/state/jlshell-link-agent" "$HOME/.local/share/jlshell-link-agent/logs"
         install -m 600 "$JAR" "$APP_DIR/link-agent.jar"
+        if [ -d "$PACKAGE_ROOT/runtime" ]; then
+            rm -rf "$APP_DIR/runtime.new"
+            cp -R "$PACKAGE_ROOT/runtime" "$APP_DIR/runtime.new"
+            rm -rf "$APP_DIR/runtime"
+            mv "$APP_DIR/runtime.new" "$APP_DIR/runtime"
+        fi
         {
             printf 'export JLSHELL_LINK_AGENT_JAR=%s\n' "$(quote_shell "$APP_DIR/link-agent.jar")"
             printf 'export JLSHELL_LINK_STATE_DIR=%s\n' "$(quote_shell "$HOME/.local/state/jlshell-link-agent")"
@@ -37,7 +54,7 @@ case "$ACTION" in
             printf 'export JLSHELL_LINK_TLS_PASSWORD_FILE=%s\n' "$(quote_shell "$TLS_PASSWORD")"
             printf 'export JLSHELL_LINK_ALLOWED_TARGETS=%s\n' "$(quote_shell "$ALLOWED_TARGETS")"
             [ -z "$TICKET_ISSUER" ] || printf 'export JLSHELL_LINK_TICKET_ISSUER=%s\n' "$(quote_shell "$TICKET_ISSUER")"
-            [ -z "${JLSHELL_LINK_JAVA:-}" ] || printf 'export JAVA=%s\n' "$(quote_shell "$JLSHELL_LINK_JAVA")"
+            printf 'export JAVA=%s\n' "$(quote_shell "$BUNDLED_JAVA")"
             [ -z "${JLSHELL_LINK_JAVA_TOOL_OPTIONS:-}" ] || \
                 printf 'export JAVA_TOOL_OPTIONS=%s\n' "$(quote_shell "$JLSHELL_LINK_JAVA_TOOL_OPTIONS")"
         } >"$ENV_FILE"

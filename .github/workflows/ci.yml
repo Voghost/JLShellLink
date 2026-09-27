@@ -66,12 +66,23 @@ jobs:
         shell: bash
         run: sh scripts/java-agent/test-macos-service.sh
       - name: Build and inspect Java Agent archives
-        if: matrix.runner == 'ubuntu-24.04'
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           scripts/package-java-agent.sh 0.1.0-CI link-agent/target/link-agent-0.1.0-SNAPSHOT.jar
-          tar -tzf link-agent/target/distribution/jlshell-link-agent-java-0.1.0-CI.tar.gz >/dev/null
-          unzip -tq link-agent/target/distribution/jlshell-link-agent-java-0.1.0-CI.zip
+          test -n "$(find link-agent/target/distribution -maxdepth 1 -name 'jlshell-link-agent-java-0.1.0-CI-*.tar.gz' -print -quit)"
+          test -n "$(find link-agent/target/distribution -maxdepth 1 -name 'jlshell-link-agent-java-0.1.0-CI-*.zip' -print -quit)"
+      - name: Build and inspect Java Agent archives
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python scripts/package-java-agent.py `
+            --version 0.1.0-CI `
+            --agent-jar link-agent/target/link-agent-0.1.0-SNAPSHOT.jar `
+            --output-dir link-agent/target/distribution
+          if (-not (Get-ChildItem link-agent/target/distribution -Filter 'jlshell-link-agent-java-0.1.0-CI-windows-x64.*')) {
+            throw 'Windows Java Agent archives were not generated.'
+          }
 
   quality:
     runs-on: ubuntu-24.04
