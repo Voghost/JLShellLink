@@ -11,6 +11,8 @@
 - 选中候选对后返回 `IceSelectedDatagramPath` 和 `DIRECT` `PATH_READY` 消息；关闭会释放 ICE Agent、定时器和数据报接收适配器。
 - Link 实现不主动记录 ICE credentials、候选地址或 STUN 地址；对应信号和配置的默认 `toString()` 也会脱敏。ice4j 的可选 AWS 地址映射器在初始化前关闭；Link 候选由显式配置的 STUN server 收集。发布前仍需检查 ice4j 自身日志及最终日志配置。
 
+`maxCandidates` 限制信令发布和远端候选输入数量；ice4j 会先按本机可用网卡收集候选并绑定 socket，再由 Link 过滤和限制发布数量。因此本类尚未对 ice4j 初始绑定的 socket 数量提供硬上限，这项资源预算需在后续运行时集成和平台验收中处理。
+
 `link-transport/pom.xml` 将固定版本的 `org.jitsi:ice4j:3.2-17-geea6cd3` 从测试依赖提升为运行依赖。上游许可证为 Apache-2.0，来源为 [ice4j 上游仓库](https://github.com/jitsi/ice4j)；编译依赖树包括 `java-sdp-nist-bridge`、`weupnp`、`jitsi-utils` 和 `jicoco-config` 及其编译传递依赖。最终发行物仍需逐项核对所有传递依赖许可证。
 
 ## 完成边界
