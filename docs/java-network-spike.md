@@ -73,7 +73,7 @@
 | 组件 | 固定候选 | 许可证 | 当前决策 |
 |---|---|---|---|
 | Netty | `4.2.18.Final` | Apache-2.0 | 原型 BOM 固定；正式使用前继续检查目标平台与许可证清单。KCP 间接引入的 `netty-all` 已排除并完成真实跨 NAT 复跑。 |
-| ice4j | `org.jitsi:ice4j:3.2-17-geea6cd3` | Apache-2.0 | 固定在测试候选 profile，运行依赖不引入 ICE agent；`IceSelectedDatagramPath` 只接收 nomination 结果和组件应用 socket。Windows 真网卡 ICE 与长期运行仍待验收。 |
+| ice4j | `org.jitsi:ice4j:3.2-17-geea6cd3` | Apache-2.0 | NET-02 已提升为 `link-transport` 编译/运行依赖，用于正式 ICE generation 候选交换与 nomination；客户端/Agent 接线、Windows 真网卡和长期运行仍待验收。 |
 | Java KCP | `com.github.l42111996:kcp-base:1.6` | Apache-2.0 | NET-01 已提升为 `link-transport` 编译/运行依赖。依赖树为 `kcp-fec:1.6`、`jctools-core:3.0.0`、`slf4j-api:1.7.30`、`slf4j-simple:1.7.30`；`netty-all` 已排除。当前数据面只用 `Kcp`/`KcpOutput`，不加载 JNI/native 代码；上游版本较旧，更新前需重新做互通与丢包测试。 |
 | Bouncy Castle PKIX | `org.bouncycastle:bcpkix-jdk18on:1.86`，传递依赖版本统一为 `1.86` | Bouncy Castle License | `link-core` 的运行依赖，用于为 A 已有 Ed25519 节点密钥生成自签 TLS 客户端证书；签名与密钥算法仍由 Java 21 JCA 执行，不全局注册额外 Provider。来源和证书生成 API 见 [Maven Central 元数据](https://central.sonatype.com/artifact/org.bouncycastle/bcpkix-jdk18on) 与 [官方 X509v3CertificateBuilder API](https://downloads.bouncycastle.org/java/docs/bcpkix-jdk18on-javadoc/org/bouncycastle/cert/X509v3CertificateBuilder.html)。 |
 | Bouncy Castle PKIX | `org.bouncycastle:bcpkix-jdk18on:1.86`，传递依赖版本统一为 `1.86` | Bouncy Castle License | `link-core` 的运行依赖，用于为 A 已有 Ed25519 节点密钥生成自签 TLS 客户端证书；签名与密钥算法仍由 Java 21 JCA 执行，不全局注册额外 Provider。来源和证书生成 API 见 [Maven Central 元数据](https://central.sonatype.com/artifact/org.bouncycastle/bcpkix-jdk18on) 与 [官方 X509v3CertificateBuilder API](https://downloads.bouncycastle.org/java/docs/bcpkix-jdk18on-javadoc/org/bouncycastle/cert/X509v3CertificateBuilder.html)。 |
