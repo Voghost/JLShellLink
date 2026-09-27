@@ -132,7 +132,8 @@ public final class AgentApplication {
             Ed25519NodeKey key = identity.loadOrCreateKey();
             AgentEnrollmentClient.Registration registration = new AgentEnrollmentClient(
                     Duration.ofSeconds(10), Duration.ofSeconds(20), new NodeProofService())
-                    .register(website, agentId, token, platform(), architecture(), "0.1.0-SNAPSHOT", identity, key);
+                    .register(website, agentId, token, platform(), architecture(),
+                            implementationVersion(), identity, key);
             System.out.println("Agent 注册完成");
             System.out.println("Agent ID：" + registration.agentId());
             System.out.println("公钥指纹：" + registration.keyFingerprint().value());
@@ -181,6 +182,11 @@ public final class AgentApplication {
 
     private static String architecture() {
         return System.getProperty("os.arch", "unknown").toLowerCase(java.util.Locale.ROOT);
+    }
+
+    static String implementationVersion() {
+        String version = AgentApplication.class.getPackage().getImplementationVersion();
+        return version == null || version.isBlank() ? "0.0.0-SNAPSHOT" : version;
     }
 
     private static void printUsage() {
