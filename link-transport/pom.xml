@@ -50,6 +50,11 @@
             </exclusions>
         </dependency>
         <dependency>
+            <groupId>org.jitsi</groupId>
+            <artifactId>ice4j</artifactId>
+            <version>${ice4j.version}</version>
+        </dependency>
+        <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
             <scope>test</scope>
@@ -65,20 +70,4 @@
         </plugins>
     </build>
 
-    <profiles>
-        <profile>
-            <id>network-poc-candidates</id>
-            <activation>
-                <activeByDefault>true</activeByDefault>
-            </activation>
-            <dependencies>
-                <dependency>
-                    <groupId>org.jitsi</groupId>
-                    <artifactId>ice4j</artifactId>
-                    <version>${ice4j.version}</version>
-                    <scope>test</scope>
-                </dependency>
-            </dependencies>
-        </profile>
-    </profiles>
 </project>

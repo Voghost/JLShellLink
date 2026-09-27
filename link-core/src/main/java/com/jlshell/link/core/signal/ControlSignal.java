@@ -80,6 +80,8 @@ public sealed interface ControlSignal permits ControlSignal.SessionInvite,
                 throw new IllegalArgumentException("candidate foundation is invalid");
             }
         }
+
+        @Override public String toString() { return "IceCandidate[<redacted>]"; }
     }
 
     record IceEnd(UUID messageId, LinkSessionId sessionId, long generation) implements ControlSignal {
