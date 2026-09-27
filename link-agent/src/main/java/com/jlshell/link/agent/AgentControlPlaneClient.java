@@ -1,6 +1,7 @@
 package com.jlshell.link.agent;
 
 import com.jlshell.link.core.model.NodeKeyFingerprint;
+import com.jlshell.link.core.model.TargetEndpoint;
 import com.nimbusds.jose.util.JSONArrayUtils;
 import com.nimbusds.jose.util.JSONObjectUtils;
 import java.io.IOException;
@@ -137,6 +138,65 @@ public final class AgentControlPlaneClient implements AutoCloseable {
         }
     }
 
+    public List<ConnectivityDiagnosticRequest> claimConnectivityDiagnostics(String credential,
+            UUID controlSessionId) throws IOException, InterruptedException {
+        requireCredential(credential);
+        Objects.requireNonNull(controlSessionId, "controlSessionId");
+        String json = "{\"controlSessionId\":" + quote(controlSessionId.toString()) + "}";
+        HttpRequest request = HttpRequest.newBuilder(endpoint("/api/v2/link/agent-connectivity-diagnostics/claim"))
+                .timeout(requestTimeout)
+                .header("X-Agent-Token", credential)
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(json))
+                .build();
+        String response = send(request, 200);
+        try {
+            List<Object> values = JSONArrayUtils.parse(response);
+            if (values.size() > 1) throw new IOException("Website returned too many diagnostic requests");
+            List<ConnectivityDiagnosticRequest> requests = new ArrayList<>(values.size());
+            for (Object value : values) {
+                if (!(value instanceof java.util.Map<?, ?> raw)) throw new IOException("Invalid diagnostic request");
+                @SuppressWarnings("unchecked")
+                java.util.Map<String, Object> entry = (java.util.Map<String, Object>) raw;
+                UUID id = UUID.fromString(JSONObjectUtils.getString(entry, "id"));
+                TargetEndpoint target = new TargetEndpoint(JSONObjectUtils.getString(entry, "targetIp"),
+                        JSONObjectUtils.getInt(entry, "targetPort"));
+                long policyVersion = JSONObjectUtils.getLong(entry, "policyVersion");
+                Instant expiresAt = Instant.parse(JSONObjectUtils.getString(entry, "expiresAt"));
+                if (policyVersion < 1 || !expiresAt.isAfter(Instant.now())) {
+                    throw new IOException("Website returned an expired diagnostic request");
+                }
+                requests.add(new ConnectivityDiagnosticRequest(id, target, policyVersion, expiresAt));
+            }
+            return List.copyOf(requests);
+        } catch (ParseException | IllegalArgumentException error) {
+            throw new IOException("Website diagnostic request response is invalid", error);
+        }
+    }
+
+    public void completeConnectivityDiagnostic(String credential, UUID controlSessionId,
+            UUID diagnosticId, ConnectivityDiagnosticResult result, long roundTripMillis)
+            throws IOException, InterruptedException {
+        requireCredential(credential);
+        Objects.requireNonNull(controlSessionId, "controlSessionId");
+        Objects.requireNonNull(diagnosticId, "diagnosticId");
+        Objects.requireNonNull(result, "result");
+        if (roundTripMillis < 0 || roundTripMillis > 5_000) {
+            throw new IllegalArgumentException("roundTripMillis is out of range");
+        }
+        String json = "{\"controlSessionId\":" + quote(controlSessionId.toString())
+                + ",\"resultCode\":" + quote(result.name())
+                + ",\"roundTripMillis\":" + roundTripMillis + "}";
+        HttpRequest request = HttpRequest.newBuilder(endpoint(
+                        "/api/v2/link/agent-connectivity-diagnostics/" + diagnosticId + "/result"))
+                .timeout(requestTimeout)
+                .header("X-Agent-Token", credential)
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(json))
+                .build();
+        send(request, 200);
+    }
+
     private String send(HttpRequest request, int expectedStatus) throws IOException, InterruptedException {
         HttpResponse<InputStream> response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
         try (InputStream body = response.body()) {
@@ -207,6 +267,20 @@ public final class AgentControlPlaneClient implements AutoCloseable {
                                    String clientKeyFingerprint, String agentKeyFingerprint,
                                    String targetIp, int targetPort, long policyVersion,
                                    Instant ticketExpiresAt, Instant authorizationLeaseExpiresAt) { }
+    public record ConnectivityDiagnosticRequest(UUID id, TargetEndpoint target,
+            long policyVersion, Instant expiresAt) {
+        public ConnectivityDiagnosticRequest {
+            Objects.requireNonNull(id, "id");
+            Objects.requireNonNull(target, "target");
+            if (policyVersion < 1) throw new IllegalArgumentException("policyVersion must be positive");
+            Objects.requireNonNull(expiresAt, "expiresAt");
+        }
+        @Override public String toString() { return "ConnectivityDiagnosticRequest[id=" + id + ", <target-redacted>]"; }
+    }
+    public enum ConnectivityDiagnosticResult {
+        CONNECTED, CONNECTION_REFUSED, TIMEOUT, NETWORK_UNREACHABLE, HOST_UNREACHABLE,
+        LOCAL_POLICY_DENIED, POLICY_CHANGED, CONNECT_FAILED, REQUEST_EXPIRED
+    }
 
     public static final class ApiException extends IOException {
         private final int statusCode;
