@@ -138,7 +138,8 @@ public final class SignalRouter implements AutoCloseable {
         try {
             ControlSignal.SessionInvite invite = new ControlSignal.SessionInvite(UUID.randomUUID(),
                     grant.sessionId(), generation.value(), grant.agentId(), grant.clientDeviceId(),
-                    grant.agentKeyFingerprint(), grant.clientKeyFingerprint(), grant.policyVersion(), grant.expiresAt());
+                    grant.agentKeyFingerprint(), grant.clientKeyFingerprint(), grant.policyVersion(), grant.expiresAt(),
+                    next.iceCredentialsNegotiated());
             agent.sink.send(invite);
             client.sink.send(invite);
         } catch (RuntimeException deliveryFailure) {
@@ -175,7 +176,11 @@ public final class SignalRouter implements AutoCloseable {
                 sessions.remove(signal.sessionId(), route);
                 throw new SecurityException("control session signal limit reached");
             }
-            route.validate(role, signal, maxCandidatesPerPeer);
+            boolean iceCredentialsNegotiated = route.iceCredentialsNegotiated();
+            if (signal instanceof ControlSignal.IceCredentials && !iceCredentialsNegotiated) {
+                throw new SecurityException("ICE credential exchange capability was not negotiated");
+            }
+            route.validate(role, signal, maxCandidatesPerPeer, iceCredentialsNegotiated);
             ControlConnection recipient = role == NodeRole.CLIENT ? route.agent : route.client;
             if (online.get(recipient.peer.nodeId()) != recipient) {
                 sessions.remove(signal.sessionId(), route);
@@ -270,7 +275,7 @@ public final class SignalRouter implements AutoCloseable {
     }
 
     public record ControlPeer(NodeRole role, UUID accountId, UUID nodeId, UUID agentId,
-                              NodeKeyFingerprint keyFingerprint) {
+                              NodeKeyFingerprint keyFingerprint, Set<String> capabilities) {
         public ControlPeer {
             if (role != NodeRole.CLIENT && role != NodeRole.AGENT) {
                 throw new IllegalArgumentException("control role must be CLIENT or AGENT");
@@ -278,12 +283,18 @@ public final class SignalRouter implements AutoCloseable {
             Objects.requireNonNull(accountId, "accountId");
             Objects.requireNonNull(nodeId, "nodeId");
             Objects.requireNonNull(keyFingerprint, "keyFingerprint");
+            capabilities = Set.copyOf(Objects.requireNonNull(capabilities, "capabilities"));
             if (role == NodeRole.AGENT && (agentId == null || !agentId.equals(nodeId))) {
                 throw new IllegalArgumentException("Agent node id must equal its Agent id");
             }
             if (role == NodeRole.CLIENT && agentId != null) {
                 throw new IllegalArgumentException("client control identity cannot be bound to one Agent");
             }
+        }
+
+        public ControlPeer(NodeRole role, UUID accountId, UUID nodeId, UUID agentId,
+                           NodeKeyFingerprint keyFingerprint) {
+            this(role, accountId, nodeId, agentId, keyFingerprint, Set.of());
         }
     }
 
@@ -314,6 +325,7 @@ public final class SignalRouter implements AutoCloseable {
         private final ControlConnection agent;
         private final Set<UUID> messageIds = new HashSet<>();
         private final Map<NodeRole, Set<UUID>> candidates = new HashMap<>();
+        private final Set<NodeRole> credentialsPublished = new HashSet<>();
         private final Set<NodeRole> iceEnded = new HashSet<>();
         private final Map<NodeRole, ControlSignal.PathReady> readyPaths = new HashMap<>();
 
@@ -333,17 +345,41 @@ public final class SignalRouter implements AutoCloseable {
             return null;
         }
 
-        private void validate(NodeRole sender, ControlSignal signal, int candidateLimit) {
-            if (signal instanceof ControlSignal.IceCandidate candidate) {
+        private boolean iceCredentialsNegotiated() {
+            String capability = ControlSignal.ICE_CREDENTIALS_CAPABILITY;
+            return client.peer.capabilities().contains(capability)
+                    && agent.peer.capabilities().contains(capability);
+        }
+
+        private void validate(NodeRole sender, ControlSignal signal, int candidateLimit,
+                              boolean iceCredentialsNegotiated) {
+            if (signal instanceof ControlSignal.IceCredentials) {
+                if (!iceCredentialsNegotiated || credentialsPublished.contains(sender)
+                        || !candidates.get(sender).isEmpty()
+                        || iceEnded.contains(sender)) {
+                    throw new SecurityException("ICE credentials must be published once before candidates");
+                }
+                credentialsPublished.add(sender);
+            } else if (signal instanceof ControlSignal.IceCandidate candidate) {
+                if (iceCredentialsNegotiated && !credentialsPublished.contains(sender)) {
+                    throw new SecurityException("ICE credentials must be published before candidates");
+                }
                 if (iceEnded.contains(sender)) throw new SecurityException("candidate arrived after ICE_END");
                 Set<UUID> known = candidates.get(sender);
                 if (known.size() >= candidateLimit || !known.add(candidate.candidateId())) {
                     throw new SecurityException("candidate limit reached or candidate id repeated");
                 }
             } else if (signal instanceof ControlSignal.IceEnd) {
+                if (iceCredentialsNegotiated && !credentialsPublished.contains(sender)) {
+                    throw new SecurityException("ICE credentials must be published before ICE_END");
+                }
                 if (!iceEnded.add(sender)) throw new SecurityException("ICE_END was already received");
             } else if (signal instanceof ControlSignal.PathReady ready) {
                 if (ready.path() == ControlSignal.Path.DIRECT) {
+                    if (iceCredentialsNegotiated && (!credentialsPublished.contains(NodeRole.CLIENT)
+                            || !credentialsPublished.contains(NodeRole.AGENT))) {
+                        throw new SecurityException("both peers must publish ICE credentials before DIRECT");
+                    }
                     Set<UUID> local = candidates.get(sender);
                     Set<UUID> remote = candidates.get(sender == NodeRole.CLIENT ? NodeRole.AGENT : NodeRole.CLIENT);
                     if (!local.contains(ready.localCandidateId()) || !remote.contains(ready.remoteCandidateId())) {

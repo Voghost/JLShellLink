@@ -626,7 +626,8 @@ public final class WssRelayServer implements AutoCloseable {
                 }
                 ControlPeerAuthenticator.AuthenticatedPeer principal = auth.principal();
                 SignalRouter.ControlPeer peer = new SignalRouter.ControlPeer(principal.role(),
-                        principal.accountId(), principal.nodeId(), principal.agentId(), principal.keyFingerprint());
+                        principal.accountId(), principal.nodeId(), principal.agentId(), principal.keyFingerprint(),
+                        java.util.Set.copyOf(hello.capabilities()));
                 connection = signalRouter.register(peer, signal -> send(context, signal), context.channel()::close);
                 helloAccepted = true;
                 helloTimeout.cancel(false);

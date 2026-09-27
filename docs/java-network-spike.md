@@ -31,6 +31,12 @@
 - 新增 9 个 `ConnectionCoordinatorTest`，覆盖三种路径策略、授权失败拒绝降级、未分类错误拒绝降级、超时后的 Relay 回退和迟到 direct 清理、target 只开一次、错误路径标签拒绝、网络代次失效、连接字节计数。
 - **完成边界：** 这是可复用的选路策略与连接生命周期 API，不代表 Java Agent/客户端已经接入。正式 Website 票据/ACL 与 B 的节点配对属 WEB/SRV；C 端 ICE 收集、选定候选与系统网络切换属 AGENT；真实 A 端客户端将 direct KCP 安全流和 WSS HTTP/2 carrier 接到本协调器、以及宿主断线后重新授权/恢复，仍需 CLIENT/AGENT/SRV 的产品实现和跨模块验收。已记录的真实跨出口 ICE/KCP 与真实 WSS 降级是 POC 证据，不能替代这些正式集成。
 
+### 授权 WSS ICE 凭据协商（2026-09-27）
+
+- `ControlSignal` / JSON codec 新增一次性的 ICE username fragment/password 消息。字段长度和字符集受限，默认 `toString()` 脱敏；只有 A/C 的 `HELLO` 都声明 `ice-credentials-v1` 时才启用，`SESSION_INVITE` 告知双方协商结果。旧节点保持旧控制流程。信令正文只经过已完成 Website 鉴权、绑定相同 A/C 节点身份的 WSS control session，SignalRouter 不持久化凭据。
+- SignalRouter 要求每侧先且仅先发布一次 ICE 凭据，再接受该侧候选与 `ICE_END`；`DIRECT` 选择还必须引用双方在当前 session generation 已交换的候选 ID。新授权 generation 会新建这些状态。
+- **边界：** 目前只完成有界信令契约及顺序校验。Agent/Client 仍未生成/消费这些 ICE 凭据，未收集正式候选，也未把 nomination、KCP、TLS/H2/CONNECT 接入产品路径；真实 direct 数据面验收未完成。
+
 ## 真实 A/B/C 主机联调（2026-09-24）
 
 用户提供的拓扑：A 是开发机 macOS（`192.168.1.0/24` 网段），B 是云主机，C 是 Arch Linux 内网主机（`192.168.31.0/24` 网段）。B、C 以密钥 SSH 连通。所有探针只在三端同名的临时隔离目录 `jlshell-link-p0-20260924` 中运行；B、C 使用 `/var/tmp/`，A 使用 `/private/tmp/`。未修改现有进程、服务配置、防火墙或 Docker 容器。测试前核对端口空闲，结束后核对临时监听和 C 的探针进程已经退出。

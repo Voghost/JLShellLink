@@ -21,8 +21,9 @@
 |---|---|---|
 | `HELLO` | A/C→B | 节点 ID、角色、协议范围、能力、凭据 ID |
 | `CHALLENGE` / `PROOF` | B↔A/C | 32 字节以上随机数、用途、节点 ID、可选 sessionId、Ed25519 签名 |
-| `SESSION_INVITE` | B→A/C | sessionId、generation、A/C 指纹、策略版本、过期时间；A/C 均从此消息取得当前代次 |
+| `SESSION_INVITE` | B→A/C | sessionId、generation、A/C 指纹、策略版本、过期时间和 `iceCredentialsSupported`；A/C 从此消息取得代次及 direct 信令能力协商结果 |
 | `SESSION_REVOKED` | B→A/C | sessionId、generation；Website 业务授权结束后立即停止本次会话的数据流 |
+| `ICE_CREDENTIALS` | A/C↔B | 仅当双方 `HELLO.capabilities` 都含 `ice-credentials-v1` 时可用；每侧每代一次性 username fragment 与 password，经已鉴权 WSS 转发，B 不持久化且日志不得记录 |
 | `ICE_CANDIDATE` | A/C↔B | generation、candidateId、类型、transport、IP、端口、priority、foundation |
 | `ICE_END` | A/C↔B | generation |
 | `PATH_READY` | A/C→B | `DIRECT`/`RELAY`、generation、选中候选 ID；不发送 ICE 密码到日志 |
@@ -30,7 +31,7 @@
 | `REVOKE` | B→A/C | session/tunnel、策略版本、稳定原因码 |
 | `PING` / `PONG` | 双向 | messageId 与单调时间戳 |
 
-B 只能在同账号且已授权的 A/C 间路由候选。旧 generation、跨 session 或身份不匹配的候选返回错误且不进入 ICE Agent。
+B 只能在同账号且已授权的 A/C 间路由候选和 ICE 凭据。只有 A、C 的 `HELLO.capabilities` 都含 `ice-credentials-v1` 时，B 才接受此扩展；旧节点会继续使用不含该扩展的已有控制流程。协商成功后，每侧在当前 generation 只能发送一次 `ICE_CREDENTIALS`，并且必须先于该侧的 `ICE_CANDIDATE` / `ICE_END`；候选结束后不得再添加候选。`DIRECT` 的 `PATH_READY` 只能引用双方已交换的 candidateId。旧 generation、跨 session 或身份不匹配的信令返回错误且不进入 ICE Agent。
 
 ### 控制 WSS 身份与在线会话
 
@@ -47,7 +48,7 @@ B 只能在同账号且已授权的 A/C 间路由候选。旧 generation、跨 s
 Upgrade 后第一条文本帧必须是 `HELLO`，包含 `role`、`nodeId`、`keyFingerprint`、
 `minProtocol`、`maxProtocol`、`capabilities` 和 `sentAt`。当前范围必须精确为 `link-v2`，
 否则 B 返回稳定错误码并关闭。`READY` 含节点 ID 和本次控制连接代次；之后仅接受
-`ICE_CANDIDATE`、`ICE_END`、`PATH_READY` 文本帧。候选地址必须为数值 IPv4/IPv6，
+`ICE_CREDENTIALS`、`ICE_CANDIDATE`、`ICE_END`、`PATH_READY` 文本帧；其中 `ICE_CREDENTIALS` 只有当本会话 A、C 双方能力都包含 `ice-credentials-v1` 时才有效。ICE 凭据只在双方节点完成网站授权与身份绑定的 WSS 控制通道内转发，不保存到 SignalRouter，也不得出现在 `toString()`、日志或诊断信息中。候选地址必须为数值 IPv4/IPv6，
 主机名、未知消息类型、二进制帧和越界字段均拒绝。Website 的访问授权在数据库提交后才给
 信令路由器；节点尚未上线时授权有界暂存，到期或撤销即删除。旧控制连接断开/被替换后，
 旧会话信令立即失效，重建目标流必须再次申请业务授权。
