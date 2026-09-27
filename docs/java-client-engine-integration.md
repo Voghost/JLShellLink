@@ -6,7 +6,7 @@
 
 - 通过宿主账号网关获取的当前账号/设备作用域；切换账号或 A 身份后创建新引擎。
 - 设备 Ed25519 私钥的宿主安全存储适配、短期控制凭据提供者，以及 `WebsiteAccessRequestProvider`。
-- 可验证 B 公签 TLS 与 C 内层 mTLS 身份的 `RelayCarrierPlanFactory`。它复用从 Agent 抽取的持钥挑战客户端、`WssSecureConnector` 和 `ConnectClientMultiplexer`，并复核内层证书公钥与 Website grant 的 Agent 指纹一致。`ClientTlsIdentity.load` 从宿主安全存储读取 PKCS12，检查其中恰好一个 Ed25519 密钥、证书有效且自签、证书公钥与已登记的 A 节点密钥相同；其 `forAgent` 为每次 grant 创建按 C 指纹固定的 TLS 上下文。PKCS12 和密码的生成、导入及生命周期仍需在插件应用组装时完成，不得使用原型测试凭据或信任管理器。
+- 可验证 B 公签 TLS 与 C 内层 mTLS 身份的 `RelayCarrierPlanFactory`。它复用从 Agent 抽取的持钥挑战客户端、`WssSecureConnector` 和 `ConnectClientMultiplexer`，并复核内层证书公钥与 Website grant 的 Agent 指纹一致。`ClientTlsIdentity.loadOrCreate` 在首次启动时通过宿主安全存储生成并保存 Ed25519 节点密钥及其自签客户端证书，随后校验密钥、证书一致性；PKCS12 密码从节点私钥派生且不单独落盘。证书将在到期前 30 天自动续期，但复用相同节点密钥，避免设备身份漂移。`forAgent` 为每次 grant 创建按 C 指纹固定的 TLS 上下文。账户设备绑定与令牌签发仍由插件使用宿主 API 完成；不得使用原型测试凭据或系统默认信任管理器。
 - 明确的并发上限、握手预算与路径诊断观察者。事件不得包含票据、控制凭据或目标地址。
 
-当前分支提供引擎生命周期、loopback 数据桥、relay-only carrier 工厂及 A TLS 身份校验装载器，**尚未提供产品级 A 控制连接、设备证书生成与安全存储导入、插件应用组装，也未完成客户端生产 SSH/SFTP 验收**。这些仍是 CLIENT-01/PLUGIN-01 的未完成项。集成前不得用此类宣称产品直连或中继已经可用。
+当前分支提供引擎生命周期、loopback 数据桥、relay-only carrier 工厂及 A TLS 身份生成/校验装载器。证书生成依赖 `org.bouncycastle:bcpkix-jdk18on:1.86`，仅用于 X.509 结构生成，Ed25519 签名继续使用 JDK 21 JCA。**尚未提供账号设备身份绑定、插件应用组装，也未完成客户端生产 SSH/SFTP 验收**。这些仍是 CLIENT-01/PLUGIN-01 的未完成项。集成前不得用此类宣称产品直连或中继已经可用。
