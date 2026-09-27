@@ -72,6 +72,8 @@ jobs:
           scripts/package-java-agent.sh 0.1.0-CI link-agent/target/link-agent-0.1.0-SNAPSHOT.jar
           test -n "$(find link-agent/target/distribution -maxdepth 1 -name 'jlshell-link-agent-java-0.1.0-CI-*.tar.gz' -print -quit)"
           test -n "$(find link-agent/target/distribution -maxdepth 1 -name 'jlshell-link-agent-java-0.1.0-CI-*.zip' -print -quit)"
+          test -n "$(find link-agent/target/distribution -maxdepth 1 -name 'jlshell-link-agent-java-0.1.0-CI-*.manifest.json' -print -quit)"
+          test -n "$(find link-agent/target/distribution -maxdepth 1 -name 'jlshell-link-agent-java-0.1.0-CI-*.sha256' -print -quit)"
       - name: Build and inspect Java Agent archives
         if: runner.os == 'Windows'
         shell: pwsh
@@ -80,8 +82,10 @@ jobs:
             --version 0.1.0-CI `
             --agent-jar link-agent/target/link-agent-0.1.0-SNAPSHOT.jar `
             --output-dir link-agent/target/distribution
-          if (-not (Get-ChildItem link-agent/target/distribution -Filter 'jlshell-link-agent-java-0.1.0-CI-windows-x64.*')) {
-            throw 'Windows Java Agent archives were not generated.'
+          foreach ($suffix in @('.tar.gz', '.zip', '.manifest.json', '.sha256')) {
+            if (-not (Test-Path (Join-Path 'link-agent/target/distribution' "jlshell-link-agent-java-0.1.0-CI-windows-x64$suffix"))) {
+              throw "Windows Java Agent output is missing: $suffix"
+            }
           }
 
   quality:

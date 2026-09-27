@@ -3,8 +3,9 @@
 Java Agent 发布包自带由 Java 21 `jlink` 生成的精简 runtime，使用者无需预装 JDK。
 `scripts/package-java-agent.sh` 接收版本号和 shade 后的 Agent JAR，为当前平台生成
 `.tar.gz` 与 `.zip`。包内包含 runtime、CLI 文档、Linux/macOS 服务管理脚本、Windows
-Service 安装脚本、带平台/架构/协议版本和逐文件 SHA-256 的 `manifest.json`，以及
-`SHA256SUMS`。生成时会运行包内 Java 检查版本、运行 Agent CLI help，并校验两种归档。
+Service 安装脚本、带源码 SHA、平台/架构/协议版本和逐文件 SHA-256 的 `manifest.json`，以及
+`SHA256SUMS`。每个平台另输出包含归档大小与摘要的外部 `.manifest.json` 和 `.sha256` 文件。
+生成时会运行包内 Java 检查版本、运行 Agent CLI help，并校验两种归档。
 GitHub Actions 的 `Package Java Agent` 手动工作流在 Linux x64、macOS arm64、Windows x64
 分别运行 Link 全量 `mvn verify` 并生成独立构建产物，上传后保留 90 天；此流程不会创建
 GitHub Release 或部署到生产。发布签名和正式 Release 接入仍在后续任务中。

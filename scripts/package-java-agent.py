@@ -11,6 +11,7 @@ import platform
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import zipfile
@@ -158,15 +159,25 @@ def verify_archive(root: Path, tar_path: Path, zip_path: Path) -> None:
 
 
 def main() -> None:
+    if os.name == "nt":
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", required=True)
     parser.add_argument("--agent-jar", required=True, type=Path)
     parser.add_argument("--java-home", default=os.environ.get("JAVA_HOME"))
     parser.add_argument("--output-dir", type=Path, default=ROOT / "link-agent/target/distribution")
+    parser.add_argument("--source-revision", default=os.environ.get("GITHUB_SHA"))
     args = parser.parse_args()
 
     if not re.fullmatch(r"\d+\.\d+\.\d+(?:[.-][0-9A-Za-z.-]+)?", args.version):
         raise SystemExit("version 必须为明确的 Maven 版本号")
+    if not args.source_revision:
+        result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, check=True,
+                                capture_output=True, text=True)
+        args.source_revision = result.stdout.strip()
+    if not re.fullmatch(r"[0-9a-fA-F]{40,64}", args.source_revision):
+        raise SystemExit("source revision 必须是完整 Git commit SHA")
     agent_jar = args.agent_jar.resolve()
     if not agent_jar.is_file():
         raise SystemExit(f"找不到 shaded Agent JAR：{agent_jar}")
@@ -215,6 +226,7 @@ def main() -> None:
             "schemaVersion": 1,
             "product": "jlshell-link-agent-java",
             "version": args.version,
+            "sourceRevision": args.source_revision.lower(),
             "protocolVersion": "jlshell-link-v2",
             "platform": os_id,
             "architecture": arch,
@@ -226,10 +238,26 @@ def main() -> None:
         zip_directory(package_root, zip_path, package)
         verify_archive(package_root, tar_path, zip_path)
 
-    checksums = [(path.name, sha256(path)) for path in (tar_path, zip_path)]
+    artifacts = [
+        {"name": path.name, "sizeBytes": path.stat().st_size, "sha256": sha256(path)}
+        for path in (tar_path, zip_path)
+    ]
+    external_manifest = args.output_dir / f"{package}.manifest.json"
+    external_manifest.write_text(json.dumps({
+        "schemaVersion": 1,
+        "product": "jlshell-link-agent-java",
+        "version": args.version,
+        "sourceRevision": args.source_revision.lower(),
+        "protocolVersion": "jlshell-link-v2",
+        "platform": os_id,
+        "architecture": arch,
+        "runtime": {"vendor": "Eclipse Temurin", "major": 21, "modules": modules},
+        "artifacts": artifacts,
+    }, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    checksums = [(path.name, sha256(path)) for path in (tar_path, zip_path, external_manifest)]
     checksum_path = args.output_dir / f"{package}.sha256"
     checksum_path.write_text("".join(f"{digest}  {name}\n" for name, digest in checksums), encoding="ascii")
-    print(f"已生成 Java 21 Agent 包：{tar_path}、{zip_path}")
+    print(f"Built Java 21 Agent packages: {tar_path}, {zip_path}, {external_manifest}")
 
 
 if __name__ == "__main__":
