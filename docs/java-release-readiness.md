@@ -1,6 +1,6 @@
 # Java Link 发布就绪状态
 
-更新日期：2026-09-27。本文记录平台交付、迁移、综合验收、发布切换和 Rust 退役的
+更新日期：2026-09-29。本文记录平台交付、迁移、综合验收、发布切换和 Rust 退役的
 放行状态。只记录版本、提交、汇总结果和公开工作流链接；不记录账号、节点标识、IP、
 SSH 信息、凭据、票据或原始生产日志。
 
@@ -22,11 +22,15 @@ SSH 信息、凭据、票据或原始生产日志。
   注册仍启用且最近在线，未发现自定义 Relay 注册。只保留这些汇总数，不保存任何节点、
   网络或账号明细。根据用户确认旧桌面插件未实际使用，Agent/项目迁移工具与切换演练不适用；
   仍在线的旧 Relay 归 RETIRE-01，必须在新版本发布及明确维护安排后处理，当前未停用。
-- 本轮增加的 Java 专用 Website 上传与 manifest 校验代码，在本机使用 SNAPSHOT 依赖完成
-  `mvn -DskipTests compile`；Link `Release Java Agent` workflow 的 YAML 语法检查通过。
-  对应 [Link PR #53](https://github.com/Voghost/JLShellLink/pull/53) 与
-  [Website MR !54](https://gitlab.ooml.net/root/jlshellwebsite/-/merge_requests/54)
-  已创建，等待各自 CI 与手动合并。
+- Java 专用 Website 上传/manifest 校验和 Java 21 Agent 发布 workflow 已提交到
+  [Link PR #53](https://github.com/Voghost/JLShellLink/pull/53) 与
+  [Website MR !54](https://gitlab.ooml.net/root/jlshellwebsite/-/merge_requests/54)。Link PR #53
+  九项 GitHub CI 检查全部通过；Agent 模块编译通过，注册与在线心跳现使用发行 JAR 版本。
+  Website 后端使用 Link SNAPSHOT 编译通过，前端生产构建通过；当前环境没有 GitLab CLI，
+  未读取 MR !54 流水线结果。
+- 插件 [PR #38](https://github.com/Voghost/JLShellLinkPlugin/pull/38) 显示完整 Agent ID
+  和一次性令牌；Linux、macOS、Windows CI 全部通过。本机插件编译使用 Link 0.1.0-SNAPSHOT
+  覆盖本地解析，因为当前环境不能读取 GitHub Packages 的 0.1.3 制品；默认版本解析返回 401。
 
 ## 仍未放行
 
