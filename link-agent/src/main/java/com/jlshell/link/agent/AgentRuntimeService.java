@@ -117,7 +117,7 @@ final class AgentRuntimeService {
             var grants = new AccessGrantJwsService(clock, Duration.ofSeconds(30), new InMemoryReplayStore());
             AgentControlSession session = new AgentControlSession(
                     api, registration.credential(), registration.agentId(),
-                    nodeKey.fingerprint(), "0.1.0-SNAPSHOT",
+                    nodeKey.fingerprint(), AgentApplication.implementationVersion(),
                     Set.of("tcp-connect", "target-diagnostic", "ice-credentials-v1"), scheduler,
                     Duration.ofSeconds(10), lease -> {
                         AgentRelayRuntime current = relay.get();

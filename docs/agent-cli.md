@@ -23,7 +23,7 @@ java -jar link-agent-0.1.0-SNAPSHOT.jar stop
 
 默认状态目录为当前用户主目录下的 `.jlshell-link-agent`，可用 `--state-dir <path>` 指定。目录中保存 Ed25519 节点私钥、注册元数据和单独的 Agent 凭据；POSIX 系统会设置仅当前用户可访问的权限。
 
-注册时，CLI 优先读取 `--token-file`。该文件必须是当前用户拥有的普通文件，不能是符号链接，且 POSIX 权限不得向组或其他用户开放；建议使用 `chmod 600 <path>`。未提供 token 文件时，CLI 仅在交互式终端通过隐藏输入读取。token 不支持作为命令行参数，也不会写入状态目录。
+注册时，CLI 使用发行 JAR manifest 中的版本号上报 Agent 版本；源码运行时未设置发行版本会标记为 `0.0.0-SNAPSHOT`。CLI 优先读取 `--token-file`。该文件必须是当前用户拥有的普通文件，不能是符号链接，且 POSIX 权限不得向组或其他用户开放；建议使用 `chmod 600 <path>`。未提供 token 文件时，CLI 仅在交互式终端通过隐藏输入读取。token 不支持作为命令行参数，也不会写入状态目录。
 
 ```sh
 chmod 600 /path/to/enrollment-token
