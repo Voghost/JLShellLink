@@ -1,6 +1,6 @@
 # Java Link 发布就绪状态
 
-更新日期：2026-09-29。本文记录平台交付、迁移、综合验收、发布切换和 Rust 退役的
+更新日期：2026-10-02。本文记录平台交付、迁移、综合验收、发布切换和 Rust 退役的
 放行状态。只记录版本、提交、汇总结果和公开工作流链接；不记录账号、节点标识、IP、
 SSH 信息、凭据、票据或原始生产日志。
 
@@ -22,20 +22,27 @@ SSH 信息、凭据、票据或原始生产日志。
   注册仍启用且最近在线，未发现自定义 Relay 注册。只保留这些汇总数，不保存任何节点、
   网络或账号明细。根据用户确认旧桌面插件未实际使用，Agent/项目迁移工具与切换演练不适用；
   仍在线的旧 Relay 归 RETIRE-01，必须在新版本发布及明确维护安排后处理，当前未停用。
-- Java 专用 Website 上传/manifest 校验和 Java 21 Agent 发布 workflow 已提交到
+- Java 专用 Website 上传/manifest 校验和 Java 21 Agent 发布 workflow 已通过
   [Link PR #53](https://github.com/Voghost/JLShellLink/pull/53) 与
-  [Website MR !54](https://gitlab.ooml.net/root/jlshellwebsite/-/merge_requests/54)。Link PR #53
-  九项 GitHub CI 检查全部通过；Agent 模块编译通过，注册与在线心跳现使用发行 JAR 版本。
-  Website 后端使用 Link SNAPSHOT 编译通过，前端生产构建通过；当前环境没有 GitLab CLI，
-  未读取 MR !54 流水线结果。
-- 插件 [PR #38](https://github.com/Voghost/JLShellLinkPlugin/pull/38) 显示完整 Agent ID
+  [Website MR !54](https://gitlab.ooml.net/root/jlshellwebsite/-/merge_requests/54)
+  合入 develop。Link PR #53 的九项 GitHub CI 检查通过；Agent 注册与在线心跳现使用发行
+  JAR 版本。Website 的三平台 manifest、共同源码 revision、sidecar 与归档摘要校验已接入，
+  中文/英文安装说明已更新。
+- 随机 release ID 暂存、暂存对象复核、不可变版本目录、单次 latest 指针替换已分别提交到
+  [Link PR #54](https://github.com/Voghost/JLShellLink/pull/54) 和
+  [Website MR !55](https://gitlab.ooml.net/root/jlshellwebsite/-/merge_requests/55)。两者仍待合并；
+  Link PR #54 的 10 项 CI 检查全部通过；合入顺序为 Website 先部署，再合 Link workflow。
+- 插件 [PR #38](https://github.com/Voghost/JLShellLinkPlugin/pull/38) 已合并，显示完整 Agent ID
   和一次性令牌；Linux、macOS、Windows CI 全部通过。本机插件编译使用 Link 0.1.0-SNAPSHOT
-  覆盖本地解析，因为当前环境不能读取 GitHub Packages 的 0.1.3 制品；默认版本解析返回 401。
+  覆盖本地解析，因为当前环境不能读取 GitHub Packages 的 0.1.3 制品。
+- 2026-09-30 Website 后端 `mvn -Djlshell-link.version=0.1.0-SNAPSHOT verify` 完成，93 项
+  测试通过；2026-10-02 最终缓存头变更后的定向测试 6 项通过。完整验证使用本地 Link SNAPSHOT，
+  不替代 CI 对固定发布依赖的检查。
 
 ## 仍未放行
 
-- Java Agent 稳定发布工作流尚未在已合并的 `main` 上运行；Website 公开 Java 包入口尚未
-  经该工作流完成端到端上传和下载验收。
+- Java Agent 稳定发布工作流尚未在 `main` 上运行；Website 公开 Java 包入口尚未经该工作流
+  完成端到端上传和下载验收。
 - 外部 manifest 与 SHA-256 用于比对构建输出和发现传输损坏，尚未实现客户端可验证的
   数字签名。Agent/插件安装不得把 SHA-256 单独描述为可信发布者签名。
 - 插件尚未完成使用 Java Agent 压缩包的真实 SFTP 安装、远端校验、服务升级及失败回滚。
@@ -51,7 +58,7 @@ SSH 信息、凭据、票据或原始生产日志。
 
 ## 当前发布入口
 
-Link PR #53 与 Website MR !54 分别实现 Link 仓库
+Link PR #53 与 Website MR !54 已合入 develop，分别实现 Link 仓库
 `.github/workflows/release-java-agent.yml` 和 Website Java Runtime 上传接口。稳定发布
 工作流只允许从 `main` 手动运行，要求仓库配置
 `JLSHELL_SITE_URL` 与已有的 `JLSHELL_ACTION_WEBHOOK_SECRET`；签名值本身不应写入此文档。

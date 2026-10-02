@@ -42,7 +42,7 @@ jobs:
             echo 'Stable Agent packages may only be built from main.' >&2
             exit 1
           fi
-          if [[ ! "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+          if [[ ! "$RELEASE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?$ ]]; then
             echo 'Version must be an explicit release or prerelease version.' >&2
             exit 1
           fi
@@ -106,6 +106,7 @@ jobs:
             exit 1
           fi
           site_url="${site_url%/}"
+          release_id="$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
           mapfile -d '' assets < <(find dist -maxdepth 1 -type f -print0 | sort -z)
           if [[ "${#assets[@]}" -ne 12 ]]; then
             echo 'Expected 12 Java Agent archives, manifests, and checksum files.' >&2
@@ -115,7 +116,7 @@ jobs:
           for asset in "${assets[@]}"; do
             file_name="$(basename "$asset")"
             digest="$(sha256sum "$asset" | awk '{print $1}')"
-            request_path="/api/v1/actions/link-runtime/java/${RELEASE_VERSION}/${file_name}"
+            request_path="/api/v1/actions/link-runtime/java/${RELEASE_VERSION}/${release_id}/${file_name}"
             timestamp="$(date +%s)"
             signature="sha256=$(printf '%s.%s.%s' "$timestamp" "$request_path" "$digest" \
               | openssl dgst -sha256 -hmac "$JLSHELL_ACTION_WEBHOOK_SECRET" -hex \
@@ -135,7 +136,7 @@ jobs:
             | openssl dgst -sha256 -hmac "$JLSHELL_ACTION_WEBHOOK_SECRET" -hex \
             | awk '{print $2}')"
           curl --fail --silent --show-error -X POST \
-            "${site_url}/api/v1/actions/link-runtime/java/${RELEASE_VERSION}/publish" \
+            "${site_url}/api/v1/actions/link-runtime/java/${RELEASE_VERSION}/${release_id}/publish" \
             -H 'Content-Type: application/json' \
             -H "X-JLShell-Timestamp: $timestamp" \
             -H "X-JLShell-Signature: $signature" \
