@@ -1,6 +1,6 @@
 # Java Link 发布就绪状态
 
-更新日期：2026-09-29。本文记录平台交付、迁移、综合验收、发布切换和 Rust 退役的
+更新日期：2026-10-02。本文记录平台交付、迁移、综合验收、发布切换和 Rust 退役的
 放行状态。只记录版本、提交、汇总结果和公开工作流链接；不记录账号、节点标识、IP、
 SSH 信息、凭据、票据或原始生产日志。
 
@@ -48,6 +48,22 @@ SSH 信息、凭据、票据或原始生产日志。
   不导出行级数据；本地项目文件未扫描。
 - 四仓库兼容候选、发布说明、维护窗口与恢复步骤仍需在以上验收通过后确定。Rust 删除、
   libp2p v1 关闭和旧部署入口清理依赖正式 Java 版本成功发布及迁移恢复窗口结束。
+
+## 交付追溯更新（2026-10-02）
+
+- Link [PR #54](https://github.com/Voghost/JLShellLink/pull/54) 将 Java Agent 发布改为随机暂存、
+  版本目录校验和原子更新 latest；[PR #55](https://github.com/Voghost/JLShellLink/pull/55)
+  为 Agent 归档记录固定运行时依赖；[PR #56](https://github.com/Voghost/JLShellLink/pull/56)
+  为每个 Maven JAR 写入构建源码 SHA，并在发布后逐个核对。三项 PR 当前均开放，GitHub CI
+  各 9 项检查全部通过；PR #56 的本地 `mvn -B -ntp clean verify` 全模块通过。
+- 插件 [PR #39](https://github.com/Voghost/JLShellLinkPlugin/pull/39) 为发行 JAR 记录源码 revision、
+  固定依赖版本与 checksum，3 项平台 CI 检查通过，当前开放。
+- Website [MR !55](https://gitlab.ooml.net/root/jlshellwebsite/-/merge_requests/55) 实现 Java Agent
+  发布随机暂存和原子 latest 更新；[MR !56](https://gitlab.ooml.net/root/jlshellwebsite/-/merge_requests/56)
+  归档 Jenkins 构建来源清单并增加 OCI 来源标签。两项 MR 均开放且显示可合并；!56 尚无流水线，
+  需合并后的 Jenkins 实际构建确认。
+- 以上变更尚未合并、部署或触发稳定发布。它们补充来源追溯，不提供数字签名，也不替代客户端
+  签名验证、完整传递依赖 SBOM、真实平台生命周期及公网产品验收。
 
 ## 当前发布入口
 
