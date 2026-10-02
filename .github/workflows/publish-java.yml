@@ -55,20 +55,35 @@ jobs:
           mvn -B -ntp org.codehaus.mojo:versions-maven-plugin:2.18.0:set
           -DnewVersion="$RELEASE_VERSION"
           -DgenerateBackupPoms=false
-      - name: Verify and publish private Java artifacts
+      - name: Build and verify Java artifacts before publishing
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SOURCE_REVISION: ${{ github.sha }}
-        run: mvn -B -ntp deploy "-Djlshell.build.revision=$SOURCE_REVISION"
-      - name: Verify Maven artifacts record the source revision
+        run: mvn -B -ntp verify "-Djlshell.build.revision=$SOURCE_REVISION"
+      - name: Verify Maven JAR provenance and CycloneDX SBOMs
         env:
           SOURCE_REVISION: ${{ github.sha }}
         shell: bash
         run: |
           set -euo pipefail
+          found=0
           while IFS= read -r -d '' artifact; do
+            found=1
             if ! unzip -p "$artifact" META-INF/MANIFEST.MF | tr -d '\r' | grep -Fqx "JLShell-Build-Revision: $SOURCE_REVISION"; then
               echo "Missing build revision in $artifact" >&2
               exit 1
             fi
+            bom="$(dirname "$artifact")/bom.json"
+            if [[ ! -f "$bom" ]] || ! python3 -c 'import json,sys; b=json.load(open(sys.argv[1], encoding="utf-8")); assert isinstance(b,dict) and b.get("bomFormat")=="CycloneDX" and isinstance(b.get("components"),list)' "$bom"; then
+              echo "Missing or invalid CycloneDX SBOM for $artifact" >&2
+              exit 1
+            fi
           done < <(find . -path '*/target/*.jar' -type f -print0)
+          if [[ "$found" -eq 0 ]]; then
+            echo 'Maven build produced no JAR files.' >&2
+            exit 1
+          fi
+      - name: Publish verified private Java artifacts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_REVISION: ${{ github.sha }}
+        run: mvn -B -ntp deploy -DskipTests "-Djlshell.build.revision=$SOURCE_REVISION"

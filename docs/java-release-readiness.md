@@ -54,8 +54,10 @@ SSH 信息、凭据、票据或原始生产日志。
 - Link [PR #54](https://github.com/Voghost/JLShellLink/pull/54) 将 Java Agent 发布改为随机暂存、
   版本目录校验和原子更新 latest；[PR #55](https://github.com/Voghost/JLShellLink/pull/55)
   为 Agent 归档记录固定运行时依赖；[PR #56](https://github.com/Voghost/JLShellLink/pull/56)
-  为每个 Maven JAR 写入构建源码 SHA，并在发布后逐个核对。三项 PR 当前均开放，GitHub CI
-  各 9 项检查全部通过；PR #56 的本地 `mvn -B -ntp clean verify` 全模块通过。
+  为每个 Maven JAR 写入构建源码 SHA、部署 CycloneDX SBOM，并在发布后逐个核对；Agent 平台包
+  也携带依赖 SBOM。三项 PR 当前均开放；PR #54、#55 CI 各 9 项检查全部通过，#56 新增 SBOM
+  后的 CI 待完成；本机全模块 `mvn -B -ntp clean verify` 已通过，CycloneDX 为 9 个模块生成
+  JSON/XML 清单，Agent BOM 中有组件缺少许可声明，需要后续核实。
 - 插件 [PR #39](https://github.com/Voghost/JLShellLinkPlugin/pull/39) 为发行 JAR 记录源码 revision、
   固定依赖版本与 checksum，3 项平台 CI 检查通过，当前开放。
 - Website [MR !55](https://gitlab.ooml.net/root/jlshellwebsite/-/merge_requests/55) 实现 Java Agent
@@ -63,7 +65,8 @@ SSH 信息、凭据、票据或原始生产日志。
   归档 Jenkins 构建来源清单并增加 OCI 来源标签。两项 MR 均开放且显示可合并；!56 尚无流水线，
   需合并后的 Jenkins 实际构建确认。
 - 以上变更尚未合并、部署或触发稳定发布。它们补充来源追溯，不提供数字签名，也不替代客户端
-  签名验证、完整传递依赖 SBOM、真实平台生命周期及公网产品验收。
+  签名验证、漏洞/许可审查与秘密扫描、真实平台生命周期及公网产品验收。CycloneDX SBOM
+  提供直接和传递依赖清单，但不等同于漏洞扫描或许可审批。
 
 ## 当前发布入口
 
