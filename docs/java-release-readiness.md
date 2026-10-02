@@ -28,6 +28,10 @@ SSH 信息、凭据、票据或原始生产日志。
   合入 develop。Link PR #53 的九项 GitHub CI 检查通过；Agent 注册与在线心跳现使用发行
   JAR 版本。Website 的三平台 manifest、共同源码 revision、sidecar 与归档摘要校验已接入，
   中文/英文安装说明已更新。
+- 随机 release ID 暂存、暂存对象复核、不可变版本目录、单次 latest 指针替换已分别提交到
+  [Link PR #54](https://github.com/Voghost/JLShellLink/pull/54) 和
+  [Website MR !55](https://gitlab.ooml.net/root/jlshellwebsite/-/merge_requests/55)。两者仍待合并；
+  合入顺序为 Website 先部署，再合 Link workflow。
 - 插件 [PR #38](https://github.com/Voghost/JLShellLinkPlugin/pull/38) 已合并，显示完整 Agent ID
   和一次性令牌；Linux、macOS、Windows CI 全部通过。本机插件编译使用 Link 0.1.0-SNAPSHOT
   覆盖本地解析，因为当前环境不能读取 GitHub Packages 的 0.1.3 制品。
