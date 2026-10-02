@@ -35,8 +35,9 @@ SSH 信息、凭据、票据或原始生产日志。
 - 插件 [PR #38](https://github.com/Voghost/JLShellLinkPlugin/pull/38) 已合并，显示完整 Agent ID
   和一次性令牌；Linux、macOS、Windows CI 全部通过。本机插件编译使用 Link 0.1.0-SNAPSHOT
   覆盖本地解析，因为当前环境不能读取 GitHub Packages 的 0.1.3 制品。
-- 2026-10-02 Website 后端 `mvn -Djlshell-link.version=0.1.0-SNAPSHOT verify` 完成，93 项
-  测试通过。该验证使用本地 Link SNAPSHOT，不替代 CI 对固定发布依赖的检查。
+- 2026-09-30 Website 后端 `mvn -Djlshell-link.version=0.1.0-SNAPSHOT verify` 完成，93 项
+  测试通过；2026-10-02 最终缓存头变更后的定向测试 6 项通过。完整验证使用本地 Link SNAPSHOT，
+  不替代 CI 对固定发布依赖的检查。
 
 ## 仍未放行
 
