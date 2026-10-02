@@ -39,6 +39,7 @@
     <properties>
         <maven.compiler.release>21</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <jlshell.build.revision>development</jlshell.build.revision>
         <junit.version>5.12.2</junit.version>
         <netty.version>4.2.18.Final</netty.version>
         <ice4j.version>3.2-17-geea6cd3</ice4j.version>
@@ -82,6 +83,20 @@
     </dependencyManagement>
 
     <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.4.2</version>
+                <configuration>
+                    <archive>
+                        <manifestEntries>
+                            <JLShell-Build-Revision>${jlshell.build.revision}</JLShell-Build-Revision>
+                        </manifestEntries>
+                    </archive>
+                </configuration>
+            </plugin>
+        </plugins>
         <pluginManagement>
             <plugins>
                 <plugin>

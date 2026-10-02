@@ -45,6 +45,7 @@
                                     <mainClass>com.jlshell.link.agent.AgentApplication</mainClass>
                                     <manifestEntries>
                                         <Implementation-Version>${project.version}</Implementation-Version>
+                                        <JLShell-Build-Revision>${jlshell.build.revision}</JLShell-Build-Revision>
                                     </manifestEntries>
                                 </transformer>
                             </transformers>
