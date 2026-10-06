@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
@@ -30,6 +31,13 @@ PACKAGE_FILES = [
     (Path("scripts/java-agent/install-user-service.sh"), Path("scripts/java-agent/install-user-service.sh")),
     (Path("scripts/java-agent/install-windows-service.ps1"), Path("scripts/java-agent/install-windows-service.ps1")),
 ]
+DEPENDENCY_PROPERTIES = {
+    "netty": "netty.version",
+    "ice4j": "ice4j.version",
+    "kcpBase": "java-kcp.version",
+    "nimbusJoseJwt": "nimbus-jose-jwt.version",
+    "bouncyCastle": "bouncycastle.version",
+}
 
 
 def sha256(path: Path) -> str:
@@ -38,6 +46,21 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def dependency_versions() -> dict[str, str]:
+    namespace = "{http://maven.apache.org/POM/4.0.0}"
+    pom = ET.parse(ROOT / "pom.xml").getroot()
+    properties = pom.find(f"{namespace}properties")
+    if properties is None:
+        raise RuntimeError("Maven parent POM 缺少 properties")
+    result = {}
+    for key, property_name in DEPENDENCY_PROPERTIES.items():
+        value = properties.find(f"{namespace}{property_name}")
+        if value is None or not value.text or not value.text.strip():
+            raise RuntimeError(f"Maven parent POM 缺少运行库版本：{property_name}")
+        result[key] = value.text.strip()
+    return result
 
 
 def java_major(java: Path) -> int:
@@ -204,6 +227,7 @@ def main() -> None:
         raise SystemExit("JAVA_HOME/bin 中找不到 jlink")
 
     os_id, arch, platform_label = platform_id()
+    dependencies = dependency_versions()
     modules = [*REQUIRED_MODULES, *(name for name in OPTIONAL_MODULES if (java_home / "jmods" / f"{name}.jmod").is_file())]
     package = f"{PACKAGE_PREFIX}-{args.version}-{platform_label}"
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -239,6 +263,7 @@ def main() -> None:
             "version": args.version,
             "sourceRevision": args.source_revision.lower(),
             "protocolVersion": "jlshell-link-v2",
+            "dependencies": dependencies,
             "platform": os_id,
             "architecture": arch,
             "runtime": {"vendor": "Eclipse Temurin", "major": runtime_version, "modules": modules},
@@ -260,6 +285,7 @@ def main() -> None:
         "version": args.version,
         "sourceRevision": args.source_revision.lower(),
         "protocolVersion": "jlshell-link-v2",
+        "dependencies": dependencies,
         "platform": os_id,
         "architecture": arch,
         "runtime": {"vendor": "Eclipse Temurin", "major": 21, "modules": modules},
