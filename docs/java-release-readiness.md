@@ -116,3 +116,9 @@ GitHub Actions 的 Java 21 全量结果和 Website Jenkins 的结果另行记录
 本轮不执行正式 main 发布、生产升级或 Rust 退役。真实平台的权限/开机/升级恢复、
 双出口业务访问和综合压力验收尚未完成；恢复脚本模拟不计入真实平台完成项。
 配置格式和合入依赖见 `docs/agent-service.md` 的发布签名章节。
+
+
+DIST-02 另补内部 Maven 发布模式：`Publish Java libraries` 的 `internal` 只接受 develop，
+版本自动为 `0.0.0-internal.g<完整源码 SHA>`，不得手填稳定版本；`stable` 仍仅接受 main。
+内部产物仍执行完整 verify、JAR 来源/SBOM 校验再 deploy，避免复用浮动 SNAPSHOT。
+工作流代码已实现，实际内部发布尚未执行；不能记作已存在的下游依赖。
