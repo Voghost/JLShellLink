@@ -111,8 +111,9 @@ def run_checked(command: list[str], description: str) -> None:
         raise RuntimeError(f"{description}失败：{detail[-3000:]}")
 
 
-def copy_package_contents(root: Path, agent_jar: Path) -> None:
+def copy_package_contents(root: Path, agent_jar: Path, dependency_bom: Path) -> None:
     shutil.copy2(agent_jar, root / "link-agent.jar")
+    shutil.copy2(dependency_bom, root / "dependencies.cyclonedx.json")
     for source_rel, target_rel in PACKAGE_FILES:
         source = ROOT / source_rel
         target = root / target_rel
@@ -204,6 +205,16 @@ def main() -> None:
     agent_jar = args.agent_jar.resolve()
     if not agent_jar.is_file():
         raise SystemExit(f"找不到 shaded Agent JAR：{agent_jar}")
+    dependency_bom = agent_jar.parent / "bom.json"
+    if not dependency_bom.is_file():
+        raise SystemExit(f"找不到 CycloneDX 依赖清单：{dependency_bom}")
+    try:
+        sbom = json.loads(dependency_bom.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as failure:
+        raise SystemExit(f"无法读取 CycloneDX 依赖清单：{failure}") from failure
+    if not isinstance(sbom, dict) or sbom.get("bomFormat") != "CycloneDX" \
+            or not isinstance(sbom.get("components"), list):
+        raise SystemExit("Agent 依赖清单不是有效的 CycloneDX JSON BOM")
 
     java_home = find_java_home(args.java_home)
     java_name = "java.exe" if os.name == "nt" else "java"
@@ -239,7 +250,7 @@ def main() -> None:
             "--output", str(runtime_dir),
         ], "jlink runtime 构建")
 
-        copy_package_contents(package_root, agent_jar)
+        copy_package_contents(package_root, agent_jar, dependency_bom)
         runtime_java = runtime_dir / "bin" / java_name
         runtime_version = java_major(runtime_java)
         if runtime_version != 21:
