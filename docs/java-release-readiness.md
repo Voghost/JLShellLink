@@ -1,6 +1,6 @@
 # Java Link 发布就绪状态
 
-更新日期：2026-10-02。本文记录平台交付、迁移、综合验收、发布切换和 Rust 退役的
+更新日期：2026-10-06。本文记录平台交付、迁移、综合验收、发布切换和 Rust 退役的
 放行状态。只记录版本、提交、汇总结果和公开工作流链接；不记录账号、节点标识、IP、
 SSH 信息、凭据、票据或原始生产日志。
 
@@ -22,13 +22,13 @@ SSH 信息、凭据、票据或原始生产日志。
   注册仍启用且最近在线，未发现自定义 Relay 注册。只保留这些汇总数，不保存任何节点、
   网络或账号明细。根据用户确认旧桌面插件未实际使用，Agent/项目迁移工具与切换演练不适用；
   仍在线的旧 Relay 归 RETIRE-01，必须在新版本发布及明确维护安排后处理，当前未停用。
-- Java 专用 Website 上传/manifest 校验和 Java 21 Agent 发布 workflow 已提交到
+- Java 专用 Website 上传/manifest 校验和 Java 21 Agent 发布 workflow 已按用户确认合入 develop，见
   [Link PR #53](https://github.com/Voghost/JLShellLink/pull/53) 与
   [Website MR !54](https://gitlab.ooml.net/root/jlshellwebsite/-/merge_requests/54)。Link PR #53
   九项 GitHub CI 检查全部通过；Agent 模块编译通过，注册与在线心跳现使用发行 JAR 版本。
   Website 后端使用 Link SNAPSHOT 编译通过，前端生产构建通过；当前环境没有 GitLab CLI，
   未读取 MR !54 流水线结果。
-- 插件 [PR #38](https://github.com/Voghost/JLShellLinkPlugin/pull/38) 显示完整 Agent ID
+- 插件 [PR #38](https://github.com/Voghost/JLShellLinkPlugin/pull/38) 已按用户确认合入 develop，显示完整 Agent ID
   和一次性令牌；Linux、macOS、Windows CI 全部通过。本机插件编译使用 Link 0.1.0-SNAPSHOT
   覆盖本地解析，因为当前环境不能读取 GitHub Packages 的 0.1.3 制品；默认版本解析返回 401。
 
@@ -39,6 +39,8 @@ SSH 信息、凭据、票据或原始生产日志。
 - 外部 manifest 与 SHA-256 用于比对构建输出和发现传输损坏，尚未实现客户端可验证的
   数字签名。Agent/插件安装不得把 SHA-256 单独描述为可信发布者签名。
 - 插件尚未完成使用 Java Agent 压缩包的真实 SFTP 安装、远端校验、服务升级及失败回滚。
+- 受签名清单约束的离线安装、提交唯一版本的内部制品流程、Java 依赖漏洞与许可门禁、
+  发布秘密扫描和四仓库全新 CI 交付证据仍需补齐。
 - Linux systemd、macOS LaunchAgent、Windows Service 的真实目标机生命周期、登录状态和
   权限边界需要在目标平台验收；不以 CI 代替生产设备验收。
 - 公网双出口 A—C 直连、真实 SSH/SFTP、Web TCP 与数据库转发的候选版本验收仍待执行。
@@ -49,22 +51,27 @@ SSH 信息、凭据、票据或原始生产日志。
 - 四仓库兼容候选、发布说明、维护窗口与恢复步骤仍需在以上验收通过后确定。Rust 删除、
   libp2p v1 关闭和旧部署入口清理依赖正式 Java 版本成功发布及迁移恢复窗口结束。
 
-## 交付追溯更新（2026-10-02）
+## 交付追溯更新（2026-10-06）
 
 - Link [PR #54](https://github.com/Voghost/JLShellLink/pull/54) 将 Java Agent 发布改为随机暂存、
   版本目录校验和原子更新 latest；[PR #55](https://github.com/Voghost/JLShellLink/pull/55)
   为 Agent 归档记录固定运行时依赖；[PR #56](https://github.com/Voghost/JLShellLink/pull/56)
-  为每个 Maven JAR 写入构建源码 SHA、部署 CycloneDX SBOM，并在发布后逐个核对；Agent 平台包
-  也携带依赖 SBOM。三项 PR 当前均开放；PR #54、#55 CI 各 9 项检查全部通过，#56 新增 SBOM
-  后的 CI 待完成；本机全模块 `mvn -B -ntp clean verify` 已通过，CycloneDX 为 9 个模块生成
-  JSON/XML 清单，Agent BOM 中有组件缺少许可声明，需要后续核实。
+  为每个 Maven JAR 写入构建源码 SHA、部署 CycloneDX SBOM，并在发布前逐个核对；Agent 平台包
+  也携带依赖 SBOM。三项 PR 经 GitHub API 核对均为 OPEN，代码提交各 9 项 CI 检查全部通过；
+  #56 对应代码提交为 `8881154`。此前本机全模块 `mvn -B -ntp clean verify` 已通过，
+  CycloneDX 为 9 个模块生成 JSON/XML 清单，Agent BOM 中有组件缺少许可声明，需要后续核实。
 - 插件 [PR #39](https://github.com/Voghost/JLShellLinkPlugin/pull/39) 为发行 JAR 记录源码 revision、
-  固定依赖版本与 checksum，3 项平台 CI 检查通过，当前开放。
+  固定依赖版本、CycloneDX SBOM 与 checksum。显式设置 `skipNotDeployed=false` 修复未生成
+  SBOM 的 CI 失败，并将 SBOM 纳入 Release 校验及 SHA256SUMS。提交 `39f13fa` 的三平台 CI
+  全部通过，PR 当前为 OPEN。
 - Website [MR !55](https://gitlab.ooml.net/root/jlshellwebsite/-/merge_requests/55) 实现 Java Agent
   发布随机暂存和原子 latest 更新；[MR !56](https://gitlab.ooml.net/root/jlshellwebsite/-/merge_requests/56)
-  归档 Jenkins 构建来源清单并增加 OCI 来源标签。两项 MR 均开放且显示可合并；!56 尚无流水线，
-  需合并后的 Jenkins 实际构建确认。
-- 以上变更尚未合并、部署或触发稳定发布。它们补充来源追溯，不提供数字签名，也不替代客户端
+  归档 Jenkins 构建来源清单、前后端 SBOM 及其摘要并增加 OCI 来源标签；提交 `c678df4`
+  已推送到 !56。前端构建、真实 npm SBOM 生成、清单脚本检查及 Groovy/shell 语法检查通过；
+  高风险 npm 公告已在现有版本约束内修复，仍有 KaTeX/Mermaid 两项 low 公告。后端默认
+  0.1.3 依赖解析返回 401，待 Jenkins 用既有只读凭据验证。重新 fetch 后 !55/!56 的
+  分支提交均未进入 develop；未通过 GitLab 网页认证，尚未读取 MR/Jenkins 正式结果。
+- 以上变更未完成合入和实际交付验收，当前未部署或触发稳定发布。它们补充来源追溯，不提供数字签名，也不替代客户端
   签名验证、漏洞/许可审查与秘密扫描、真实平台生命周期及公网产品验收。CycloneDX SBOM
   提供直接和传递依赖清单，但不等同于漏洞扫描或许可审批。
 
