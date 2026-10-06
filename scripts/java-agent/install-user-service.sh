@@ -54,6 +54,8 @@ case "$ACTION" in
             printf 'export JLSHELL_LINK_TLS_PASSWORD_FILE=%s\n' "$(quote_shell "$TLS_PASSWORD")"
             printf 'export JLSHELL_LINK_ALLOWED_TARGETS=%s\n' "$(quote_shell "$ALLOWED_TARGETS")"
             [ -z "$TICKET_ISSUER" ] || printf 'export JLSHELL_LINK_TICKET_ISSUER=%s\n' "$(quote_shell "$TICKET_ISSUER")"
+            [ -z "${JLSHELL_LINK_STUN_SERVERS:-}" ] || \
+                printf 'export JLSHELL_LINK_STUN_SERVERS=%s\n' "$(quote_shell "$JLSHELL_LINK_STUN_SERVERS")"
             printf 'export JAVA=%s\n' "$(quote_shell "$BUNDLED_JAVA")"
             [ -z "${JLSHELL_LINK_JAVA_TOOL_OPTIONS:-}" ] || \
                 printf 'export JAVA_TOOL_OPTIONS=%s\n' "$(quote_shell "$JLSHELL_LINK_JAVA_TOOL_OPTIONS")"
@@ -66,6 +68,7 @@ case "$ACTION" in
                 command -v systemctl >/dev/null 2>&1 || fail '找不到 systemctl'
                 UNIT_DIR="$CONFIG_DIR/systemd"
                 mkdir -p "$UNIT_DIR"
+                APP_DIR_SYSTEMD=$(printf '%s' "$APP_DIR" | sed 's/\\/\\\\/g; s/"/\\"/g; s/%/%%/g')
                 cat >"$UNIT_DIR/$UNIT_NAME.service" <<EOF
 [Unit]
 Description=JLShell Link Java Agent
@@ -74,8 +77,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=$APP_DIR/run-agent.sh
-ExecStop=$APP_DIR/stop-agent.sh
+ExecStart="$APP_DIR_SYSTEMD/run-agent.sh"
+ExecStop="$APP_DIR_SYSTEMD/stop-agent.sh"
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=20

@@ -16,6 +16,7 @@ import tarfile
 import tempfile
 import xml.etree.ElementTree as ET
 import zipfile
+import urllib.request
 from pathlib import Path
 
 
@@ -24,6 +25,8 @@ PACKAGE_PREFIX = "jlshell-link-agent-java"
 REQUIRED_MODULES = ["java.se", "jdk.crypto.ec", "jdk.unsupported"]
 OPTIONAL_MODULES = ["jdk.jfr", "jdk.sctp"]
 PACKAGE_FILES = [
+    (Path("scripts/java-agent/upgrade-windows-service.ps1"), Path("scripts/java-agent/upgrade-windows-service.ps1")),
+    (Path("scripts/java-agent/upgrade-user-service.sh"), Path("scripts/java-agent/upgrade-user-service.sh")),
     (Path("docs/agent-cli.md"), Path("docs/agent-cli.md")),
     (Path("docs/agent-service.md"), Path("README.md")),
     (Path("scripts/java-agent/run-agent.sh"), Path("scripts/java-agent/run-agent.sh")),
@@ -114,6 +117,15 @@ def run_checked(command: list[str], description: str) -> None:
 def copy_package_contents(root: Path, agent_jar: Path, dependency_bom: Path) -> None:
     shutil.copy2(agent_jar, root / "link-agent.jar")
     shutil.copy2(dependency_bom, root / "dependencies.cyclonedx.json")
+    if platform.system() == "Windows":
+        wrapper = root / "service/WinSW-x64.exe"
+        wrapper.parent.mkdir(parents=True, exist_ok=True)
+        with urllib.request.urlopen("https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe", timeout=60) as source:
+            with wrapper.open("wb") as destination:
+                shutil.copyfileobj(source, destination)
+        if sha256(wrapper) != "05b82d46ad331cc16bdc00de5c6332c1ef818df8ceefcd49c726553209b3a0da":
+            wrapper.unlink()
+            raise RuntimeError("WinSW 固定发行摘要不匹配")
     for source_rel, target_rel in PACKAGE_FILES:
         source = ROOT / source_rel
         target = root / target_rel
@@ -228,6 +240,8 @@ def main() -> None:
 
     os_id, arch, platform_label = platform_id()
     dependencies = dependency_versions()
+    if os_id == "windows":
+        dependencies["winsw"] = "2.12.0"
     modules = [*REQUIRED_MODULES, *(name for name in OPTIONAL_MODULES if (java_home / "jmods" / f"{name}.jmod").is_file())]
     package = f"{PACKAGE_PREFIX}-{args.version}-{platform_label}"
     args.output_dir.mkdir(parents=True, exist_ok=True)

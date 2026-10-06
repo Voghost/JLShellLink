@@ -83,10 +83,21 @@ jobs:
     needs: package
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+      - name: Sign platform manifests
+        env:
+          JLSHELL_AGENT_PUBLISHER_PRIVATE_KEY: ${{ secrets.JLSHELL_AGENT_PUBLISHER_PRIVATE_KEY }}
+        run: python3 scripts/sign-agent-manifests.py --directory dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jlshell-link-agent-java-${{ inputs.version }}-signed-release
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
       - name: Upload and publish Java Agent packages
         env:
           RELEASE_VERSION: ${{ inputs.version }}
@@ -108,8 +119,8 @@ jobs:
           site_url="${site_url%/}"
           release_id="$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
           mapfile -d '' assets < <(find dist -maxdepth 1 -type f -print0 | sort -z)
-          if [[ "${#assets[@]}" -ne 12 ]]; then
-            echo 'Expected 12 Java Agent archives, manifests, and checksum files.' >&2
+          if [[ "${#assets[@]}" -ne 15 ]]; then
+            echo 'Expected 15 Java Agent archives, manifests, signatures, and checksum files.' >&2
             exit 1
           fi
           files_json='[]'

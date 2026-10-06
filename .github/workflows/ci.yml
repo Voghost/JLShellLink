@@ -24,6 +24,12 @@ jobs:
           java-version: '21'
           cache: maven
           cache-dependency-path: pom.xml
+      - name: Verify Agent publisher signing boundaries
+        if: runner.os == 'Linux'
+        run: python3 scripts/test-sign-agent-manifests.py
+      - name: Verify Agent upgrade restoration boundaries
+        if: runner.os != 'Windows'
+        run: python3 scripts/test-agent-upgrade.py
       - name: Verify Java Link POC
         env:
           JLSHELL_LINK_ICE_TEST_ENABLED: ${{ matrix.runner != 'windows-2025' }}
@@ -34,6 +40,7 @@ jobs:
         run: |
           foreach ($path in @(
             "$PWD/scripts/java-agent/install-windows-service.ps1",
+            "$PWD/scripts/java-agent/upgrade-windows-service.ps1",
             "$PWD/scripts/java-agent/test-windows-service.ps1"
           )) {
             $tokens = $null
@@ -59,6 +66,7 @@ jobs:
           sh -n scripts/java-agent/run-agent.sh
           sh -n scripts/java-agent/stop-agent.sh
           sh -n scripts/java-agent/install-user-service.sh
+          sh -n scripts/java-agent/upgrade-user-service.sh
           sh -n scripts/java-agent/test-macos-service.sh
           sh -n scripts/package-java-agent.sh
       - name: Exercise macOS Agent LaunchAgent lifecycle
