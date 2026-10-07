@@ -48,6 +48,21 @@ jobs:
           fi
       - name: Verify Link modules
         run: mvn -B -ntp verify
+      - name: Enforce Java delivery vulnerability and secret gates
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=()
+          while IFS= read -r -d '' bom; do args+=(--sbom "$bom"); done < <(find . -path '*/target/bom.json' -print0)
+          test "${#args[@]}" -gt 0
+          python3 scripts/security/scan.py --secrets "${args[@]}" --output security-report.json
+      - uses: actions/upload-artifact@v4
+        if: always() && runner.os == 'Linux'
+        with:
+          name: java-delivery-security
+          path: security-report.json
+          if-no-files-found: ignore
       - name: Set Agent package version
         env:
           RELEASE_VERSION: ${{ inputs.version }}
