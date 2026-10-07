@@ -10,6 +10,14 @@
 - 公钥随插件资源独立交付，Website 从 `JLSHELL_AGENT_PUBLISHER_PUBLIC_KEYS` 配置加载。公钥指纹为 `b09fdad09dd00e19e31080d7c21e8599218596d5234ad0f471399cdad44b2176`。
 - 私钥不会被公钥验证器、TLS 回源证书或下载清单替代。轮换须独立更新两端信任锚，不从清单自动添加信任。
 
+## 本轮候选的实际核对（2026-10-07）
+
+- [CI run 37563185707](https://github.com/Voghost/JLShellLink/actions/runs/37563185707) 十项检查全部通过；三平台归档来自 PR 合并提交 `b32bc62f7b6130de97cb5dbfb0850f2a81d53b0e`，不是正式 main 发行。
+- 下载后的三个 ZIP 已逐文件复核，并核对包内 Agent JAR 来源和外部 manifest 的共同元数据；外部清单中的 ZIP/TAR 大小及 SHA-256 均已复核。
+- 三个外部 manifest 均已使用专用 Ed25519 发布密钥签名，并通过插件随包公钥的独立 OpenSSL 验签。签名后删除本机临时私钥，保留 GitHub Secret 和隔离环境受限备份。
+- macOS 实机已使用候选内置 Java 21.0.12.1 启动运行时及 Agent `help`。这只验证可启动，不代表服务注册、登录边界、升级恢复或业务验收通过；未安装服务或改动生产。
+- 三平台真实生命周期和产品业务验收尚未完成；Windows 连接信息与 Website Jenkins 验证仍待提供。
+
 ## DIST-01 / QA-01
 
 1. 从同一个通过 CI 的提交取 Linux/macOS/Windows 包，检查包内 JAR 来源 SHA 与外部 manifest 一致。

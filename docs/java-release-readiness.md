@@ -1,8 +1,19 @@
 # Java Link 发布就绪状态
 
-更新日期：2026-10-06。本文记录平台交付、迁移、综合验收、发布切换和 Rust 退役的
+更新日期：2026-10-07。本文记录平台交付、迁移、综合验收、发布切换和 Rust 退役的
 放行状态。只记录版本、提交、汇总结果和公开工作流链接；不记录账号、节点标识、IP、
 SSH 信息、凭据、票据或原始生产日志。
+
+## 最新核对（2026-10-07）
+
+本节和“仍未放行”为当前状态，下方带日期的段落保留为历史快照。
+
+- Link #57/#58、插件 #41、Website !58 已合入。内部 Maven 提交版本实际发布成功，见 [run 37560051557](https://github.com/Voghost/JLShellLink/actions/runs/37560051557)。
+- 本轮 [Link #59](https://github.com/Voghost/JLShellLink/pull/59) 的 [CI run 37563185707](https://github.com/Voghost/JLShellLink/actions/runs/37563185707) 十项检查全部通过；[插件 #42](https://github.com/Voghost/JLShellLinkPlugin/pull/42) 的 [CI run 37562472239](https://github.com/Voghost/JLShellLinkPlugin/actions/runs/37562472239) 三平台通过。许可、漏洞、秘密和实际平台包来源/摘要/运行时门禁已执行。Website !59 的实际后端和镜像仍待 Jenkins。
+- 同一 PR 合并提交 `b32bc62f7b6130de97cb5dbfb0850f2a81d53b0e` 的三平台包均为 Java 21.0.12.1，包内 JAR 来源与清单一致。外部归档摘要已复核，三个发布清单已签名，使用插件内置独立公钥全部验签通过。仅作隔离候选，尚未正式发布或切换生产。
+- 公钥已加入 Website 环境配置，插件默认内置官方公钥并允许显式私有部署配置；指纹见 [执行顺序](chapter10-execution.md)。已删除本机临时私钥副本，保留 GitHub Secret 和隔离环境的受限备份。
+- 兼容宿主 0.1.67 的说明在 [宿主 #87](https://github.com/Voghost/JLShell/pull/87)；插件最低宿主已修正。已发布 0.1.66 不具备本次必需的 v2 路由能力。
+- 三平台真实生命周期、双出口业务、压力与恢复验收均未放行。Windows 机器已由用户确认存在，具体连接入口尚待提供。验收工具只负责执行/核对真实证据，不构成通过结论。
 
 ## 已有结果
 
@@ -43,11 +54,9 @@ SSH 信息、凭据、票据或原始生产日志。
 
 - Java Agent 稳定发布工作流尚未在 `main` 上运行；Website 公开 Java 包入口尚未经该工作流
   完成端到端上传和下载验收。
-- 外部 manifest 与 SHA-256 用于比对构建输出和发现传输损坏，尚未实现客户端可验证的
-  数字签名。Agent/插件安装不得把 SHA-256 单独描述为可信发布者签名。
+- 客户端可验证的 Ed25519 签名已实现，三个 CI 候选已独立验签；仍需 main 来源的正式签名发行及真实下载/安装验收。SHA-256 本身不等于发布者签名。
 - 插件尚未完成使用 Java Agent 压缩包的真实 SFTP 安装、远端校验、服务升级及失败回滚。
-- 受签名清单约束的离线安装、提交唯一版本的内部制品流程、Java 依赖漏洞与许可门禁、
-  发布秘密扫描和四仓库全新 CI 交付证据仍需补齐。
+- 离线安装和门禁代码、内部实际发布已完成；真实离线目标机验收及 Website Jenkins 的后端/实际镜像结果仍需补齐。四仓库交付证据尚未全部收齐。
 - Linux systemd、macOS LaunchAgent、Windows Service 的真实目标机生命周期、登录状态和
   权限边界需要在目标平台验收；不以 CI 代替生产设备验收。
 - 公网双出口 A—C 直连、真实 SSH/SFTP、Web TCP 与数据库转发的候选版本验收仍待执行。
