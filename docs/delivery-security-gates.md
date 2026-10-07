@@ -1,7 +1,7 @@
 # 交付安全门禁
 
 本轮覆盖运行依赖漏洞、受 Git 管理的工作树秘密扫描，以及 Website 镜像漏洞。
-许可证审核、运行时包内 JRE/WinSW 扫描及正式平台验收继续由第 10 章跟踪，不能以本门禁代替。
+新增 CycloneDX 许可覆盖与 SPDX 表达式检查；缺失声明、不认识的许可和不在许可策略内的第三方依赖阻止发布。真实平台及综合产品验收继续由第 10 章跟踪。
 
 ## 执行与失败条件
 
@@ -30,3 +30,19 @@ python3 scripts/security/scan.py --secrets --sbom path/to/bom.json --output secu
 ```
 
 传入文件必须由当前候选构建生成。扫描通过只说明当前数据库和扫描规则未发现阻断项，不代表许可审核、综合业务验收或正式发行已经完成。
+
+## 许可覆盖
+
+策略位于 `scripts/security/licenses.py`。内部 JLShell 坐标单独标为内部组件，不虚构其开源许可证。
+第三方组件必须有允许的许可声明，`AND` 必须全部满足，`OR` 必须至少有完整允许分支；非法表达式拒绝。
+Bouncy Castle 的上游许可名称按其官方 MIT 声明归一；Jitsi 的 Public Domain 只匹配固定坐标/版本。
+未启用的 UPnP 与 JNA 被排除，实际 ICE/STUN 和业务传输必须继续通过测试；不以关闭许可门禁处理它们。
+Website 的 khroma 2.1.0 包缺少 npm license 字段，通过固定版本自带许可文本 SHA-256 核对后补入 MIT；换版本或换许可文本须重新复核。
+本检查是依赖许可风险门禁；复制、再分发时仍须保留上游 LICENSE/NOTICE，不把本报告当作许可授权文件。
+
+## 平台包检查
+
+`audit-platform-packages.py` 在 CI 汇总三平台 ZIP，并在正式签名前再次检查：完整 manifest 文件集、逐文件长度/摘要、三平台版本及来源一致、Java 21 runtime/release、WinSW 固定版本/摘要、包内 Rust/JNA/UPnP 排除。
+固定并校验 Grype 0.120.1，对实际包中读取的 OpenJDK 版本及 WinSW 版本按声明 CPE 扫描，HIGH/CRITICAL 阻止签名和上传。
+CPE 匹配受公共漏洞库覆盖影响，未匹配公告不能证明没有漏洞；归档报告记录实际版本及 CPE。
+发布下载只选择 Agent 平台资产，避免安全报告混入 15 文件发行契约。

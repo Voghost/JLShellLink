@@ -53,6 +53,11 @@
             <groupId>org.jitsi</groupId>
             <artifactId>ice4j</artifactId>
             <version>${ice4j.version}</version>
+        <exclusions>
+                <!-- ICE uses host/STUN candidates only; no UPnP or native loader. -->
+                <exclusion><groupId>org.bitlet</groupId><artifactId>weupnp</artifactId></exclusion>
+                <exclusion><groupId>net.java.dev.jna</groupId><artifactId>jna</artifactId></exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>

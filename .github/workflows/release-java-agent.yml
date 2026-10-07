@@ -47,7 +47,9 @@ jobs:
             exit 1
           fi
       - name: Verify Link modules
-        run: mvn -B -ntp verify
+        env:
+          SOURCE_REVISION: ${{ github.sha }}
+        run: mvn -B -ntp verify "-Djlshell.build.revision=${{ github.sha }}"
       - name: Enforce Java delivery vulnerability and secret gates
         if: runner.os == 'Linux'
         shell: bash
@@ -69,7 +71,9 @@ jobs:
         shell: bash
         run: mvn -B -ntp org.codehaus.mojo:versions-maven-plugin:2.18.0:set "-DnewVersion=$RELEASE_VERSION" -DgenerateBackupPoms=false
       - name: Build shaded Agent
-        run: mvn -B -ntp -pl link-agent -am -DskipTests package
+        env:
+          SOURCE_REVISION: ${{ github.sha }}
+        run: mvn -B -ntp -pl link-agent -am -DskipTests package "-Djlshell.build.revision=${{ github.sha }}"
       - name: Package Java 21 Agent (Linux/macOS)
         if: runner.os != 'Windows'
         env:
@@ -102,7 +106,16 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dist
+          pattern: jlshell-link-agent-java-${{ inputs.version }}-*
           merge-multiple: true
+      - name: Audit actual platform packages before signing
+        run: python3 scripts/security/audit-platform-packages.py --directory dist --output platform-security.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: platform-security
+          path: platform-security.json
+          if-no-files-found: ignore
       - name: Sign platform manifests
         env:
           JLSHELL_AGENT_PUBLISHER_PRIVATE_KEY: ${{ secrets.JLSHELL_AGENT_PUBLISHER_PRIVATE_KEY }}
