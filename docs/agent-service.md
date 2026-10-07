@@ -68,3 +68,55 @@ Windows Service 由 WinSW v2.12.0 包装。安装器从 WinSW 上游 release 下
 包中包含 Java 21 runtime、shaded Agent 和服务控制脚本。注册令牌、节点私钥、Agent 凭据、TLS
 私钥/密码、节点白名单均由部署者提供，禁止放入发布包。Linux/macOS 采用用户级服务；
 Windows 使用专属虚拟服务账号。首版不自动添加防火墙规则，也不启动公网监听。
+
+
+## 发布签名与 SSH 安装（DIST-01 候选）
+
+发布清单旁新增 `<包名>.signature.json`，签署 UTF-8 清单的**原始字节**，不重新序列化 JSON。
+协议：`schemaVersion=1`、`algorithm=Ed25519`、`keyId=SHA-256(SPKI DER)`、
+`manifestSha256` 和 base64 编码的 64 字节 `signature`。签名清单内的归档大小和 SHA-256
+将 JAR、Java runtime、服务脚本及 SBOM 绑定为一个发行包。原 `.sha256` 仍覆盖两种归档和清单；
+签名 sidecar 本身由 Ed25519 校验，不作为自签名输入。三平台发布共 15 个资产。
+
+### 一次性配置
+
+发布者使用独立 Ed25519 密钥，不能复用节点、票据或 TLS 私钥。GitHub Repository Secret
+`JLSHELL_AGENT_PUBLISHER_PRIVATE_KEY` 保存 **PKCS8 DER 的 base64**；不要提交到仓库。
+使用受保护工作目录生成：
+
+```sh
+umask 077
+openssl genpkey -algorithm Ed25519 -out publisher.pem
+openssl pkcs8 -topk8 -nocrypt -in publisher.pem -outform DER -out publisher.pkcs8.der
+openssl pkey -in publisher.pem -pubout -outform DER -out publisher.spki.der
+```
+
+以上需要 OpenSSL 3。将 `publisher.pkcs8.der` 的 base64 放入上述 Secret；将
+`publisher.spki.der` 的 base64 公钥独立核对后配置到 Website `.env` 的
+`JLSHELL_AGENT_PUBLISHER_PUBLIC_KEYS` 和插件高级设置中的 **Agent 发布公钥**。
+支持逗号分隔的多个公钥以轮换；先下发新公钥，再用新私钥发布。旧公钥只在旧签名安装版本
+不再需要恢复后撤除。公钥没有保密要求；私钥只留在受保护工作目录与 GitHub Secret。
+Website 未配置公钥会拒绝发布，插件未配置公钥会拒绝安装，不提供跳过验签的开关。
+
+部署顺序：Website 验签 MR → 插件安装 PR → Link 签名发布 PR → main 来源的候选发布。
+此次代码不触发发布、不修改生产配置，也不将候选构建标记为正式签名发行。
+
+### 插件与离线包
+
+使用现有 SSH 会话里的可选安装面板，选择同一目录中的 ZIP、manifest.json 与 signature.json。
+插件验签、检查归档大小/SHA-256及 ZIP 路径，然后通过 SFTP 上传到随机私有暂存目录，
+远端再次核对 ZIP 摘要才解包。只支持 Linux x64、macOS arm64、Windows x64。
+首次注册填 Agent ID 和一次性令牌；令牌仅经 SFTP 文件传递，目录为当前用户独占，Unix
+令牌文件为 600，注册后清理。准备好远端 Ed25519 TLS identity、密码文件和目标白名单；
+不覆盖已有节点身份。升级时不填令牌，必须能核验已安装的 release manifest/signature，
+拒绝降级及同版本不同清单。旧未签名安装需要先按运维流程核对并处理，不能自动信任。
+Windows 发行 ZIP 内置固定摘要的 WinSW v2.12.0，因此已取得签名包后不需要再联网下载服务包装器。
+
+`upgrade-user-service.sh` / `upgrade-windows-service.ps1` 在诊断后保存程序与服务配置，
+停止旧服务，安装新版本并检查进程保持运行；失败时恢复旧程序和服务配置。注册身份和业务凭据
+不参与版本替换。首次注册失败后可能保留新节点身份；Website 令牌已消费时必须重新取票，
+不能声称控制平面注册操作也被回滚。恢复失败会返回非零状态，必须核对服务。
+
+当前只完成脚本恢复边界与插件部署模拟；**真实三平台升级/启动条件、节点在线与业务恢复仍待验收**。
+Linux 用户服务无登录启动需运维确认 linger；macOS LaunchAgent 依赖登录会话，
+Windows 需要管理员安装及专属虚拟服务账号。服务进程运行不等于 B 控制连接或业务已经恢复。

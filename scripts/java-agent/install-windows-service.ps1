@@ -113,7 +113,9 @@ switch ($Action) {
 
         $download = Join-Path $env:TEMP ('jlshell-winsw-' + [guid]::NewGuid().ToString('N') + '.exe')
         try {
-            Invoke-WebRequest -UseBasicParsing -Uri $wrapperUrl -OutFile $download
+            $bundledWrapper = Join-Path $packageRoot 'service\WinSW-x64.exe'
+            if (Test-Path -LiteralPath $bundledWrapper) { Copy-Item -LiteralPath $bundledWrapper -Destination $download }
+            else { Invoke-WebRequest -UseBasicParsing -Uri $wrapperUrl -OutFile $download }
             $actual = (Get-FileHash -Algorithm SHA256 $download).Hash.ToLowerInvariant()
             if ($actual -ne $wrapperSha256) { Fail 'WinSW SHA-256 校验失败。' }
             Copy-Item -Force $download $wrapperPath
@@ -134,6 +136,7 @@ switch ($Action) {
         $startXml = Xml $startArguments
         $stopXml = Xml ($stopArguments -join ' ')
         $logXml = Xml (Join-Path $dataRoot 'logs')
+        $stunXml = Xml ([string]$env:JLSHELL_LINK_STUN_SERVERS)
         @"
 <?xml version="1.0" encoding="UTF-8"?>
 <service>
@@ -149,6 +152,7 @@ switch ($Action) {
   <logpath>$logXml</logpath>
   <log mode="roll" />
   <hidewindow>true</hidewindow>
+  <env name="JLSHELL_LINK_STUN_SERVERS" value="$stunXml" />
 </service>
 "@ | Set-Content -Encoding UTF8 $wrapperXml
 
