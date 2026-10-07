@@ -72,6 +72,9 @@ def verify(path):
             raise ValueError('Expected a patched Java 21 runtime')
         jar = io.BytesIO(archive.read(prefix + 'link-agent.jar'))
         with zipfile.ZipFile(jar) as classes:
+            headers = classes.read('META-INF/MANIFEST.MF').decode().replace('\r\n ', '')
+            if 'JLShell-Build-Revision: ' + manifest['sourceRevision'] not in headers.splitlines():
+                raise ValueError('Agent JAR source revision does not match bundle')
             if any(n.startswith(('com/sun/jna/', 'org/bitlet/weupnp/')) for n in classes.namelist()):
                 raise ValueError('Native loader or UPnP dependency in Java bundle')
         for n in names:
