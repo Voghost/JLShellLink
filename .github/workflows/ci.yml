@@ -110,6 +110,30 @@ jobs:
               throw "Windows Java Agent output is missing: $suffix"
             }
           }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: java-agent-candidate-${{ runner.os }}
+          path: link-agent/target/distribution/*
+          if-no-files-found: error
+          retention-days: 7
+
+  platform-delivery:
+    needs: java-poc
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: java-agent-candidate-*
+          path: candidate
+          merge-multiple: true
+      - run: python3 scripts/security/audit-platform-packages.py --directory candidate --output platform-security.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: platform-security
+          path: platform-security.json
+          if-no-files-found: ignore
 
   quality:
     runs-on: ubuntu-24.04

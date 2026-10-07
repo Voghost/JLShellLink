@@ -102,7 +102,16 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dist
+          pattern: jlshell-link-agent-java-${{ inputs.version }}-*
           merge-multiple: true
+      - name: Audit actual platform packages before signing
+        run: python3 scripts/security/audit-platform-packages.py --directory dist --output platform-security.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: platform-security
+          path: platform-security.json
+          if-no-files-found: ignore
       - name: Sign platform manifests
         env:
           JLSHELL_AGENT_PUBLISHER_PRIVATE_KEY: ${{ secrets.JLSHELL_AGENT_PUBLISHER_PRIVATE_KEY }}
