@@ -49,7 +49,7 @@ jobs:
       - name: Verify Link modules
         env:
           SOURCE_REVISION: ${{ github.sha }}
-        run: mvn -B -ntp verify "-Djlshell.build.revision=$SOURCE_REVISION"
+        run: mvn -B -ntp verify "-Djlshell.build.revision=${{ github.sha }}"
       - name: Enforce Java delivery vulnerability and secret gates
         if: runner.os == 'Linux'
         shell: bash
@@ -73,7 +73,7 @@ jobs:
       - name: Build shaded Agent
         env:
           SOURCE_REVISION: ${{ github.sha }}
-        run: mvn -B -ntp -pl link-agent -am -DskipTests package "-Djlshell.build.revision=$SOURCE_REVISION"
+        run: mvn -B -ntp -pl link-agent -am -DskipTests package "-Djlshell.build.revision=${{ github.sha }}"
       - name: Package Java 21 Agent (Linux/macOS)
         if: runner.os != 'Windows'
         env:

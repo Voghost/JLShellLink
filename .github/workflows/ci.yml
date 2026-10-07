@@ -34,7 +34,7 @@ jobs:
         env:
           JLSHELL_LINK_ICE_TEST_ENABLED: ${{ matrix.runner != 'windows-2025' }}
           SOURCE_REVISION: ${{ github.sha }}
-        run: mvn -B -ntp verify "-Djlshell.build.revision=$SOURCE_REVISION"
+        run: mvn -B -ntp verify "-Djlshell.build.revision=${{ github.sha }}"
       - name: Enforce Java delivery vulnerability and secret gates
         if: runner.os == 'Linux'
         shell: bash

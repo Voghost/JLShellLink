@@ -133,6 +133,11 @@ def main():
 if __name__ == '__main__':
     try:
         raise SystemExit(main())
-    except (OSError,ValueError,KeyError,zipfile.BadZipFile,tarfile.TarError,subprocess.SubprocessError):
-        print('Platform package audit failed; publishing is blocked.')
+    except (OSError,ValueError,KeyError,zipfile.BadZipFile,tarfile.TarError,subprocess.SubprocessError) as error:
+        message = str(error)
+        safe_reasons = {'Agent JAR source revision does not match bundle', 'Manifest file digest mismatch',
+                        'Platform release consistency mismatch', 'Runtime vulnerability scan failed',
+                        'Expected a patched Java 21 runtime', 'Unexpected Windows service wrapper'}
+        print('Platform package audit failed; publishing is blocked.' +
+              (' Reason: ' + message if message in safe_reasons else ''))
         raise SystemExit(2)
