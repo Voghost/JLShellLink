@@ -3,6 +3,7 @@
 import argparse
 import datetime
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -21,8 +22,8 @@ def measured(result):
             SHA.fullmatch(str(result.get('evidenceSha256',''))) is not None)
 
 
-def validate(report, phase):
-    require(report.get('schemaVersion')==1,'Invalid readiness schema')
+def validate(report, phase, expected_source=None):
+    require(isinstance(report,dict) and type(report.get('schemaVersion')) is int and report['schemaVersion']==1,'Invalid readiness schema')
     source=report.get('linkSourceRevision','');require(REVISION.fullmatch(source),'Bind the tested Link source revision')
     require(set(report.get('platforms',{}))==PLATFORMS,'All three real platforms are required')
     for platform,result in report['platforms'].items():
@@ -34,6 +35,7 @@ def validate(report, phase):
     stress=report.get('stress',{});require(measured(stress),'Missing measured stress acceptance')
     require(type(stress.get('attemptedConcurrentFlows')) is int and stress['attemptedConcurrentFlows']>=100,'100 concurrent attempts must be measured')
     require(type(stress.get('acceptedFlows')) is int and type(stress.get('boundedRejectedFlows')) is int
+            and stress['acceptedFlows']>=0 and stress['boundedRejectedFlows']>=0
             and stress['acceptedFlows']+stress['boundedRejectedFlows']==stress['attemptedConcurrentFlows'],'Account for every load attempt; bounded rejection is not success')
     require(all(stress.get(k) is True for k in ('slowConsumer','packetLoss','longConnection','repeatedRestarts','noLeaks')),'Incomplete stress cases')
     require(measured(report.get('noRustSidecar',{})),'Missing actual A/B/C no-sidecar startup evidence')
@@ -43,6 +45,15 @@ def validate(report, phase):
         require(report.get('recovery',{}).get('registrationBoundaryVerified') is True,'Recovery must preserve consumed enrollment semantics')
         eligible=subprocess.run(['git','merge-base','--is-ancestor',source,'origin/main'],capture_output=True)
         require(eligible.returncode==0,'Formal release requires tested source already merged into main')
+        if expected_source is not None:
+            require(REVISION.fullmatch(expected_source),'Invalid requested release source')
+            # A main merge commit may differ from the tested develop SHA, but its tree must not.
+            trees=[]
+            for revision in (source,expected_source):
+                result=subprocess.run(['git','rev-parse',revision+'^{tree}'],capture_output=True,text=True)
+                require(result.returncode==0,'Cannot resolve tested/released source tree')
+                trees.append(result.stdout.strip())
+            require(trees[0]==trees[1],'Release tree differs from the actually tested source')
         require(measured(report.get('compatibility',{})),'Missing actual four-product compatibility evidence')
     if phase=='retire':
         require(measured(report.get('production',{})),'Missing formal production health acceptance')
@@ -53,10 +64,21 @@ def validate(report, phase):
     return source
 
 
-if __name__=='__main__':
-    parser=argparse.ArgumentParser();parser.add_argument('--report',type=Path,required=True);parser.add_argument('--phase',choices=['qa','release','retire'],required=True);args=parser.parse_args()
+def main():
+    parser=argparse.ArgumentParser()
+    source=parser.add_mutually_exclusive_group(required=True)
+    source.add_argument('--report',type=Path)
+    source.add_argument('--report-env',help='Environment variable containing the sanitized, operator-reviewed report')
+    parser.add_argument('--phase',choices=['qa','release','retire'],required=True)
+    parser.add_argument('--expected-source',help='Release commit whose Git tree must match the tested source')
+    args=parser.parse_args()
     try:
-        validate(json.loads(args.report.read_text()),args.phase)
-    except (OSError,ValueError,KeyError,TypeError,subprocess.SubprocessError):
+        raw=args.report.read_text() if args.report else os.environ.get(args.report_env,'')
+        validate(json.loads(raw),args.phase,args.expected_source)
+    except (OSError,ValueError,KeyError,TypeError,AttributeError,subprocess.SubprocessError):
         raise SystemExit('Release readiness is incomplete; requested phase is blocked. No private input values are logged.') from None
     print('Release readiness: PASS ('+args.phase+')')
+
+
+if __name__=='__main__':
+    main()
