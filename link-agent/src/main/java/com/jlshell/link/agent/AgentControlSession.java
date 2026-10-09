@@ -151,8 +151,10 @@ public final class AgentControlSession implements AutoCloseable {
             }
             handleRelayRequests(relayRequests, current);
             try {
-                var diagnosticRequests = api.claimConnectivityDiagnostics(credential, controlSessionId);
-                if (!diagnosticRequests.isEmpty()) diagnosticHandler.accept(diagnosticRequests, current);
+                if (api.supportsConnectivityDiagnostics()) {
+                    var diagnosticRequests = api.claimConnectivityDiagnostics(credential, controlSessionId);
+                    if (!diagnosticRequests.isEmpty()) diagnosticHandler.accept(diagnosticRequests, current);
+                }
             } catch (AgentControlPlaneClient.ApiException unsupported) {
                 // Older Website deployments do not expose the optional diagnostics endpoint.
                 if (unsupported.statusCode() != 404) throw unsupported;
