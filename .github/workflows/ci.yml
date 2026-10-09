@@ -27,6 +27,9 @@ jobs:
       - name: Verify Agent publisher signing boundaries
         if: runner.os == 'Linux'
         run: python3 scripts/test-sign-agent-manifests.py
+      - name: Verify real acceptance release gate boundaries
+        if: runner.os == 'Linux'
+        run: python3 scripts/qa/test-release-readiness.py
       - name: Verify Agent upgrade restoration boundaries
         if: runner.os != 'Windows'
         run: python3 scripts/test-agent-upgrade.py

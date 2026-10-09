@@ -12,8 +12,27 @@ permissions:
   contents: read
 
 jobs:
+  readiness:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Require real platform, business, stress and recovery acceptance
+        env:
+          JLSHELL_LINK_RELEASE_READINESS: ${{ secrets.JLSHELL_LINK_RELEASE_READINESS }}
+        run: >-
+          python3 scripts/qa/check-release-readiness.py
+          --report-env JLSHELL_LINK_RELEASE_READINESS
+          --phase release --expected-source "${{ github.sha }}"
+
   package:
     if: github.ref == 'refs/heads/main'
+    needs: readiness
     strategy:
       fail-fast: false
       matrix:

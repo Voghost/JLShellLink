@@ -54,6 +54,8 @@ python3 scripts/qa/verify-business-tunnels.py --config /private/acceptance.json 
 - 先保存当前稳定 Website 镜像/配置、已安装 Java Agent 与宿主包的受限恢复快照。首发没有上一稳定 Java 平台包时明确记录，不虚构历史版本；实测 Website 镜像恢复与候选 Java 服务升级恢复，确认其适用范围。
 - 合并并部署 Website v2/验签 → 兼容宿主 → main 来源签名 Agent → 插件 → 选定节点验收 → 开放正式入口。
 - 正式发布前执行 `check-release-readiness.py --phase release`；维护时间和恢复窗口由用户安排，不因 PR 合入自动切换生产。
+- `Release Java Agent` 在打包及签名前强制运行同一验收门禁。完成实际验收后，由维护者把脱敏报告 JSON 配置为仓库 Secret `JLSHELL_LINK_RELEASE_READINESS`，而非把原始证据或凭据提交 Git。报告要求三平台、业务、压力、无 sidecar、签名、兼容与恢复的通过状态和证据摘要；它是人工审核后的验收记录，不是对真实测量的自动证明。缺失/不完整会阻止发布。
+- 验收源码必须已进入 main，并与本次 workflow 提交的 Git tree 完全相同；main 的纯合并提交可以具有不同 SHA，内容差异则必须重验。修改 Java 代码、脚本或文档后不能继续沿用旧内容的放行记录。当前没有配置该 Secret，因为实际验收尚未完成。
 
 ## RETIRE-01
 
@@ -67,3 +69,12 @@ python3 scripts/qa/verify-business-tunnels.py --config /private/acceptance.json 
 - 更新四仓库 README/AGENTS 与架构链接到实际 Java 版本。
 
 源码清理 PR 不等于旧服务已停用；运行态停用必须在同一验收窗口核对。当前这些条件未全部满足，不执行生产停服或删除恢复所需源码。
+
+## 合并后续验收（2026-10-09）
+
+Link #59、插件 #42、Website !59 和宿主 #87 已合入 develop。正式发布及退役条件仍未满足。
+
+- Linux 实机与 macOS 实机的候选内置 Java 21 启动、独立状态目录初始化、状态查询和私有目录/文件权限检查通过。没有注册新节点或安装服务，这些结果不代替真实服务生命周期验收。
+- B 隔离环境的证书确实已过期；使用保持原身份的续期工具更新并只重建隔离后端，HTTPS 证书校验和公开控制端点返回 200。未修改生产环境。
+- 本次 A/C STUN 映射均为公网地址，但映射地址相同，不能构成双出口验收。原始映射仅在受限验收文件，未记录到仓库。后续必须换一个不同出口的真实 A，并重新采集证据；没有 A—C 直连通过结论。
+- Windows 连接信息和 Website Jenkins 构建结果仍待提供。当前候选的完整业务、压力、重启/登录条件与升级恢复验收未完成。

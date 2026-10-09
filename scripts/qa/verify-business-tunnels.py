@@ -39,7 +39,7 @@ def execute(command, *, data=None, environment=None):
 def ssh_options(configuration, port):
     alias=configuration['hostKeyAlias']
     if not alias or any(c.isspace() for c in alias):raise ValueError('Invalid SSH target alias')
-    return ['-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','ConnectTimeout=15',
+    return ['-F','none','-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','ConnectTimeout=15',
             '-o','UserKnownHostsFile='+configuration['knownHostsFile'],'-o','HostKeyAlias='+alias,
             '-o','LogLevel=ERROR']
 
@@ -61,13 +61,16 @@ def probe(case, lease, private):
         if not path.startswith('/') or '\n' in path or '\r' in path:raise ValueError('Invalid HTTP path')
         class NoRedirect(urllib.request.HTTPRedirectHandler):
             def redirect_request(self,*args,**kwargs):return None
-        opener=urllib.request.build_opener(NoRedirect())
+        opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect())
         request=urllib.request.Request(f'http://127.0.0.1:{port}'+path,headers={'Host':case['hostHeader']})
         with opener.open(request,timeout=30) as response:
             data=response.read(1024*1024+1)
             if response.status!=200 or not data or len(data)>1024*1024:raise ValueError('HTTP target check failed')
     elif kind=='postgres':
-        password=Path(case['passwordFile']).read_text().strip()
+        password_path=Path(case['passwordFile'])
+        if password_path.is_symlink() or not password_path.is_file():raise ValueError('Expected regular database password file')
+        if os.name!='nt' and stat.S_IMODE(password_path.stat().st_mode)&0o077:raise ValueError('Database password file must be private')
+        password=password_path.read_text().strip()
         if '\n' in password or '\r' in password:raise ValueError('Invalid database password file')
         escaped=password.replace('\\','\\\\').replace(':','\\:')
         pgpass=private/'pgpass';fd=os.open(pgpass,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
@@ -94,7 +97,7 @@ def main():
     results=[]
     for case in cases:
         lease=private_json(case['leaseEvidenceFile'])
-        if lease['path']!=case['path'] or lease['localHost']!='127.0.0.1' or not isinstance(lease['localPort'],int) or not 1<=lease['localPort']<=65535:
+        if lease['path']!=case['path'] or lease['localHost']!='127.0.0.1' or type(lease['localPort']) is not int or not 1<=lease['localPort']<=65535:
             raise ValueError('Product lease evidence does not match required path')
         start=time.monotonic();passed=False
         with tempfile.TemporaryDirectory(prefix='link-business-qa-') as name:
