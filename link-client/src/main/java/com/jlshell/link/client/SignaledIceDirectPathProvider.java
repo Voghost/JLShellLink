@@ -150,6 +150,11 @@ public final class SignaledIceDirectPathProvider implements IceKcpCarrierPlanFac
                         "ICE signaling subscription failed"));
                 return;
             }
+            // listen may synchronously replay an early peer offer and fail setup.
+            if (closed.get() || result.isDone()) {
+                closeSubscriptionOnly();
+                return;
+            }
             ice.selectedPath().whenComplete((path, error) -> {
                 if (error != null) {
                     fail(new LinkFailure("direct.ice_unreachable", LinkFailure.Category.TRANSIENT_NETWORK,
