@@ -74,3 +74,10 @@ java -jar link-agent-0.1.0-SNAPSHOT.jar init \
 它只会收紧 Website 的策略，不会扩大访问范围。`--ticket-issuer` 默认取注册 Website
 地址；若 Website 的 `JLSHELL_SITE_PUBLIC_BASE_URL` 不同，需传入该 HTTPS issuer。
 `diagnose` 在本地验证身份、TLS、白名单，并通过 HTTPS 读取 Website 公布的票据公钥。
+
+## Website 可选控制能力
+
+Agent 从已校验节点身份和公钥的心跳响应读取 `controlFeatures`。只有明确包含
+`target-diagnostic-v1` 才领取可选目标诊断请求；旧 Website 缺少该字段时不调用此接口。
+这避免旧部署把未开放接口返回的 401 误判成整个节点凭据失效。已声明的诊断接口或
+心跳、撤销、Relay 请求等核心接口鉴权失败仍按原规则关闭；不忽略 401/403。

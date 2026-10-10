@@ -143,16 +143,21 @@ public final class WebsiteAccessRequestProvider implements ReauthorizingConnecti
                         throw new AccessRequestException(response.statusCode());
                     }
                     var body = JSONObjectUtils.parse(new String(bytes, StandardCharsets.UTF_8));
-                    if (!sessionId.value().equals(JSONObjectUtils.getString(body, "sessionId"))
-                            || !"ACTIVE".equals(JSONObjectUtils.getString(body, "state"))) {
-                        throw new SecurityException("Website did not activate the expected Relay reservation");
-                    }
+                    validateRelayActivation(sessionId, body);
                     return null;
                 } catch (IOException | ParseException invalid) {
                     throw new java.util.concurrent.CompletionException(invalid);
                 }
             });
         });
+    }
+
+    static void validateRelayActivation(LinkSessionId sessionId, java.util.Map<String, Object> body)
+            throws ParseException {
+        if (!sessionId.toString().equals(JSONObjectUtils.getString(body, "sessionId"))
+                || !"ACTIVE".equals(JSONObjectUtils.getString(body, "state"))) {
+            throw new SecurityException("Website did not activate the expected Relay reservation");
+        }
     }
 
     /** Releases an unused parallel Relay reservation when the direct carrier wins. */

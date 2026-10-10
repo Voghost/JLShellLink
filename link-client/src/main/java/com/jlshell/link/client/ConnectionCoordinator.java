@@ -710,6 +710,10 @@ public final class ConnectionCoordinator implements AutoCloseable {
     private static LinkFailure asLinkFailure(LinkPath path, Throwable error, boolean timedOut) {
         Throwable cause = unwrap(error);
         if (cause instanceof LinkFailure failure) return failure;
+        if (cause instanceof com.jlshell.link.transport.TlsHandshakeGate.CapacityException) {
+            return new LinkFailure("transport.handshake_limit", LinkFailure.Category.QUOTA,
+                    "Concurrent TLS handshake limit reached");
+        }
         if (cause instanceof CancellationException) {
             return new LinkFailure("connection.cancelled", LinkFailure.Category.CANCELLED,
                     "Carrier setup was cancelled");

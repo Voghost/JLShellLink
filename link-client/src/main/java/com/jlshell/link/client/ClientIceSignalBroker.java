@@ -20,12 +20,16 @@ import java.util.function.Function;
 public final class ClientIceSignalBroker implements SignaledIceDirectPathProvider.Signaling, AutoCloseable {
     private static final int MAX_INVITES = 128;
     private static final int MAX_LISTENERS = 512;
+    private static final int MAX_PENDING_SIGNALS = 36;
 
     private final Map<LinkSessionId, ControlSignal.SessionInvite> invites = new ConcurrentHashMap<>();
     private final Map<LinkSessionId, CompletableFuture<ControlSignal.SessionInvite>> inviteWaiters =
             new ConcurrentHashMap<>();
     private final Map<SessionGeneration, CopyOnWriteArrayList<Registration>> listeners = new ConcurrentHashMap<>();
     private final Object inviteLock = new Object();
+    // ICE gathering can take longer than the peer's authenticated offer delivery.
+    private final Map<SessionGeneration, Instant> authorizedGenerations = new java.util.HashMap<>();
+    private final Map<SessionGeneration, List<ControlSignal>> pendingSignals = new java.util.HashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
     private volatile Function<ControlSignal, ? extends CompletionStage<Void>> sender;
     private final AtomicInteger listenerCount = new AtomicInteger();
@@ -46,6 +50,19 @@ public final class ClientIceSignalBroker implements SignaledIceDirectPathProvide
             if (!invite.expiresAt().isAfter(Instant.now())) return;
             synchronized (inviteLock) {
                 if (closed.get()) return;
+                expirePending();
+                SessionGeneration generation = new SessionGeneration(invite.sessionId(), invite.generation());
+                if (authorizedGenerations.keySet().stream().anyMatch(key ->
+                        key.sessionId().equals(invite.sessionId()) && key.generation() > invite.generation())) return;
+                authorizedGenerations.keySet().removeIf(key -> key.sessionId().equals(invite.sessionId())
+                        && key.generation() < invite.generation());
+                pendingSignals.keySet().removeIf(key -> key.sessionId().equals(invite.sessionId())
+                        && key.generation() < invite.generation());
+                if (!authorizedGenerations.containsKey(generation)
+                        && authorizedGenerations.size() >= MAX_INVITES) {
+                    throw new IllegalStateException("too many pending ICE generations");
+                }
+                authorizedGenerations.put(generation, invite.expiresAt());
                 invites.compute(invite.sessionId(), (ignored, previous) -> previous == null
                         || invite.generation() > previous.generation() ? invite : previous);
                 CompletableFuture<ControlSignal.SessionInvite> waiter = inviteWaiters.remove(invite.sessionId());
@@ -55,6 +72,10 @@ public final class ClientIceSignalBroker implements SignaledIceDirectPathProvide
             return;
         }
         if (signal instanceof ControlSignal.SessionRevoked) {
+            synchronized (inviteLock) {
+                authorizedGenerations.keySet().removeIf(key -> key.sessionId().equals(signal.sessionId()));
+                pendingSignals.keySet().removeIf(key -> key.sessionId().equals(signal.sessionId()));
+            }
             notifySession(signal.sessionId(), signal);
             invites.remove(signal.sessionId());
             CompletableFuture<ControlSignal.SessionInvite> waiter = inviteWaiters.remove(signal.sessionId());
@@ -101,7 +122,18 @@ public final class ClientIceSignalBroker implements SignaledIceDirectPathProvide
             listenerCount.decrementAndGet();
             throw new IllegalStateException("ICE signal broker is closed");
         }
-        listeners.computeIfAbsent(key, ignored -> new CopyOnWriteArrayList<>()).add(registration);
+        synchronized (inviteLock) {
+            expirePending();
+            listeners.computeIfAbsent(key, ignored -> new CopyOnWriteArrayList<>()).add(registration);
+            List<ControlSignal> pending = pendingSignals.remove(key);
+            if (pending != null) {
+                for (ControlSignal signal : pending) {
+                    if (!listeners.getOrDefault(key, new CopyOnWriteArrayList<>()).contains(registration)) break;
+                    try { registration.signals.accept(signal); }
+                    catch (RuntimeException rejected) { safeFailure(registration, rejected); break; }
+                }
+            }
+        }
         if (closed.get()) {
             remove(key, registration);
             throw new IllegalStateException("ICE signal broker is closed");
@@ -128,6 +160,8 @@ public final class ClientIceSignalBroker implements SignaledIceDirectPathProvide
         if (closed.get()) return;
         synchronized (inviteLock) {
             invites.clear();
+            authorizedGenerations.clear();
+            pendingSignals.clear();
             inviteWaiters.values().forEach(waiter -> waiter.completeExceptionally(failure));
             inviteWaiters.clear();
         }
@@ -137,12 +171,32 @@ public final class ClientIceSignalBroker implements SignaledIceDirectPathProvide
     }
 
     private void notifyGeneration(LinkSessionId sessionId, long generation, ControlSignal signal) {
-        List<Registration> entries = listeners.get(new SessionGeneration(sessionId, generation));
-        if (entries == null) return;
-        for (Registration entry : entries) {
-            try { entry.signals.accept(signal); }
-            catch (RuntimeException failure) { safeFailure(entry, failure); }
+        synchronized (inviteLock) {
+            expirePending();
+            SessionGeneration key = new SessionGeneration(sessionId, generation);
+            List<Registration> entries = listeners.get(new SessionGeneration(sessionId, generation));
+            if (entries == null) {
+                if (!authorizedGenerations.containsKey(key)) return;
+                List<ControlSignal> pending = pendingSignals.computeIfAbsent(key, ignored -> new ArrayList<>());
+                if (pending.size() >= MAX_PENDING_SIGNALS) {
+                    pendingSignals.remove(key);
+                    authorizedGenerations.remove(key);
+                    throw new IllegalStateException("pending ICE signal limit exceeded");
+                }
+                pending.add(signal);
+                return;
+            }
+            for (Registration entry : entries) {
+                try { entry.signals.accept(signal); }
+                catch (RuntimeException failure) { safeFailure(entry, failure); }
+            }
         }
+    }
+
+    private void expirePending() {
+        Instant now = Instant.now();
+        authorizedGenerations.entrySet().removeIf(entry -> !entry.getValue().isAfter(now));
+        pendingSignals.keySet().removeIf(key -> !authorizedGenerations.containsKey(key));
     }
 
     private void notifySession(LinkSessionId sessionId, ControlSignal signal) {
@@ -163,7 +217,13 @@ public final class ClientIceSignalBroker implements SignaledIceDirectPathProvide
         CopyOnWriteArrayList<Registration> entries = listeners.get(key);
         if (entries == null || !entries.remove(registration)) return;
         listenerCount.decrementAndGet();
-        if (entries.isEmpty()) listeners.remove(key, entries);
+        if (entries.isEmpty()) {
+            listeners.remove(key, entries);
+            synchronized (inviteLock) {
+                authorizedGenerations.remove(key);
+                pendingSignals.remove(key);
+            }
+        }
     }
 
     private void trimInvites() {
@@ -183,7 +243,11 @@ public final class ClientIceSignalBroker implements SignaledIceDirectPathProvide
         inviteWaiters.values().forEach(waiter -> waiter.completeExceptionally(
                 new IllegalStateException("ICE signal broker is closed")));
         inviteWaiters.clear();
-        synchronized (inviteLock) { invites.clear(); }
+        synchronized (inviteLock) {
+            invites.clear();
+            authorizedGenerations.clear();
+            pendingSignals.clear();
+        }
         IllegalStateException failure = new IllegalStateException("Client WSS control connection was lost");
         listeners.values().forEach(entries -> entries.forEach(entry -> safeFailure(entry, failure)));
         listeners.clear();

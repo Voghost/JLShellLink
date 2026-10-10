@@ -48,4 +48,60 @@ class ClientIceSignalBrokerTest {
         assertSame(invite, broker.awaitInvite(sessionId).toCompletableFuture().join());
         broker.close();
     }
+    @Test
+    void buffersAuthenticatedOfferUntilSubscriberFinishesGathering() {
+        var session = LinkSessionId.random();
+        var broker = new ClientIceSignalBroker();
+        broker.accept(invite(session, 1));
+        broker.awaitInvite(session).toCompletableFuture().join();
+        var credentials = new ControlSignal.IceCredentials(UUID.randomUUID(), session, 1,
+                "testfragment", "testpasswordwithsufficientlength");
+        var end = new ControlSignal.IceEnd(UUID.randomUUID(), session, 1);
+        broker.accept(credentials);
+        broker.accept(end);
+        var received = new java.util.ArrayList<ControlSignal>();
+        var subscription = broker.listen(session, 1, received::add, ignored -> { });
+        assertEquals(java.util.List.of(credentials, end), received);
+        subscription.close();
+        broker.close();
+    }
+
+    @Test
+    void neverBuffersUnknownOrSupersededGenerations() {
+        var session = LinkSessionId.random();
+        var broker = new ClientIceSignalBroker();
+        broker.accept(new ControlSignal.IceEnd(UUID.randomUUID(), session, 1));
+        broker.accept(invite(session, 1));
+        broker.accept(new ControlSignal.IceEnd(UUID.randomUUID(), session, 1));
+        broker.accept(invite(session, 2));
+        broker.accept(invite(session, 1));
+        var received = new java.util.ArrayList<ControlSignal>();
+        broker.listen(session, 1, received::add, ignored -> { });
+        assertEquals(0, received.size());
+        broker.close();
+    }
+
+    @Test
+    void limitsEarlyMessagesAndClearsThemOnDisconnect() {
+        var session = LinkSessionId.random();
+        var broker = new ClientIceSignalBroker();
+        broker.accept(invite(session, 1));
+        for (int i = 0; i < 36; i++) broker.accept(new ControlSignal.IceEnd(UUID.randomUUID(), session, 1));
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> broker.accept(new ControlSignal.IceEnd(UUID.randomUUID(), session, 1)));
+        broker.accept(invite(session, 2));
+        broker.accept(new ControlSignal.IceEnd(UUID.randomUUID(), session, 2));
+        broker.connectionLost(new java.io.IOException("disconnected"));
+        var received = new java.util.ArrayList<ControlSignal>();
+        broker.listen(session, 2, received::add, ignored -> { });
+        assertEquals(0, received.size());
+        broker.close();
+    }
+
+    private static ControlSignal.SessionInvite invite(LinkSessionId session, long generation) {
+        return new ControlSignal.SessionInvite(UUID.randomUUID(), session, generation,
+                UUID.randomUUID(), UUID.randomUUID(), AGENT, CLIENT, 1,
+                Instant.now().plusSeconds(30), true);
+    }
+
 }

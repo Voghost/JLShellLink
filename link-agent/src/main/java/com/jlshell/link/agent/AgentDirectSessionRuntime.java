@@ -172,6 +172,7 @@ final class AgentDirectSessionRuntime implements AutoCloseable {
         private final AtomicBoolean carrierStarted = new AtomicBoolean();
         private final CompletableFuture<ControlSignal.PathReady> peerReady = new CompletableFuture<>();
         private final AtomicReference<Ice4jDirectSession.SelectedPath> selected = new AtomicReference<>();
+        private final EarlyIceSignals earlyIce;
         private volatile Ice4jDirectSession ice;
         private volatile ReliableCarrierBridge bridge;
         private volatile ConnectStreamMultiplexer multiplexer;
@@ -181,6 +182,7 @@ final class AgentDirectSessionRuntime implements AutoCloseable {
         private DirectSession(ControlSignal.SessionInvite invite, AgentControlSignalClient signaling) {
             this.invite = invite;
             this.signaling = signaling;
+            this.earlyIce = new EarlyIceSignals(invite.sessionId(), invite.generation());
         }
 
         private long generation() { return invite.generation(); }
@@ -205,6 +207,8 @@ final class AgentDirectSessionRuntime implements AutoCloseable {
                             send(path.readySignal());
                             maybeStartCarrier();
                         });
+                        earlyIce.attach(ice::accept);
+                        if (closed.get()) { ice.close(); return; }
                         CompletionStage<Void> offered = CompletableFuture.completedFuture(null);
                         for (ControlSignal signal : ice.localOffer()) {
                             offered = offered.thenCompose(ignored -> signaling.send(signal).thenApply(done -> null));
@@ -233,8 +237,7 @@ final class AgentDirectSessionRuntime implements AutoCloseable {
             try {
                 if (signal instanceof ControlSignal.IceCredentials
                         || signal instanceof ControlSignal.IceCandidate || signal instanceof ControlSignal.IceEnd) {
-                    Ice4jDirectSession current = ice;
-                    if (current != null) current.accept(signal);
+                    earlyIce.accept(signal);
                 } else if (signal instanceof ControlSignal.PathReady ready) {
                     if (ready.path() != ControlSignal.Path.DIRECT) {
                         fail("direct-path-selection-mismatch");
@@ -352,6 +355,7 @@ final class AgentDirectSessionRuntime implements AutoCloseable {
 
         @Override public void close() {
             if (!closed.compareAndSet(false, true)) return;
+            earlyIce.close();
             ScheduledFuture<?> expiry = expires;
             if (expiry != null) expiry.cancel(false);
             ConnectStreamMultiplexer currentMultiplexer = multiplexer;

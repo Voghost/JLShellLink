@@ -26,6 +26,7 @@ public final class AgentControlPlaneClient implements AutoCloseable {
     private final URI baseUri;
     private final HttpClient http;
     private final Duration requestTimeout;
+    private volatile boolean connectivityDiagnosticsSupported;
 
     public AgentControlPlaneClient(URI baseUri, Duration connectTimeout, Duration requestTimeout) {
         this.baseUri = validateBaseUri(baseUri);
@@ -59,13 +60,36 @@ public final class AgentControlPlaneClient implements AutoCloseable {
             if (!keyFingerprint.value().equalsIgnoreCase(JSONObjectUtils.getString(body, "nodeKeyFingerprint"))) {
                 throw new IOException("Website heartbeat returned a different Agent key");
             }
+            boolean diagnosticsSupported = supportsDiagnostics(body);
             String state = JSONObjectUtils.getString(body, "state");
             Instant leaseUntil = Instant.parse(JSONObjectUtils.getString(body, "controlLeaseExpiresAt"));
+            connectivityDiagnosticsSupported = diagnosticsSupported;
             return new AgentLeaseSnapshot(agentId, keyFingerprint,
                     JSONObjectUtils.getLong(body, "policyVersion"), leaseUntil, "REVOKED".equals(state));
         } catch (ParseException | IllegalArgumentException error) {
             throw new IOException("Website heartbeat response is invalid", error);
         }
+    }
+
+    /** Updated only after an authenticated heartbeat binds the expected Agent and key. */
+    public boolean supportsConnectivityDiagnostics() {
+        return connectivityDiagnosticsSupported;
+    }
+
+    static boolean supportsDiagnostics(java.util.Map<String, Object> body) throws IOException {
+        Object raw = body.get("controlFeatures");
+        if (raw == null) return false; // Older Website deployments do not advertise optional endpoints.
+        if (!(raw instanceof java.util.List<?> features) || features.size() > 16) {
+            throw new IOException("Website control feature list is invalid");
+        }
+        boolean supported = false;
+        for (Object feature : features) {
+            if (!(feature instanceof String name) || !name.matches("[a-z0-9-]{1,64}")) {
+                throw new IOException("Website control feature name is invalid");
+            }
+            supported |= "target-diagnostic-v1".equals(name);
+        }
+        return supported;
     }
 
     public RevocationBatch pollRevocations(String credential, long afterSequence)

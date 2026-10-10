@@ -150,9 +150,14 @@ public final class SignaledIceDirectPathProvider implements IceKcpCarrierPlanFac
                         "ICE signaling subscription failed"));
                 return;
             }
+            // listen may synchronously replay an early peer offer and fail setup.
+            if (closed.get() || result.isDone()) {
+                closeSubscriptionOnly();
+                return;
+            }
             ice.selectedPath().whenComplete((path, error) -> {
                 if (error != null) {
-                    fail(new LinkFailure("direct.ice_unreachable", LinkFailure.Category.TRANSIENT_NETWORK,
+                    fail(new LinkFailure(iceFailureCode(error), LinkFailure.Category.TRANSIENT_NETWORK,
                             "ICE could not nominate a peer path"));
                     return;
                 }
@@ -251,6 +256,22 @@ public final class SignaledIceDirectPathProvider implements IceKcpCarrierPlanFac
                 try { current.close(); } catch (RuntimeException ignored) { }
             }
         }
+    }
+
+    static String iceFailureCode(Throwable error) {
+        Throwable cause = unwrap(error);
+        if (cause instanceof IOException) {
+            if ("ICE selected a candidate outside the authorized exchange".equals(cause.getMessage())) {
+                return "direct.ice_selected_unknown";
+            }
+            if ("ICE connectivity checks did not nominate a candidate pair".equals(cause.getMessage())) {
+                return "direct.ice_checks_failed";
+            }
+            if ("ICE connectivity deadline expired".equals(cause.getMessage())) {
+                return "direct.ice_deadline";
+            }
+        }
+        return "direct.ice_unreachable";
     }
 
     private final class IcePathLease implements IceKcpCarrierPlanFactory.DirectPathLease {
