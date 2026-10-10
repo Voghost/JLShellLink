@@ -12,6 +12,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /** Bounds concurrent TLS handshakes for all channels sharing this gate. */
 public final class TlsHandshakeGate {
+    /** A local capacity rejection, never a peer protocol or authorization failure. */
+    public static final class CapacityException extends java.util.concurrent.RejectedExecutionException {
+        private static final long serialVersionUID = 1L;
+        public CapacityException() { super("TLS handshake budget is full"); }
+    }
     private final Semaphore permits;
     private final AtomicInteger inFlight = new AtomicInteger();
 

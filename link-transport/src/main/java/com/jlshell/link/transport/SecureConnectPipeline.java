@@ -15,7 +15,6 @@ import java.io.IOException;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
-import java.util.concurrent.RejectedExecutionException;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLHandshakeException;
 
@@ -76,7 +75,7 @@ public final class SecureConnectPipeline {
         if (activeCarrier) {
             try {
                 if (!gate.installOnActive(pipeline, tls, alpn)) {
-                    ready.completeExceptionally(new RejectedExecutionException("TLS handshake budget is full"));
+                    ready.completeExceptionally(new TlsHandshakeGate.CapacityException());
                 }
             } catch (RuntimeException error) {
                 ready.completeExceptionally(error);

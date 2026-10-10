@@ -136,6 +136,19 @@ class ConnectionCoordinatorTest {
     }
 
     @Test
+    void handshakeCapacityIsQuotaAndNeverTriggersFallback() throws Exception {
+        AtomicInteger relayCalls = new AtomicInteger();
+        LinkFailure rejected = failure(connect(ConnectPolicy.AUTO,
+                context -> CompletableFuture.failedFuture(
+                        new com.jlshell.link.transport.TlsHandshakeGate.CapacityException()),
+                context -> { relayCalls.incrementAndGet(); return CompletableFuture.completedFuture(new DummyCarrier(LinkPath.RELAY)); },
+                (carrier, request, context) -> CompletableFuture.completedFuture(new DummyTunnel())));
+        assertEquals("transport.handshake_limit", rejected.code());
+        assertEquals(LinkFailure.Category.QUOTA, rejected.category());
+        assertEquals(0, relayCalls.get());
+    }
+
+    @Test
     void unclassifiedCarrierFailureDoesNotFallBack() throws Exception {
         AtomicInteger relayCalls = new AtomicInteger();
         LinkFailure failure = failure(connect(ConnectPolicy.AUTO,
