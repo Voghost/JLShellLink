@@ -19,8 +19,6 @@ if [ -n "${JLSHELL_LINK_INSTALL_ROOT:-}" ] || [ -n "${JLSHELL_LINK_SERVICE_INSTA
     if [ -e "$INSTANCE_FILE" ] || [ -L "$INSTANCE_FILE" ]; then
         [ -f "$INSTANCE_FILE" ] && [ ! -L "$INSTANCE_FILE" ] \
             && [ "$(cat "$INSTANCE_FILE")" = "$INSTANCE" ] || layout_fail
-    elif [ "${ACTION:-}" = install ]; then
-        (umask 077; set -C; printf '%s\n' "$INSTANCE" >"$INSTANCE_FILE") || layout_fail
     fi
     CONFIG_DIR="$INSTALL_ROOT/config"
     APP_DIR="$INSTALL_ROOT/app"
@@ -46,3 +44,17 @@ PLIST="$HOME/Library/LaunchAgents/$PLIST_NAME.plist"
 for layout_directory in "$CONFIG_DIR" "$APP_DIR" "$STATE_DIR" "$LOG_DIR"; do
     [ ! -L "$layout_directory" ] || layout_fail
 done
+if [ -n "${INSTALL_ROOT:-}" ]; then
+    # A reused name must not overwrite a different root's manager registration.
+    if [ -e "$UNIT" ] || [ -L "$UNIT" ]; then
+        [ -L "$UNIT" ] && [ "$(readlink "$UNIT")" = "$CONFIG_DIR/systemd/$UNIT_NAME.service" ] || layout_fail
+    fi
+    if [ -e "$PLIST" ] || [ -L "$PLIST" ]; then
+        [ -f "$PLIST" ] && [ ! -L "$PLIST" ] || layout_fail
+        EXPECTED_APP_XML=$(printf '%s' "$APP_DIR" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
+        grep -F -q "<string>$EXPECTED_APP_XML/run-agent.sh</string>" "$PLIST" || layout_fail
+    fi
+    if [ ! -e "$INSTANCE_FILE" ] && [ "${ACTION:-}" = install ]; then
+        (umask 077; set -C; printf '%s\n' "$INSTANCE" >"$INSTANCE_FILE") || layout_fail
+    fi
+fi

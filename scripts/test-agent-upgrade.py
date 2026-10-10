@@ -57,7 +57,13 @@ esac
             (app / "link-agent.jar").write_bytes(b"previous agent")
             (config / "agent.env").write_bytes(b"previous config")
             (state / "agent.credential").write_bytes(b"fixture only; must remain unchanged")
-            unit.write_bytes(b"previous unit")
+            if isolated:
+                definition = config / "systemd" / unit.name
+                definition.parent.mkdir()
+                definition.write_bytes(b"previous unit")
+                unit.symlink_to(definition)
+            else:
+                unit.write_bytes(b"previous unit")
             for name in ["identity.p12", "password", "targets", "release.manifest.json", "release.signature.json"]:
                 (root / name).write_bytes(b"fixture")
             env = dict(os.environ, JLSHELL_LINK_TEST_HOME=str(home), JLSHELL_LINK_TEST_FAIL_START=str(fail_start).lower())

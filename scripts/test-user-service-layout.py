@@ -15,12 +15,15 @@ class LayoutTest(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name) / "private install"
         self.root.mkdir(mode=0o700)
+        self.operator = self.root.parent / "operator"
+        self.script = self.root.parent / "layout.sh"
+        self.script.write_text(SCRIPT.read_text().replace("$HOME", "$JLSHELL_LINK_TEST_HOME"))
 
     def invoke(self, directory=None, instance="acceptance", action="status"):
-        env = dict(os.environ, JLSHELL_LINK_INSTALL_ROOT=str(directory or self.root),
+        env = dict(os.environ, JLSHELL_LINK_TEST_HOME=str(self.operator), JLSHELL_LINK_INSTALL_ROOT=str(directory or self.root),
                    JLSHELL_LINK_SERVICE_INSTANCE=instance)
         return subprocess.run(["sh", "-c", 'ACTION=$2; . "$1"; printf "%s\\n" "$APP_DIR" "$UNIT_NAME"',
-                               "layout-test", str(SCRIPT), action], env=env, capture_output=True)
+                               "layout-test", str(self.script), action], env=env, capture_output=True)
 
     def test_space_path_and_separate_service_name(self):
         result = self.invoke()
@@ -60,6 +63,19 @@ class LayoutTest(unittest.TestCase):
 
     def test_rejects_symlink_instance_marker(self):
         (self.root / ".service-instance").symlink_to(self.root.parent / "missing")
+        self.assertNotEqual(self.invoke(action="install").returncode, 0)
+
+    def test_rejects_service_name_registered_to_another_root(self):
+        unit = self.operator / ".config/systemd/user/jlshell-link-agent-acceptance.service"
+        unit.parent.mkdir(parents=True)
+        unit.symlink_to(self.root.parent / "another.service")
+        self.assertNotEqual(self.invoke(action="install").returncode, 0)
+        self.assertFalse((self.root / ".service-instance").exists())
+
+    def test_rejects_launchagent_registered_to_another_root(self):
+        plist = self.operator / "Library/LaunchAgents/com.jlshell.link.agent.acceptance.plist"
+        plist.parent.mkdir(parents=True)
+        plist.write_text("<string>/another/app/run-agent.sh</string>")
         self.assertNotEqual(self.invoke(action="install").returncode, 0)
 
 
