@@ -55,7 +55,8 @@ public final class TlsHandshakeGate {
             throw new IllegalStateException("active TLS installation requires the active channel event loop");
         }
         if (!permits.tryAcquire()) {
-            pipeline.channel().close();
+            // The caller must publish the capacity failure before closing the carrier.
+            // A synchronous close here can hide it behind a generic close-future failure.
             return false;
         }
         AtomicBoolean held = new AtomicBoolean(true);

@@ -78,8 +78,9 @@ class TlsPeerHandlerTest {
 
             SslHandler secondTls = TlsPeerHandler.create(context, "peer.invalid", 443, true, budget);
             assertFalse(gate.installOnActive(second.pipeline(), secondTls, new ChannelInboundHandlerAdapter()));
-            assertFalse(second.isActive());
+            assertTrue(second.isActive());
             assertEquals(1, gate.inFlightHandshakes());
+            second.close();
 
             first.close();
             assertEquals(0, gate.inFlightHandshakes());
@@ -88,4 +89,39 @@ class TlsPeerHandlerTest {
             second.finishAndReleaseAll();
         }
     }
+    @Test
+    void capacityFailureReachesOuterCarrierBeforeCloseFailure() throws Exception {
+        KeyStore trust = KeyStore.getInstance("PKCS12");
+        trust.load(null, new char[0]);
+        SSLContext context = TlsPeerContext.create(new javax.net.ssl.KeyManager[0], trust, new byte[32]);
+        TransportBudget budget = new TransportBudget(16_384, 8_192, 32, 1_048_576,
+                262_144, 4_194_304, 1, Duration.ofSeconds(7));
+        TlsHandshakeGate gate = new TlsHandshakeGate(1);
+        EmbeddedChannel first = new EmbeddedChannel();
+        EmbeddedChannel second = new EmbeddedChannel();
+        try {
+            assertTrue(gate.installOnActive(first.pipeline(),
+                    TlsPeerHandler.create(context, "peer.invalid", 443, true, budget),
+                    new ChannelInboundHandlerAdapter()));
+            var outer = new java.util.concurrent.CompletableFuture<Void>();
+            second.closeFuture().addListener(ignored -> outer.completeExceptionally(
+                    new java.io.IOException("generic carrier close")));
+            var inner = SecureConnectPipeline.installClientOnActiveCarrier(second.pipeline(),
+                    context, "peer.invalid", 443, budget, gate);
+            inner.whenComplete((ignored, error) -> {
+                if (error != null) outer.completeExceptionally(error);
+            });
+            second.runPendingTasks();
+            var error = org.junit.jupiter.api.Assertions.assertThrows(
+                    java.util.concurrent.CompletionException.class, outer::join);
+            org.junit.jupiter.api.Assertions.assertInstanceOf(TlsHandshakeGate.CapacityException.class,
+                    error.getCause());
+            assertFalse(second.isActive());
+            assertEquals(1, gate.inFlightHandshakes());
+        } finally {
+            first.finishAndReleaseAll();
+            second.finishAndReleaseAll();
+        }
+    }
+
 }

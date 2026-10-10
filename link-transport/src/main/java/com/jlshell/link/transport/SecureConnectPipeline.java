@@ -76,6 +76,8 @@ public final class SecureConnectPipeline {
             try {
                 if (!gate.installOnActive(pipeline, tls, alpn)) {
                     ready.completeExceptionally(new TlsHandshakeGate.CapacityException());
+                    // Allow the outer WSS adapter to observe the completed stage first.
+                    pipeline.channel().eventLoop().execute(() -> pipeline.channel().close());
                 }
             } catch (RuntimeException error) {
                 ready.completeExceptionally(error);
