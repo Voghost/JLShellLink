@@ -80,7 +80,7 @@ class IcePeerReflexiveBindingTest {
     @Test
     void exactEndpointCanKeepItsAuthorizedIdWhenIceDiscoversItsTypeAsPeerReflexive() throws Exception {
         try (Fixture f = new Fixture(true)) {
-            var local = f.component.getLocalCandidates().getFirst();
+            var local = f.offeredHost;
             var remote = new RemoteCandidate(new TransportAddress("198.51.100.10", 19000, Transport.UDP),
                     f.component, CandidateType.PEER_REFLEXIVE_CANDIDATE, "f1", 100, null);
             f.setPair(new CandidatePair(local, remote));f.poll();
@@ -90,21 +90,62 @@ class IcePeerReflexiveBindingTest {
         }
     }
 
+    @Test
+    void controlledHostNominationUsesOnlyItsValidatedMappedEndpoint() throws Exception {
+        try (Fixture f = new Fixture(true, false)) {
+            var host = f.offeredHost;
+            var remote = f.component.getRemoteCandidates().getFirst();
+            var checked = new CandidatePair(host, remote);
+            f.setPair(checked);f.poll();
+            assertFalse(f.ice.selectedPath().toCompletableFuture().isDone());
+            var mapped = new PeerReflexiveCandidate(new TransportAddress("192.0.2.30", 53000, Transport.UDP),
+                    f.component, host, 100);
+            f.validate(new CandidatePair(mapped, remote));f.poll();
+            assertEquals(1, f.published.size());
+            assertEquals(InetAddress.getByName("192.0.2.30"), f.published.getFirst().address());
+            f.ack.complete(null);f.poll();
+            assertEquals(f.published.getFirst().candidateId(),
+                    f.ice.selectedPath().toCompletableFuture().join().localCandidateId());
+        }
+    }
+
+    @Test
+    void mappingValidatedForAnotherRemoteCannotBindTheNominatedPair() throws Exception {
+        try (Fixture f = new Fixture(true, false)) {
+            var host = f.offeredHost;
+            var mapped = new PeerReflexiveCandidate(new TransportAddress("192.0.2.30", 53000, Transport.UDP),
+                    f.component, host, 100);
+            var other = new RemoteCandidate(new TransportAddress("198.51.100.20", 19000, Transport.UDP),
+                    f.component, CandidateType.SERVER_REFLEXIVE_CANDIDATE, "f2", 100, null);
+            f.validate(new CandidatePair(mapped, other));
+            f.setPair(new CandidatePair(host, f.component.getRemoteCandidates().getFirst()));f.poll();
+            assertFalse(f.ice.selectedPath().toCompletableFuture().isDone());
+            assertTrue(f.published.isEmpty());
+        }
+    }
+
     private static final class Fixture implements AutoCloseable {
         final LinkSessionId id = LinkSessionId.random();
         final CompletableFuture<Void> ack = new CompletableFuture<>();
         final List<ControlSignal.IceCandidate> published = new ArrayList<>();
         final Ice4jDirectSession ice;
         final Component component;
+        final LocalCandidate offeredHost;
         final ControlSignal.IceCandidate initialRemote;
-        Fixture(boolean extension) throws Exception {
-            ice = new Ice4jDirectSession(id, 1, true, new Ice4jDirectSession.Config(
+        Fixture(boolean extension) throws Exception { this(extension, true); }
+        Fixture(boolean extension, boolean controlling) throws Exception {
+            ice = new Ice4jDirectSession(id, 1, controlling, new Ice4jDirectSession.Config(
                     List.of(), 8, Duration.ofSeconds(2), 1200, 100), extension ? c -> {
                         published.add(c);return ack;
                     } : null);
             var field = Ice4jDirectSession.class.getDeclaredField("component");field.setAccessible(true);
             component = (Component) field.get(ice);
-            ice.localOffer();
+            var offered = ice.localOffer().stream().filter(ControlSignal.IceCandidate.class::isInstance)
+                    .map(ControlSignal.IceCandidate.class::cast)
+                    .filter(c -> c.candidateType() == ControlSignal.CandidateType.HOST).findFirst().orElseThrow();
+            offeredHost = component.getLocalCandidates().stream().filter(c ->
+                    c.getTransportAddress().getAddress().equals(offered.address())
+                    && c.getTransportAddress().getPort() == offered.port()).findFirst().orElseThrow();
             ice.accept(new ControlSignal.IceCredentials(UUID.randomUUID(), id, 1, "abcd", "a".repeat(22)));
             initialRemote = new ControlSignal.IceCandidate(UUID.randomUUID(), id, 1, UUID.randomUUID(),
                     ControlSignal.CandidateType.SERVER_REFLEXIVE, ControlSignal.Transport.UDP,
@@ -122,7 +163,7 @@ class IcePeerReflexiveBindingTest {
         }
         void nominate(String localIp, int localPort, String remoteIp, int remotePort) throws Exception {
             var local = new PeerReflexiveCandidate(new TransportAddress(localIp, localPort, Transport.UDP),
-                    component, component.getLocalCandidates().getFirst(), 100);
+                    component, offeredHost, 100);
             var remote = new RemoteCandidate(new TransportAddress(remoteIp, remotePort, Transport.UDP),
                     component, CandidateType.PEER_REFLEXIVE_CANDIDATE, "f1", 100, null);
             setPair(new CandidatePair(local, remote));
@@ -130,6 +171,10 @@ class IcePeerReflexiveBindingTest {
         void setPair(CandidatePair pair) throws Exception {
             var setter = Component.class.getDeclaredMethod("setSelectedPair", CandidatePair.class);
             setter.setAccessible(true);setter.invoke(component, pair);
+        }
+        void validate(CandidatePair pair) throws Exception {
+            var method = IceMediaStream.class.getDeclaredMethod("addToValidList", CandidatePair.class);
+            method.setAccessible(true);method.invoke(component.getParentStream(), pair);
         }
         void poll() throws Exception {
             var method = Ice4jDirectSession.class.getDeclaredMethod("pollSelection");method.setAccessible(true);

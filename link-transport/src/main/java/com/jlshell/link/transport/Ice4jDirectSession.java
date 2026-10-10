@@ -26,6 +26,8 @@ import org.ice4j.Transport;
 import org.ice4j.TransportAddress;
 import org.ice4j.ice.Agent;
 import org.ice4j.ice.CandidateType;
+import org.ice4j.ice.CandidatePair;
+import org.ice4j.ice.LocalCandidate;
 import org.ice4j.ice.Component;
 import org.ice4j.ice.IceMediaStream;
 import org.ice4j.ice.KeepAliveStrategy;
@@ -50,6 +52,7 @@ public final class Ice4jDirectSession implements AutoCloseable {
     private CompletableFuture<Void> candidatePublished = CompletableFuture.completedFuture(null);
     private int lateRemoteCandidates;
     private int lateLocalCandidates;
+    private final List<CandidatePair> validatedPairs = new ArrayList<>();
     private final Agent agent;
     private final Component component;
     private final Map<UUID, org.ice4j.ice.LocalCandidate> localById;
@@ -96,6 +99,16 @@ public final class Ice4jDirectSession implements AutoCloseable {
                         new TransportAddress(server, Transport.UDP)));
             }
             IceMediaStream stream = createdAgent.createMediaStream(STREAM_NAME);
+            stream.addPairChangeListener(event -> {
+                if (IceMediaStream.PROPERTY_PAIR_VALIDATED.equals(event.getPropertyName())
+                        && event.getSource() instanceof CandidatePair pair && pair.isValid()) {
+                    synchronized (validatedPairs) {
+                        if (validatedPairs.size() < config.maxCandidates() * config.maxCandidates()) {
+                            validatedPairs.add(pair);
+                        }
+                    }
+                }
+            });
             createdComponent = createdAgent.createComponent(stream, 0, 0, 0,
                     KeepAliveStrategy.SELECTED_ONLY, true);
             GatheredCandidates gathered = collectLocalCandidates(createdComponent, candidatePublisher == null
@@ -228,7 +241,8 @@ public final class Ice4jDirectSession implements AutoCloseable {
         try {
             var pair = component.getSelectedPair();
             if (pair != null) {
-                var localCandidate = pair.getLocalCandidate();
+                var localCandidate = validatedLocalCandidate(pair);
+                if (localCandidate == null) return;
                 var remoteCandidate = pair.getRemoteCandidate();
                 UUID localId = candidateIdAt(localIdsByCandidate, localCandidate.getTransportAddress());
                 if (localId == null && candidatePublisher != null
@@ -266,6 +280,30 @@ public final class Ice4jDirectSession implements AutoCloseable {
         } catch (IOException | RuntimeException failure) {
             fail(failure);
         }
+    }
+
+    private LocalCandidate validatedLocalCandidate(CandidatePair nominated) throws IOException {
+        LocalCandidate original = nominated.getLocalCandidate();
+        if (candidatePublisher == null || agent.isControlling() || nominated.isValid()
+                || original.getType() != CandidateType.HOST_CANDIDATE) return original;
+        // ice4j can nominate the checked HOST pair on the controlled side, while the
+        // authenticated STUN response validates a different local mapped address.
+        // Resolve only that same base socket and exact nominated remote endpoint.
+        LocalCandidate found = null;
+        synchronized (validatedPairs) {
+            for (CandidatePair valid : validatedPairs) {
+                LocalCandidate local = valid.getLocalCandidate();
+                if (!valid.isValid() || valid.getParentComponent() != component
+                        || !local.getBase().equals(original.getBase())
+                        || !valid.getRemoteCandidate().getTransportAddress()
+                                .equals(nominated.getRemoteCandidate().getTransportAddress())) continue;
+                if (found != null && !found.getTransportAddress().equals(local.getTransportAddress())) {
+                    throw new IOException("ICE validated local endpoint is ambiguous");
+                }
+                found = local;
+            }
+        }
+        return found; // No verified mapping: wait within the existing connectivity deadline.
     }
 
     private static UUID candidateIdAt(Map<CandidateKey, UUID> candidates, TransportAddress address)
@@ -324,7 +362,6 @@ public final class Ice4jDirectSession implements AutoCloseable {
         Map<CandidateKey, UUID> byCandidate = new HashMap<>();
         for (org.ice4j.ice.LocalCandidate candidate : candidates) {
             CandidateKey key = CandidateKey.of(candidate.getTransportAddress(), candidate.getType());
-            if (byCandidate.containsKey(key)) continue;
             if (byCandidate.containsKey(key)) continue;
             UUID id = UUID.randomUUID();
             byId.put(id, candidate);
