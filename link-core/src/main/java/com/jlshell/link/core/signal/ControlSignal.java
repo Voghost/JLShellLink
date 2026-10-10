@@ -12,6 +12,7 @@ public sealed interface ControlSignal permits ControlSignal.SessionInvite,
         ControlSignal.SessionRevoked, ControlSignal.IceCredentials, ControlSignal.IceCandidate,
         ControlSignal.IceEnd, ControlSignal.PathReady {
     String ICE_CREDENTIALS_CAPABILITY = "ice-credentials-v1";
+    String ICE_PEER_REFLEXIVE_CAPABILITY = "ice-peer-reflexive-v1";
 
     UUID messageId();
     LinkSessionId sessionId();
@@ -22,15 +23,26 @@ public sealed interface ControlSignal permits ControlSignal.SessionInvite,
                          NodeKeyFingerprint agentKeyFingerprint,
                          NodeKeyFingerprint clientKeyFingerprint,
                          long policyVersion, Instant expiresAt,
-                         boolean iceCredentialsSupported) implements ControlSignal {
+                         boolean iceCredentialsSupported, boolean peerReflexiveSupported) implements ControlSignal {
         public SessionInvite {
             common(messageId, sessionId, generation);
+            if (peerReflexiveSupported && !iceCredentialsSupported) {
+                throw new IllegalArgumentException("peer-reflexive extension requires ICE credentials");
+            }
             Objects.requireNonNull(agentId, "agentId");
             Objects.requireNonNull(clientDeviceId, "clientDeviceId");
             Objects.requireNonNull(agentKeyFingerprint, "agentKeyFingerprint");
             Objects.requireNonNull(clientKeyFingerprint, "clientKeyFingerprint");
             Objects.requireNonNull(expiresAt, "expiresAt");
             if (policyVersion < 0) throw new IllegalArgumentException("policyVersion cannot be negative");
+        }
+
+        public SessionInvite(UUID messageId, LinkSessionId sessionId, long generation,
+                             UUID agentId, UUID clientDeviceId,
+                             NodeKeyFingerprint agentKeyFingerprint, NodeKeyFingerprint clientKeyFingerprint,
+                             long policyVersion, Instant expiresAt, boolean iceCredentialsSupported) {
+            this(messageId, sessionId, generation, agentId, clientDeviceId, agentKeyFingerprint,
+                    clientKeyFingerprint, policyVersion, expiresAt, iceCredentialsSupported, false);
         }
 
         public SessionInvite(UUID messageId, LinkSessionId sessionId, long generation,

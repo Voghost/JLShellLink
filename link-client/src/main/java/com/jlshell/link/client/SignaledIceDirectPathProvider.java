@@ -70,7 +70,7 @@ public final class SignaledIceDirectPathProvider implements IceKcpCarrierPlanFac
                     config.maxDatagramBytes(), config.receiveTimeoutMillis());
             try {
                 worker.execute(() -> startGeneration(request.sessionId(), invite.generation(), bounded,
-                        context, result));
+                        context, result, invite.peerReflexiveSupported()));
             } catch (RuntimeException rejected) {
                 result.completeExceptionally(new LinkFailure("direct.ice_worker_unavailable",
                         LinkFailure.Category.TRANSIENT_NETWORK, "ICE worker is unavailable"));
@@ -81,14 +81,15 @@ public final class SignaledIceDirectPathProvider implements IceKcpCarrierPlanFac
 
     private void startGeneration(LinkSessionId sessionId, long generation,
             Ice4jDirectSession.Config bounded, ConnectionCoordinator.AttemptContext context,
-            CompletableFuture<IceKcpCarrierPlanFactory.DirectPathLease> result) {
+            CompletableFuture<IceKcpCarrierPlanFactory.DirectPathLease> result, boolean peerReflexive) {
         if (result.isDone() || context.isCancelled()) {
             result.completeExceptionally(new CancellationException("ICE setup was cancelled"));
             return;
         }
         Ice4jDirectSession ice;
         try {
-            ice = new Ice4jDirectSession(sessionId, generation, true, bounded);
+            ice = new Ice4jDirectSession(sessionId, generation, true, bounded,
+                    peerReflexive ? candidate -> signaling.send(candidate) : null);
         } catch (IOException | RuntimeException unavailable) {
             result.completeExceptionally(new LinkFailure("direct.ice_candidate_gathering",
                     LinkFailure.Category.TRANSIENT_NETWORK, "ICE candidate gathering failed"));

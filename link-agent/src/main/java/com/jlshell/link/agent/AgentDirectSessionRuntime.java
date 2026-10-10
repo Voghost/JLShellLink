@@ -197,7 +197,9 @@ final class AgentDirectSessionRuntime implements AutoCloseable {
                         return;
                     }
                     try {
-                        ice = new Ice4jDirectSession(invite.sessionId(), invite.generation(), false, iceConfig);
+                        ice = new Ice4jDirectSession(invite.sessionId(), invite.generation(), false, iceConfig,
+                                invite.peerReflexiveSupported()
+                                        ? candidate -> signaling.send(candidate).thenApply(done -> null) : null);
                         ice.selectedPath().whenComplete((path, error) -> {
                             if (error != null) {
                                 fail("direct-ice-unreachable");
