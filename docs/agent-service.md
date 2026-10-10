@@ -38,6 +38,25 @@ scripts/java-agent/install-user-service.sh install \
 不要在其中放入凭据。也可设置 `JLSHELL_LINK_JAVA` 指定 Java 可执行文件路径；通常让脚本
 使用当前用户 PATH 中的 Java 21 即可。
 
+### 独立工作目录与服务实例
+
+需要与已有默认 Agent 并存时，可显式指定安装根目录和实例名；未设置时保持原有目录与服务名。
+
+```sh
+mkdir -m 700 /private/validation/agent-instance
+export JLSHELL_LINK_INSTALL_ROOT=/private/validation/agent-instance
+export JLSHELL_LINK_SERVICE_INSTANCE=acceptance
+scripts/java-agent/install-user-service.sh install ./link-agent.jar \
+  wss://link.example/link/v2/control /secure/agent.p12 \
+  /secure/tls.password /secure/allowed-targets https://website.example
+```
+
+根目录必须预先存在、归当前用户所有、权限为 `700`，使用可打印 ASCII 绝对路径，不含百分号、反斜杠或控制字符；空格允许。实例名为最多 32 位小写字母、数字和连字符，不能以连字符开头。同一根目录只允许一个实例名，卸载后仍保留实例标记和状态。程序、配置、状态、日志、升级锁和恢复备份均位于根目录内，不覆盖默认 Agent。
+
+Linux 注册名为 `jlshell-link-agent-acceptance.service`，只在用户 systemd 目录创建指向工作目录的服务链接；macOS 注册名为 `com.jlshell.link.agent.acceptance`，服务定义位于用户 LaunchAgents 目录。系统服务管理器的注册文件是工作目录之外必要的例外，卸载时移除。Linux 服务显式传入所选配置文件，避免启动时误读默认 Agent 配置。
+
+执行 `status`、`uninstall` 或 `upgrade-user-service.sh` 时须提供相同的两个环境变量；升级前仍必须由调用方核对发布签名及归档摘要。用户服务的登录/linger 条件不改变，脚本不会启用 linger、修改系统启动策略或防火墙。升级失败恢复程序与服务配置，不恢复旧节点凭据，以免撤销或凭据轮换被倒退。
+
 ## Windows Service
 
 先用服务运行身份准备并注册 Agent 状态目录（其中含 `agent.properties`、

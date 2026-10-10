@@ -82,6 +82,8 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
+          sh -n scripts/java-agent/user-service-layout.sh
+          python3 scripts/test-user-service-layout.py
           sh -n scripts/java-agent/run-agent.sh
           sh -n scripts/java-agent/stop-agent.sh
           sh -n scripts/java-agent/install-user-service.sh

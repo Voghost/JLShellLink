@@ -25,6 +25,7 @@ PACKAGE_PREFIX = "jlshell-link-agent-java"
 REQUIRED_MODULES = ["java.se", "jdk.crypto.ec", "jdk.unsupported"]
 OPTIONAL_MODULES = ["jdk.jfr", "jdk.sctp"]
 PACKAGE_FILES = [
+    (Path("scripts/java-agent/user-service-layout.sh"), Path("scripts/java-agent/user-service-layout.sh")),
     (Path("scripts/java-agent/upgrade-windows-service.ps1"), Path("scripts/java-agent/upgrade-windows-service.ps1")),
     (Path("scripts/java-agent/upgrade-user-service.sh"), Path("scripts/java-agent/upgrade-user-service.sh")),
     (Path("docs/agent-cli.md"), Path("docs/agent-cli.md")),

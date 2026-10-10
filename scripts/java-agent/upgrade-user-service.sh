@@ -4,15 +4,10 @@ set -eu
 umask 077
 [ "$#" -ge 5 ] && [ "$#" -le 6 ] || { printf '%s\n' '用法: upgrade-user-service.sh <wss> <identity.p12> <password-file> <targets-file> <manifest> [issuer]' >&2; exit 1; }
 PACKAGE_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
-APP_DIR="$HOME/.local/lib/jlshell-link-agent"
-CONFIG_DIR="$HOME/.config/jlshell-link-agent"
-STATE_DIR="$HOME/.local/state/jlshell-link-agent"
-UNIT="$HOME/.config/systemd/user/jlshell-link-agent.service"
-PLIST="$HOME/Library/LaunchAgents/com.jlshell.link.agent.plist"
-LOCK="$HOME/.local/lib/.jlshell-link-upgrade-lock"
-mkdir -p "$HOME/.local/lib"
+. "$(dirname "$0")/user-service-layout.sh"
+mkdir -p "$BACKUP_PARENT"
 mkdir "$LOCK" || { printf '%s\n' '另一个 Agent 安装正在进行；请确认后重试。' >&2; exit 1; }
-BACKUP=$(mktemp -d "$HOME/.local/lib/.jlshell-link-backup.XXXXXXXX") || { rmdir "$LOCK"; exit 1; }
+BACKUP=$(mktemp -d "$BACKUP_PARENT/.jlshell-link-backup.XXXXXXXX") || { rmdir "$LOCK"; exit 1; }
 SUCCESS=false
 MUTATED=false
 WAS_RUNNING=false
@@ -20,13 +15,13 @@ OS=$(uname -s)
 
 stop_service() {
     case "$OS" in
-        Linux) systemctl --user stop jlshell-link-agent.service ;;
-        Darwin) launchctl bootout "gui/$(id -u)/com.jlshell.link.agent" ;;
+        Linux) systemctl --user stop "$UNIT_NAME.service" ;;
+        Darwin) launchctl bootout "gui/$(id -u)/$PLIST_NAME" ;;
     esac
 }
 start_service() {
     case "$OS" in
-        Linux) systemctl --user daemon-reload && systemctl --user start jlshell-link-agent.service ;;
+        Linux) systemctl --user daemon-reload && systemctl --user start "$UNIT_NAME.service" ;;
         Darwin) launchctl bootstrap "gui/$(id -u)" "$PLIST" ;;
     esac
 }
@@ -36,7 +31,7 @@ cleanup() {
     if [ "$SUCCESS" != true ] && [ "$MUTATED" = true ]; then
         stop_service >/dev/null 2>&1 || true
         if [ "$OS" = Linux ] && [ ! -e "$BACKUP/unit" ]; then
-            systemctl --user disable jlshell-link-agent.service >/dev/null 2>&1 || true
+            systemctl --user disable "$UNIT_NAME.service" >/dev/null 2>&1 || true
         fi
         rm -rf "$APP_DIR" "$CONFIG_DIR"
         rm -f "$UNIT" "$PLIST"
@@ -65,11 +60,11 @@ case "$OS" in
     Linux)
         command -v systemctl >/dev/null
         systemctl --user list-units --no-pager >/dev/null
-        if systemctl --user is-active --quiet jlshell-link-agent.service; then WAS_RUNNING=true; fi
+        if systemctl --user is-active --quiet "$UNIT_NAME.service"; then WAS_RUNNING=true; fi
         ;;
     Darwin)
         command -v launchctl >/dev/null
-        if launchctl print "gui/$(id -u)/com.jlshell.link.agent" >/dev/null 2>&1; then WAS_RUNNING=true; fi
+        if launchctl print "gui/$(id -u)/$PLIST_NAME" >/dev/null 2>&1; then WAS_RUNNING=true; fi
         ;;
     *) printf '%s\n' '不支持的用户服务平台' >&2; exit 1 ;;
 esac
@@ -93,8 +88,8 @@ fi
 # A manager accepting a start request is not enough: check it remains running.
 sleep 2
 case "$OS" in
-    Linux) systemctl --user is-active --quiet jlshell-link-agent.service ;;
-    Darwin) launchctl print "gui/$(id -u)/com.jlshell.link.agent" | grep -q 'state = running' ;;
+    Linux) systemctl --user is-active --quiet "$UNIT_NAME.service" ;;
+    Darwin) launchctl print "gui/$(id -u)/$PLIST_NAME" | grep -q 'state = running' ;;
 esac
 install -m 600 "$5" "$APP_DIR/release.manifest.json"
 install -m 600 "$(dirname "$5")/release.signature.json" "$APP_DIR/release.signature.json"
