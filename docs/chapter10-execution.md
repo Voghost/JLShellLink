@@ -67,6 +67,8 @@ STUN 对同一服务器的映射稳定，不表示向另一个目标发包时源
 
 通过后分独立 PR 清理：
 
+准确源码范围及 Java 必须保留的共享服务见 [退役代码盘点](rust-retirement-inventory.md)；执行前从最新 develop 重新核对引用。
+
 - Link 的 Cargo、Rust apps/crates/vendor、旧打包安装脚本、Rust quality/native/musl/Relay 镜像 jobs 与旧部署入口；保留 Java jobs/平台包审计。
 - 插件仅用于旧 Connector 的进程、解包、PeerId、临时票据协议类及对应测试；保留具有 Java 职责的会话安装与贡献类。
 - Website v1 新连接、旧 libp2p/Relay 部署与 bootstrap 入口；保留历史审计和用量，未确认引用移除前不删历史字段。
