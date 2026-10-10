@@ -129,6 +129,84 @@ class SignalRouterTest {
                 new ControlSignal.IceEnd(UUID.randomUUID(), sessionId, generation)));
     }
 
+
+    @Test
+    void boundsNegotiatedLateUdpCandidatesAndKeepsReadyPairBinding() throws Exception {
+        SignalRouter router = router();
+        List<ControlSignal> messages = new ArrayList<>();
+        var client = router.register(capable(clientPeer(), true), ignored -> { });
+        var agent = router.register(capable(agentPeer(), true), messages::add);
+        router.authorize(grant());
+        var invite = (ControlSignal.SessionInvite) messages.getFirst();
+        org.junit.jupiter.api.Assertions.assertTrue(invite.peerReflexiveSupported());
+        long g = invite.generation();
+        for (var peer : List.of(client, agent)) {
+            router.route(peer, new ControlSignal.IceCredentials(UUID.randomUUID(), sessionId, g,
+                    "abcd", "a".repeat(22)));
+        }
+        var remote = candidate(g, "198.51.100.20");
+        router.route(agent, remote);
+        router.route(client, new ControlSignal.IceEnd(UUID.randomUUID(), sessionId, g));
+        var first = late(g, "192.0.2.10", ControlSignal.Transport.UDP);
+        router.route(client, first);
+        assertThrows(SecurityException.class, () -> router.route(client, first));
+        assertThrows(SecurityException.class, () -> router.route(client,
+                late(g, "192.0.2.11", ControlSignal.Transport.TCP)));
+        assertThrows(SecurityException.class, () -> router.route(client, candidate(g, "192.0.2.12")));
+        router.route(client, late(g, "192.0.2.13", ControlSignal.Transport.UDP));
+        assertThrows(SecurityException.class, () -> router.route(client,
+                late(g, "192.0.2.14", ControlSignal.Transport.UDP)));
+        assertThrows(SecurityException.class, () -> router.route(client, new ControlSignal.PathReady(
+                UUID.randomUUID(), sessionId, g, ControlSignal.Path.DIRECT, first.candidateId(), UUID.randomUUID())));
+        router.route(client, new ControlSignal.PathReady(UUID.randomUUID(), sessionId, g,
+                ControlSignal.Path.DIRECT, first.candidateId(), remote.candidateId()));
+    }
+
+    @Test
+    void requiresBothPeersAndRejectsCandidatesAfterReadyOrRevocation() throws Exception {
+        for (boolean both : List.of(false, true)) {
+            SignalRouter router = router();
+            List<ControlSignal> messages = new ArrayList<>();
+            var client = router.register(capable(clientPeer(), true), ignored -> { });
+            var agent = router.register(capable(agentPeer(), both), messages::add);
+            router.authorize(grant());
+            var invite = (ControlSignal.SessionInvite) messages.getFirst();
+            assertEquals(both, invite.peerReflexiveSupported());
+            long g = invite.generation();
+            for (var peer : List.of(client, agent)) router.route(peer,
+                    new ControlSignal.IceCredentials(UUID.randomUUID(), sessionId, g, "abcd", "a".repeat(22)));
+            var local = candidate(g, "192.0.2.10");
+            var remote = candidate(g, "198.51.100.20");
+            router.route(client, local);router.route(agent, remote);
+            router.route(client, new ControlSignal.IceEnd(UUID.randomUUID(), sessionId, g));
+            if (!both) assertThrows(SecurityException.class, () -> router.route(client,
+                    late(g, "192.0.2.11", ControlSignal.Transport.UDP)));
+            assertThrows(SecurityException.class, () -> router.route(client,
+                    late(g + 1, "192.0.2.12", ControlSignal.Transport.UDP)));
+            router.route(client, new ControlSignal.PathReady(UUID.randomUUID(), sessionId, g,
+                    ControlSignal.Path.DIRECT, local.candidateId(), remote.candidateId()));
+            assertThrows(SecurityException.class, () -> router.route(client,
+                    late(g, "192.0.2.13", ControlSignal.Transport.UDP)));
+            router.revoke(sessionId);
+            assertThrows(SecurityException.class, () -> router.route(client,
+                    late(g, "192.0.2.14", ControlSignal.Transport.UDP)));
+        }
+    }
+
+    private SignalRouter.ControlPeer capable(SignalRouter.ControlPeer peer, boolean extension) {
+        var caps = new java.util.HashSet<String>();caps.add(ControlSignal.ICE_CREDENTIALS_CAPABILITY);
+        if (extension) caps.add(ControlSignal.ICE_PEER_REFLEXIVE_CAPABILITY);
+        return new SignalRouter.ControlPeer(peer.role(), peer.accountId(), peer.nodeId(), peer.agentId(),
+                peer.keyFingerprint(), caps);
+    }
+
+    private ControlSignal.IceCandidate late(long generation, String address, ControlSignal.Transport transport)
+            throws Exception {
+        return new ControlSignal.IceCandidate(UUID.randomUUID(), sessionId, generation, UUID.randomUUID(),
+                ControlSignal.CandidateType.PEER_REFLEXIVE, transport, InetAddress.getByName(address),
+                23000, 100, "foundation1");
+    }
+
     private SignalRouter router() {
         return new SignalRouter(Clock.fixed(NOW, ZoneOffset.UTC), 16, 16, 32, 256);
     }

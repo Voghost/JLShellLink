@@ -171,7 +171,8 @@ public final class ClientControlSignalClient implements AutoCloseable {
                 "type", "HELLO", "role", "client", "nodeId", deviceId.toString(),
                 "keyFingerprint", nodeKey.fingerprint().value(),
                 "minProtocol", "link-v2", "maxProtocol", "link-v2",
-                "capabilities", List.of("tcp-connect", ControlSignal.ICE_CREDENTIALS_CAPABILITY),
+                "capabilities", List.of("tcp-connect", ControlSignal.ICE_CREDENTIALS_CAPABILITY,
+                        ControlSignal.ICE_PEER_REFLEXIVE_CAPABILITY),
                 "sentAt", Instant.now().toString()));
     }
 

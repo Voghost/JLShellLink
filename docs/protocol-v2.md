@@ -21,7 +21,7 @@
 |---|---|---|
 | `HELLO` | A/C→B | 节点 ID、角色、协议范围、能力、凭据 ID |
 | `CHALLENGE` / `PROOF` | B↔A/C | 32 字节以上随机数、用途、节点 ID、可选 sessionId、Ed25519 签名 |
-| `SESSION_INVITE` | B→A/C | sessionId、generation、A/C 指纹、策略版本、过期时间和 `iceCredentialsSupported`；A/C 从此消息取得代次及 direct 信令能力协商结果 |
+| `SESSION_INVITE` | B→A/C | sessionId、generation、A/C 指纹、策略版本、过期时间、`iceCredentialsSupported` 和可选 `peerReflexiveSupported`；A/C 从此消息取得代次及 direct 信令能力协商结果 |
 | `SESSION_REVOKED` | B→A/C | sessionId、generation；Website 业务授权结束后立即停止本次会话的数据流 |
 | `ICE_CREDENTIALS` | A/C↔B | 仅当双方 `HELLO.capabilities` 都含 `ice-credentials-v1` 时可用；每侧每代一次性 username fragment 与 password，经已鉴权 WSS 转发，B 不持久化且日志不得记录 |
 | `ICE_CANDIDATE` | A/C↔B | generation、candidateId、类型、transport、IP、端口、priority、foundation |
@@ -31,7 +31,23 @@
 | `REVOKE` | B→A/C | session/tunnel、策略版本、稳定原因码 |
 | `PING` / `PONG` | 双向 | messageId 与单调时间戳 |
 
-B 只能在同账号且已授权的 A/C 间路由候选和 ICE 凭据。只有 A、C 的 `HELLO.capabilities` 都含 `ice-credentials-v1` 时，B 才接受此扩展；旧节点会继续使用不含该扩展的已有控制流程。协商成功后，每侧在当前 generation 只能发送一次 `ICE_CREDENTIALS`，并且必须先于该侧的 `ICE_CANDIDATE` / `ICE_END`；候选结束后不得再添加候选。`DIRECT` 的 `PATH_READY` 只能引用双方已交换的 candidateId。旧 generation、跨 session 或身份不匹配的信令返回错误且不进入 ICE Agent。
+B 只能在同账号且已授权的 A/C 间路由候选和 ICE 凭据。只有 A、C 的 `HELLO.capabilities` 都含 `ice-credentials-v1` 时，B 才接受此扩展；旧节点会继续使用不含该扩展的已有控制流程。协商成功后，每侧在当前 generation 只能发送一次 `ICE_CREDENTIALS`，并且必须先于该侧的 `ICE_CANDIDATE` / `ICE_END`；未协商动态候选能力时，候选结束后不得再添加候选。`DIRECT` 的 `PATH_READY` 只能引用双方已交换的 candidateId。旧 generation、跨 session 或身份不匹配的信令返回错误且不进入 ICE Agent。
+
+### 提名后的动态候选绑定
+
+只有 A、C 的已鉴权 `HELLO.capabilities` 同时声明 `ice-credentials-v1` 和
+`ice-peer-reflexive-v1`，B 才在 `SESSION_INVITE` 返回 `peerReflexiveSupported=true`。
+缺少字段或任一端缺少能力时保持原行为，拒绝 `ICE_END` 后候选。
+
+协商后每侧、每代最多补充两个 `PEER_REFLEXIVE` UDP 候选，仍占用原有总候选与消息额度，
+并且必须在该侧 `PATH_READY` 前发送。会话授权、身份、代次、有效期、重放及撤销检查不变。
+本地只公布 ICE 实际提名的动态端点；接收端只把补充消息用于已提名端点的候选 ID 绑定，
+不向 ICE 添加新的连通性检查。提前到达的补充消息可暂存，但必须精确匹配最终提名端点，
+不匹配或超时不能打开数据通道。候选必须为数值单播地址，禁止回环、链路本地和未指定地址。
+
+本端补充候选发送完成后才发送 `PATH_READY`。双方选中候选 ID 必须交叉匹配，承载仍执行
+端到端 TLS、节点指纹及目标业务授权；不能用放宽端点检查、绕过身份检查或新建候选探测
+替代动态绑定。候选日志及验收报告不得包含 ICE 凭据、票据、原始设备或网络信息。
 
 ### 控制 WSS 身份与在线会话
 

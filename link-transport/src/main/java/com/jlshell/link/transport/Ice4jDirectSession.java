@@ -26,6 +26,8 @@ import org.ice4j.Transport;
 import org.ice4j.TransportAddress;
 import org.ice4j.ice.Agent;
 import org.ice4j.ice.CandidateType;
+import org.ice4j.ice.CandidatePair;
+import org.ice4j.ice.LocalCandidate;
 import org.ice4j.ice.Component;
 import org.ice4j.ice.IceMediaStream;
 import org.ice4j.ice.KeepAliveStrategy;
@@ -46,6 +48,11 @@ public final class Ice4jDirectSession implements AutoCloseable {
     private final LinkSessionId sessionId;
     private final long generation;
     private final Config config;
+    private final java.util.function.Function<ControlSignal.IceCandidate, CompletionStage<Void>> candidatePublisher;
+    private CompletableFuture<Void> candidatePublished = CompletableFuture.completedFuture(null);
+    private int lateRemoteCandidates;
+    private int lateLocalCandidates;
+    private final List<CandidatePair> validatedPairs = new ArrayList<>();
     private final Agent agent;
     private final Component component;
     private final Map<UUID, org.ice4j.ice.LocalCandidate> localById;
@@ -70,6 +77,14 @@ public final class Ice4jDirectSession implements AutoCloseable {
      */
     public Ice4jDirectSession(LinkSessionId sessionId, long generation,
             boolean controlling, Config config) throws IOException {
+        this(sessionId, generation, controlling, config, null);
+    }
+
+    /** Late candidates are enabled only when both authenticated peers negotiated the extension. */
+    public Ice4jDirectSession(LinkSessionId sessionId, long generation, boolean controlling, Config config,
+            java.util.function.Function<ControlSignal.IceCandidate, CompletionStage<Void>> candidatePublisher)
+            throws IOException {
+        this.candidatePublisher = candidatePublisher;
         this.sessionId = Objects.requireNonNull(sessionId, "sessionId");
         if (generation < 1) throw new IllegalArgumentException("generation must be positive");
         this.generation = generation;
@@ -84,10 +99,21 @@ public final class Ice4jDirectSession implements AutoCloseable {
                         new TransportAddress(server, Transport.UDP)));
             }
             IceMediaStream stream = createdAgent.createMediaStream(STREAM_NAME);
+            stream.addPairChangeListener(event -> {
+                if (IceMediaStream.PROPERTY_PAIR_VALIDATED.equals(event.getPropertyName())
+                        && event.getSource() instanceof CandidatePair pair && pair.isValid()) {
+                    synchronized (validatedPairs) {
+                        if (validatedPairs.size() < config.maxCandidates() * config.maxCandidates()) {
+                            validatedPairs.add(pair);
+                        }
+                    }
+                }
+            });
             createdComponent = createdAgent.createComponent(stream, 0, 0, 0,
                     KeepAliveStrategy.SELECTED_ONLY, true);
-            GatheredCandidates gathered = collectLocalCandidates(createdComponent, config.maxCandidates());
-            this.localById = gathered.byId();
+            GatheredCandidates gathered = collectLocalCandidates(createdComponent, candidatePublisher == null
+                    ? config.maxCandidates() : Math.max(1, config.maxCandidates() - 2));
+            this.localById = new LinkedHashMap<>(gathered.byId());
             this.localIdsByCandidate.putAll(gathered.idsByCandidate());
             if (localById.isEmpty()) throw new IOException("ICE gathered no usable UDP candidates");
             if (createdComponent.getSocket() == null) throw new IOException("ICE application socket is unavailable");
@@ -157,7 +183,9 @@ public final class Ice4jDirectSession implements AutoCloseable {
     }
 
     private void acceptCandidate(ControlSignal.IceCandidate candidate) {
-        if (!remoteCredentialsReceived || remoteEnd) {
+        if (!remoteCredentialsReceived || (remoteEnd && (candidatePublisher == null || !started
+                || selectedPath.isDone() || candidate.candidateType() != ControlSignal.CandidateType.PEER_REFLEXIVE
+                || lateRemoteCandidates >= 2))) {
             throw new IllegalArgumentException("remote ICE credentials must precede candidates and ICE_END");
         }
         if (candidate.transport() != ControlSignal.Transport.UDP) {
@@ -175,9 +203,17 @@ public final class Ice4jDirectSession implements AutoCloseable {
         if (remoteById.containsKey(candidate.candidateId()) || remoteIdsByCandidate.containsKey(key)) {
             throw new IllegalArgumentException("remote ICE candidate was duplicated");
         }
+        var nominated = component.getSelectedPair();
+        if (remoteEnd && nominated != null
+                && !address.equals(nominated.getRemoteCandidate().getTransportAddress())) {
+            throw new SecurityException("late candidate does not match the nominated ICE peer");
+        }
         RemoteCandidate remote = new RemoteCandidate(address, component, type, candidate.foundation(),
                 candidate.priority(), null);
-        component.addRemoteCandidate(remote);
+        // A late candidate is an authenticated name for an endpoint already discovered by ICE.
+        // It must not create new connectivity checks after the initial offer has ended.
+        if (!remoteEnd) component.addRemoteCandidate(remote);
+        else lateRemoteCandidates++;
         remoteById.put(candidate.candidateId(), remote);
         remoteIdsByCandidate.put(key, candidate.candidateId());
         startIfReady();
@@ -200,18 +236,35 @@ public final class Ice4jDirectSession implements AutoCloseable {
         }
     }
 
-    private void pollSelection() {
+    private synchronized void pollSelection() {
         if (closed.get() || selectedPath.isDone()) return;
         try {
             var pair = component.getSelectedPair();
             if (pair != null) {
-                UUID localId = localIdsByCandidate.get(CandidateKey.of(
-                        pair.getLocalCandidate().getTransportAddress(), pair.getLocalCandidate().getType()));
-                UUID remoteId = remoteIdsByCandidate.get(CandidateKey.of(
-                        pair.getRemoteCandidate().getTransportAddress(), pair.getRemoteCandidate().getType()));
+                var localCandidate = validatedLocalCandidate(pair);
+                if (localCandidate == null) return;
+                var remoteCandidate = pair.getRemoteCandidate();
+                UUID localId = candidateIdAt(localIdsByCandidate, localCandidate.getTransportAddress());
+                if (localId == null && candidatePublisher != null
+                        && localCandidate.getType() == CandidateType.PEER_REFLEXIVE_CANDIDATE
+                        && lateLocalCandidates < 2 && localById.size() < config.maxCandidates()) {
+                    localId = UUID.randomUUID();
+                    localById.put(localId, localCandidate);
+                    localIdsByCandidate.put(CandidateKey.of(localCandidate.getTransportAddress(),
+                            localCandidate.getType()), localId);
+                    lateLocalCandidates++;
+                    candidatePublished = Objects.requireNonNull(candidatePublisher.apply(
+                            toSignal(localId, localCandidate)), "candidate publisher returned no stage")
+                            .toCompletableFuture();
+                }
+                UUID remoteId = candidateIdAt(remoteIdsByCandidate, remoteCandidate.getTransportAddress());
                 if (localId == null || remoteId == null) {
+                    if (candidatePublisher != null && localId != null
+                            && remoteCandidate.getType() == CandidateType.PEER_REFLEXIVE_CANDIDATE) return;
                     throw new IOException("ICE selected a candidate outside the authorized exchange");
                 }
+                if (!candidatePublished.isDone()) return;
+                candidatePublished.join();
                 IceSelectedDatagramPath datagrams = new IceSelectedDatagramPath(component.getSocket(),
                         pair.getRemoteCandidate().getTransportAddress(), config.maxDatagramBytes(),
                         config.receiveTimeoutMillis());
@@ -227,6 +280,45 @@ public final class Ice4jDirectSession implements AutoCloseable {
         } catch (IOException | RuntimeException failure) {
             fail(failure);
         }
+    }
+
+    private LocalCandidate validatedLocalCandidate(CandidatePair nominated) throws IOException {
+        LocalCandidate original = nominated.getLocalCandidate();
+        if (candidatePublisher == null || agent.isControlling() || nominated.isValid()
+                || original.getType() != CandidateType.HOST_CANDIDATE) return original;
+        // ice4j can nominate the checked HOST pair on the controlled side, while the
+        // authenticated STUN response validates a different local mapped address.
+        // Resolve only that same base socket and exact nominated remote endpoint.
+        LocalCandidate found = null;
+        synchronized (validatedPairs) {
+            for (CandidatePair valid : validatedPairs) {
+                LocalCandidate local = valid.getLocalCandidate();
+                if (!valid.isValid() || valid.getParentComponent() != component
+                        || !local.getBase().equals(original.getBase())
+                        || !valid.getRemoteCandidate().getTransportAddress()
+                                .equals(nominated.getRemoteCandidate().getTransportAddress())) continue;
+                if (found != null && !found.getTransportAddress().equals(local.getTransportAddress())) {
+                    throw new IOException("ICE validated local endpoint is ambiguous");
+                }
+                found = local;
+            }
+        }
+        return found; // No verified mapping: wait within the existing connectivity deadline.
+    }
+
+    private static UUID candidateIdAt(Map<CandidateKey, UUID> candidates, TransportAddress address)
+            throws IOException {
+        UUID found = null;
+        for (var entry : candidates.entrySet()) {
+            CandidateKey key = entry.getKey();
+            if (key.address().equals(address.getAddress()) && key.port() == address.getPort()) {
+                if (found != null && !found.equals(entry.getValue())) {
+                    throw new IOException("ICE candidate endpoint is ambiguous");
+                }
+                found = entry.getValue();
+            }
+        }
+        return found;
     }
 
     private void fail(Throwable failure) {
@@ -399,9 +491,9 @@ public final class Ice4jDirectSession implements AutoCloseable {
         }
     }
 
-    private record CandidateKey(InetAddress address, int port, CandidateType type) {
+    private record CandidateKey(InetAddress address, int port) {
         static CandidateKey of(InetSocketAddress address, CandidateType type) {
-            return new CandidateKey(address.getAddress(), address.getPort(), type);
+            return new CandidateKey(address.getAddress(), address.getPort());
         }
     }
 
