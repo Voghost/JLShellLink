@@ -47,7 +47,7 @@ done
 if [ -n "${INSTALL_ROOT:-}" ]; then
     # A reused name must not overwrite a different root's manager registration.
     if [ -e "$UNIT" ] || [ -L "$UNIT" ]; then
-        [ -L "$UNIT" ] && [ "$(readlink "$UNIT")" = "$CONFIG_DIR/systemd/$UNIT_NAME.service" ] || layout_fail
+        [ -L "$UNIT" ] && [ "$UNIT" -ef "$CONFIG_DIR/systemd/$UNIT_NAME.service" ] || layout_fail
     fi
     if [ -e "$PLIST" ] || [ -L "$PLIST" ]; then
         [ -f "$PLIST" ] && [ ! -L "$PLIST" ] || layout_fail
