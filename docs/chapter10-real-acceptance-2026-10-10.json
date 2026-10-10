@@ -232,5 +232,6 @@
     "Website Jenkins backend and both image security gates",
     "main-source signed release and recovery window",
     "active Rust retirement after release gate"
-  ]
+  ],
+  "sourceRevisionEvidence": "Recorded checkout used by the local build. Local candidate JAR manifests contain development; the configured revision alone is not signed artifact provenance. A thin client and B also used earlier component revisions. These runs are not a same-revision formal release acceptance."
 }
