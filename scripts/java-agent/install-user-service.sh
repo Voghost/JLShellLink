@@ -2,11 +2,8 @@
 set -eu
 
 ACTION=${1:-}
-CONFIG_DIR="$HOME/.config/jlshell-link-agent"
-APP_DIR="$HOME/.local/lib/jlshell-link-agent"
-ENV_FILE="$CONFIG_DIR/agent.env"
-UNIT_NAME=jlshell-link-agent
-PLIST_NAME=com.jlshell.link.agent
+. "$(dirname "$0")/user-service-layout.sh"
+umask 077
 PACKAGE_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
 
 fail() { printf '安装失败：%s\n' "$*" >&2; exit 1; }
@@ -37,8 +34,8 @@ case "$ACTION" in
             BUNDLED_JAVA=${JLSHELL_LINK_JAVA:-java}
             command -v "$BUNDLED_JAVA" >/dev/null 2>&1 || fail '需要 Java 21；请使用包含 runtime 的发布包或设置 JLSHELL_LINK_JAVA'
         fi
-        mkdir -p "$CONFIG_DIR" "$APP_DIR" "$HOME/.local/state/jlshell-link-agent" "$HOME/.local/share/jlshell-link-agent/logs"
-        chmod 700 "$CONFIG_DIR" "$APP_DIR" "$HOME/.local/state/jlshell-link-agent" "$HOME/.local/share/jlshell-link-agent/logs"
+        mkdir -p "$CONFIG_DIR" "$APP_DIR" "$STATE_DIR" "$LOG_DIR"
+        chmod 700 "$CONFIG_DIR" "$APP_DIR" "$STATE_DIR" "$LOG_DIR"
         install -m 600 "$JAR" "$APP_DIR/link-agent.jar"
         if [ -d "$PACKAGE_ROOT/runtime" ]; then
             rm -rf "$APP_DIR/runtime.new"
@@ -48,7 +45,7 @@ case "$ACTION" in
         fi
         {
             printf 'export JLSHELL_LINK_AGENT_JAR=%s\n' "$(quote_shell "$APP_DIR/link-agent.jar")"
-            printf 'export JLSHELL_LINK_STATE_DIR=%s\n' "$(quote_shell "$HOME/.local/state/jlshell-link-agent")"
+            printf 'export JLSHELL_LINK_STATE_DIR=%s\n' "$(quote_shell "$STATE_DIR")"
             printf 'export JLSHELL_LINK_WSS_URI=%s\n' "$(quote_shell "$WSS_URI")"
             printf 'export JLSHELL_LINK_TLS_IDENTITY=%s\n' "$(quote_shell "$TLS_IDENTITY")"
             printf 'export JLSHELL_LINK_TLS_PASSWORD_FILE=%s\n' "$(quote_shell "$TLS_PASSWORD")"
@@ -68,6 +65,7 @@ case "$ACTION" in
                 command -v systemctl >/dev/null 2>&1 || fail '找不到 systemctl'
                 UNIT_DIR="$CONFIG_DIR/systemd"
                 mkdir -p "$UNIT_DIR"
+                ENV_FILE_SYSTEMD=$(printf '%s' "$ENV_FILE" | sed 's/\\/\\\\/g; s/"/\\"/g; s/%/%%/g')
                 APP_DIR_SYSTEMD=$(printf '%s' "$APP_DIR" | sed 's/\\/\\\\/g; s/"/\\"/g; s/%/%%/g')
                 cat >"$UNIT_DIR/$UNIT_NAME.service" <<EOF
 [Unit]
@@ -77,6 +75,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+Environment="JLSHELL_LINK_AGENT_CONFIG=$ENV_FILE_SYSTEMD"
 ExecStart="$APP_DIR_SYSTEMD/run-agent.sh"
 ExecStop="$APP_DIR_SYSTEMD/stop-agent.sh"
 Restart=on-failure
@@ -98,9 +97,9 @@ EOF
             Darwin)
                 command -v launchctl >/dev/null 2>&1 || fail '找不到 launchctl'
                 PLIST_DIR="$HOME/Library/LaunchAgents"
-                mkdir -p "$PLIST_DIR" "$HOME/.local/share/jlshell-link-agent/logs"
+                mkdir -p "$PLIST_DIR" "$LOG_DIR"
                 APP_DIR_XML=$(xml_escape "$APP_DIR")
-                LOG_DIR_XML=$(xml_escape "$HOME/.local/share/jlshell-link-agent/logs")
+                LOG_DIR_XML=$(xml_escape "$LOG_DIR")
                 ENV_FILE_XML=$(xml_escape "$ENV_FILE")
                 cat >"$PLIST_DIR/$PLIST_NAME.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -123,7 +122,7 @@ EOF
                 ;;
             *) fail '仅支持 Linux systemd-user 与 macOS LaunchAgent' ;;
         esac
-        printf 'JLShell Link 用户服务已安装；凭据和 Agent 状态保存在 %s。\n' "$HOME/.local/state/jlshell-link-agent"
+        printf 'JLShell Link 用户服务已安装；凭据和 Agent 状态保存在 %s。\n' "$STATE_DIR"
         ;;
     uninstall)
         case "$(uname -s)" in
@@ -139,7 +138,7 @@ EOF
             *) fail '仅支持 Linux systemd-user 与 macOS LaunchAgent' ;;
         esac
         rm -f "$ENV_FILE"
-        printf '服务定义已移除；Agent 身份、凭据、JAR 和日志保留在 %s。\n' "$HOME/.local"
+        printf '服务定义已移除；Agent 身份、凭据、JAR 和日志保留在 %s。\n' "$STATE_DIR"
         ;;
     status)
         case "$(uname -s)" in

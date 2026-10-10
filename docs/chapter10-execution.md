@@ -22,7 +22,7 @@
 
 1. 从同一个通过 CI 的提交取 Linux/macOS/Windows 包，检查包内 JAR 来源 SHA 与外部 manifest 一致。
 2. 以独立信任锚验签后在专用工作目录安装；每个平台记录注册、权限、启停、登录条件、升级恢复与卸载的实际结果。
-3. 不覆盖已有服务或用户配置；若安装脚本固定服务名会与已有 Agent 冲突，先在独立测试账号/设备执行，不把 HOME 指向临时目录来混用系统服务。
+3. 不覆盖已有服务或用户配置；可使用 `agent-service.md` 的显式私有安装根目录/独立实例名，或独立测试账号/设备。不把 HOME 指向临时目录来混用系统服务。系统管理器注册文件的位置、卸载清理和原验收 Agent 恢复需单独记录。
 4. Windows 必须有实际连接入口；无用户登录启动和重启不能用 PowerShell 语法检查代替。macOS 的 LaunchAgent 与 Linux systemd-user 的登录/linger 条件分别记录，不承诺统一无人值守开机。
 5. A/C 使用不同公网出口。STUN 映射、最终候选对和业务路径的原始证据只保留在受限验收目录；公开记录仅保留来源 SHA、结果、耗时和证据摘要，不包含账号、目标 IP、设备 ID、票据或密钥。
 6. 实际桌面宿主须包含 SDK 1.5.0 的路由能力；已发布 0.1.66 缺少该提交，0.1.67 是准备中的兼容版本，尚未把未发行安装包当作可用稳定制品。
@@ -46,6 +46,10 @@ python3 scripts/qa/verify-business-tunnels.py --config /private/acceptance.json 
 
 慢消费者、丢包、100 并发尝试、长连接和反复启停必须另外实测。客户端默认最多 16 个打开隧道、上限 64；100 是试验点，不是承诺一个实例可以接受 100 条。统计成功、受限拒绝、其他失败与资源占用，不能提升限额或关闭授权来获得漂亮结果。
 
+### UDP 排查结果的使用边界
+
+STUN 对同一服务器的映射稳定，不表示向另一个目标发包时源端口也相同。本轮新鲜端点复测已发现该差异，并在诊断程序改用实际观测来源回发后双向收到固定小包。因此后续要定位真实 ICE 的候选、动态 peer-reflexive 处理及提名阶段，不能继续仅以旧零包结果要求改防火墙，也不能把诊断程序的回发路径当作授权产品直连。原始端点仍只放私有工作目录；详情与脱敏计数见 `java-release-readiness.md` 的本轮补充。
+
 ## REL-01
 
 - 汇总三平台、业务、压力、签名及无 sidecar 证据，使用 `check-release-readiness.py --phase qa` 检查字段是否齐全。
@@ -62,6 +66,8 @@ python3 scripts/qa/verify-business-tunnels.py --config /private/acceptance.json 
 正式验收与恢复窗口结束后执行 `check-release-readiness.py --phase retire`。它要求真实验收、来源已进 main、恢复演练，以及没有仍待处理的旧 Agent/活动 Relay/Grant/未过期票据。
 
 通过后分独立 PR 清理：
+
+准确源码范围及 Java 必须保留的共享服务见 [退役代码盘点](rust-retirement-inventory.md)；执行前从最新 develop 重新核对引用。
 
 - Link 的 Cargo、Rust apps/crates/vendor、旧打包安装脚本、Rust quality/native/musl/Relay 镜像 jobs 与旧部署入口；保留 Java jobs/平台包审计。
 - 插件仅用于旧 Connector 的进程、解包、PeerId、临时票据协议类及对应测试；保留具有 Java 职责的会话安装与贡献类。
