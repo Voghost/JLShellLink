@@ -80,4 +80,19 @@ class ControlSignalJsonCodecTest {
         assertThrows(IllegalArgumentException.class, () -> codec.decodeHello("{\"type\":\"HELLO\","
                 + "\"role\":\"admin\",\"sentAt\":\"2026-09-25T00:00:00Z\"}"));
     }
+    @Test
+    void dynamicCandidateCapabilityIsExplicitAndDefaultsOffForOldServers() {
+        var invite = new ControlSignal.SessionInvite(UUID.randomUUID(), sessionId, 3,
+                UUID.randomUUID(), UUID.randomUUID(), new NodeKeyFingerprint("22".repeat(32)),
+                new NodeKeyFingerprint("11".repeat(32)), 4, Instant.parse("2026-09-26T01:00:00Z"), true, true);
+        assertEquals(invite, codec.decodeServerSignal(codec.encode(invite)));
+        String legacy = codec.encode(invite).replace("\"peerReflexiveSupported\":true,", "")
+                .replace(",\"peerReflexiveSupported\":true", "");
+        var decoded = (ControlSignal.SessionInvite) codec.decodeServerSignal(legacy);
+        org.junit.jupiter.api.Assertions.assertFalse(decoded.peerReflexiveSupported());
+        assertThrows(IllegalArgumentException.class, () -> new ControlSignal.SessionInvite(
+                invite.messageId(), sessionId, 3, invite.agentId(), invite.clientDeviceId(),
+                invite.agentKeyFingerprint(), invite.clientKeyFingerprint(), 4, invite.expiresAt(), false, true));
+    }
+
 }

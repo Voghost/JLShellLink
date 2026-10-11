@@ -135,7 +135,7 @@ final class AgentRuntimeService {
                         if (directRuntime == null) {
                             AgentDirectSessionRuntime created = new AgentDirectSessionRuntime(ticketIssuer,
                                     registration.agentId(), nodeKey, innerIdentity::forClient,
-                                    () -> localPolicy, lease, localCarrierLoops, directWorker, scheduler,
+                                    () -> localPolicy, lease, localCarrierLoops, eventLoops, directWorker, scheduler,
                                     grants, authority, budget, iceConfig(),
                                     new TlsHandshakeGate(budget.maxConcurrentHandshakes()), clock,
                                     AgentRuntimeService::reportStatus);
@@ -163,7 +163,8 @@ final class AgentRuntimeService {
                         AgentControlSignalClient client = new AgentControlSignalClient(controlUri,
                                 registration.agentId(), nodeKey, registration.credential(), outerTls,
                                 Set.of("tcp-connect", com.jlshell.link.core.signal.ControlSignal
-                                        .ICE_CREDENTIALS_CAPABILITY), invite -> {
+                                        .ICE_CREDENTIALS_CAPABILITY, com.jlshell.link.core.signal.ControlSignal
+                                        .ICE_PEER_REFLEXIVE_CAPABILITY), invite -> {
                                     AgentDirectSessionRuntime current = direct.get();
                                     AgentControlSignalClient signalClient = holder.get();
                                     if (current != null && signalClient != null) {

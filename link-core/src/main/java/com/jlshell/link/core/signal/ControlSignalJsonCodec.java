@@ -79,7 +79,8 @@ public final class ControlSignalJsonCodec {
                             new NodeKeyFingerprint(JSONObjectUtils.getString(value, "clientKeyFingerprint")),
                             JSONObjectUtils.getLong(value, "policyVersion"),
                             Instant.parse(JSONObjectUtils.getString(value, "expiresAt")),
-                            optionalBoolean(value, "iceCredentialsSupported"));
+                            optionalBoolean(value, "iceCredentialsSupported"),
+                            optionalBoolean(value, "peerReflexiveSupported"));
                 }
                 case "SESSION_REVOKED" -> {
                     if (!acceptInvite) throw new IllegalArgumentException("SESSION_REVOKED is server-only");
@@ -107,6 +108,7 @@ public final class ControlSignalJsonCodec {
             value.put("policyVersion", invite.policyVersion());
             value.put("expiresAt", invite.expiresAt().toString());
             value.put("iceCredentialsSupported", invite.iceCredentialsSupported());
+            value.put("peerReflexiveSupported", invite.peerReflexiveSupported());
         } else if (signal instanceof ControlSignal.IceCandidate candidate) {
             value.put("candidateId", candidate.candidateId().toString());
             value.put("candidateType", candidate.candidateType().name());

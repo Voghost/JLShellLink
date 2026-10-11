@@ -1,0 +1,786 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-11",
+  "scope": "isolated-real-SDK-Agent-component-acceptance",
+  "differentPublicExitsVerified": true,
+  "sameSignedFormalReleaseAcceptance": false,
+  "desktopHostAcceptance": false,
+  "productionModified": false,
+  "artifacts": {
+    "agent": {
+      "sha256": "ee65ff4ffc9b659ed891d5ca574573d735f998ddee0c9efed2193b37bb9648a1",
+      "revision": "6378853d2b834106ce7477134c4c4d7bddd2c58d"
+    },
+    "client": {
+      "sha256": "828cbf2ed49e3f20540cc8679f55fc9ea5fefa81528c84551f936fb4a2b536ac",
+      "revision": "6378853d2b834106ce7477134c4c4d7bddd2c58d"
+    },
+    "website": {
+      "sha256": "02e0f1685e294b45b24e79811c169d8e4540f28ac7e41a47fcef09d0eb7bb0f8",
+      "embeddedLinkRevisions": {
+        "link-core-0.1.0-SNAPSHOT.jar": "6378853d2b834106ce7477134c4c4d7bddd2c58d",
+        "link-server-0.1.0-SNAPSHOT.jar": "6378853d2b834106ce7477134c4c4d7bddd2c58d",
+        "link-server-spring-0.1.0-SNAPSHOT.jar": "6378853d2b834106ce7477134c4c4d7bddd2c58d",
+        "link-transport-0.1.0-SNAPSHOT.jar": "6378853d2b834106ce7477134c4c4d7bddd2c58d"
+      },
+      "websiteCheckoutRevision": "11a9cc146bc25da5dce3f0d7e39551b41513e96e"
+    }
+  },
+  "localVerification": {
+    "javaVersion": 21,
+    "linkTests": 119,
+    "websiteBackendTests": 96,
+    "websiteUsesLocalSnapshot": true
+  },
+  "codeCi": "https://github.com/Voghost/JLShellLink/actions/runs/38113129644",
+  "runs": [
+    {
+      "completedAt": "2026-10-11T04:19:32.713133460Z",
+      "linkSourceRevision": "1d687d7f3c9d2790de1de0c55cde582c01f15959",
+      "httpCases": [
+        {
+          "requestedPolicy": "DIRECT_ONLY",
+          "actualPath": "DIRECT",
+          "connectMillis": 1844,
+          "protocol": "http",
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 3012
+        },
+        {
+          "requestedPolicy": "RELAY_ONLY",
+          "actualPath": "RELAY",
+          "connectMillis": 3631,
+          "protocol": "http",
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 4012
+        },
+        {
+          "requestedPolicy": "AUTO",
+          "actualPath": "DIRECT",
+          "connectMillis": 525,
+          "protocol": "http",
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 1316
+        }
+      ],
+      "relayPressure": {
+        "executed": false
+      },
+      "remainingOpenTunnels": 0,
+      "remainingPendingTunnels": 0,
+      "label": "http-normal",
+      "evidenceSha256": "5aea6fbd398e30b3618ff14a6b8f64b564ca590bc54522621215edaee4f9faa8",
+      "networkSummary": {
+        "stunDifferentPublicExits": true,
+        "selectedPairsCrossMatched": 2,
+        "dynamicCandidates": 0,
+        "privateCandidateEvidenceSha256": "4f767bad7acf8048c1c628be853ad1893a12eba1af6c42cfddea3c1eb7386b06"
+      }
+    },
+    {
+      "completedAt": "2026-10-11T04:24:30.177292237Z",
+      "linkSourceRevision": "1d687d7f3c9d2790de1de0c55cde582c01f15959",
+      "httpCases": [
+        {
+          "requestedPolicy": "DIRECT_ONLY",
+          "actualPath": "DIRECT",
+          "connectMillis": 1667,
+          "protocol": "postgres",
+          "queryCount": 1,
+          "passed": true,
+          "elapsedMillis": 1755
+        },
+        {
+          "requestedPolicy": "RELAY_ONLY",
+          "actualPath": "RELAY",
+          "connectMillis": 9152,
+          "protocol": "postgres",
+          "queryCount": 1,
+          "passed": true,
+          "elapsedMillis": 9239
+        },
+        {
+          "requestedPolicy": "AUTO",
+          "actualPath": "DIRECT",
+          "connectMillis": 317,
+          "protocol": "postgres",
+          "queryCount": 1,
+          "passed": true,
+          "elapsedMillis": 406
+        }
+      ],
+      "datagramImpairment": {
+        "droppedReceive": 0,
+        "received": 0,
+        "droppedSend": 0,
+        "phase": "after-ICE-nomination",
+        "sendAttempts": 0,
+        "dropEvery": 0
+      },
+      "relayPressure": {
+        "executed": false
+      },
+      "remainingOpenTunnels": 0,
+      "remainingPendingTunnels": 0,
+      "label": "sql-matrix",
+      "evidenceSha256": "f5abcd74cdf454b7046cd3a61732b7dfbd846e58fd7a0ffa4bfaa11f617c995f",
+      "networkSummary": {
+        "stunDifferentPublicExits": true,
+        "selectedPairsCrossMatched": 2,
+        "dynamicCandidates": 0,
+        "privateCandidateEvidenceSha256": "a5212a634b6c6401725e452e277891eb5caa466446df74ec92335d9f33b43f8b"
+      }
+    },
+    {
+      "completedAt": "2026-10-11T04:33:13.109952680Z",
+      "linkSourceRevision": "1d687d7f3c9d2790de1de0c55cde582c01f15959",
+      "httpCases": [
+        {
+          "requestedPolicy": "DIRECT_ONLY",
+          "actualPath": "DIRECT",
+          "connectMillis": 1399,
+          "protocol": "postgres",
+          "queryCount": 13,
+          "passed": true,
+          "elapsedMillis": 182404
+        },
+        {
+          "requestedPolicy": "RELAY_ONLY",
+          "actualPath": "RELAY",
+          "connectMillis": 2686,
+          "protocol": "postgres",
+          "queryCount": 13,
+          "passed": true,
+          "elapsedMillis": 183741
+        }
+      ],
+      "datagramImpairment": {
+        "sendAttempts": 0,
+        "phase": "after-ICE-nomination",
+        "droppedSend": 0,
+        "received": 0,
+        "droppedReceive": 0,
+        "dropEvery": 0
+      },
+      "relayPressure": {
+        "executed": false
+      },
+      "remainingOpenTunnels": 0,
+      "remainingPendingTunnels": 0,
+      "label": "sql-continuity",
+      "evidenceSha256": "4acb976b8d6b1200509b8a336f537b4e8f75c23c5139bc590b6a5b8f78ae2b93",
+      "networkSummary": {
+        "stunDifferentPublicExits": true,
+        "selectedPairsCrossMatched": 1,
+        "dynamicCandidates": 1,
+        "privateCandidateEvidenceSha256": "386fc291816edd807f57b0b97c25dbf46136e2898ae55cf0d4d6064636758556"
+      }
+    },
+    {
+      "completedAt": "2026-10-11T05:04:15.061723128Z",
+      "linkSourceRevision": "6378853d2b834106ce7477134c4c4d7bddd2c58d",
+      "httpCases": [
+        {
+          "requestedPolicy": "DIRECT_ONLY",
+          "actualPath": "DIRECT",
+          "connectMillis": 1677,
+          "protocol": "postgres",
+          "queryCount": 1,
+          "revocationObserved": true,
+          "passed": true,
+          "elapsedMillis": 1850
+        },
+        {
+          "requestedPolicy": "RELAY_ONLY",
+          "actualPath": "RELAY",
+          "connectMillis": 9941,
+          "protocol": "postgres",
+          "queryCount": 1,
+          "revocationObserved": true,
+          "passed": true,
+          "elapsedMillis": 10073
+        },
+        {
+          "requestedPolicy": "AUTO",
+          "actualPath": "DIRECT",
+          "connectMillis": 368,
+          "protocol": "postgres",
+          "queryCount": 1,
+          "revocationObserved": true,
+          "passed": true,
+          "elapsedMillis": 519
+        }
+      ],
+      "datagramImpairment": {
+        "sendAttempts": 0,
+        "phase": "after-ICE-nomination",
+        "droppedSend": 0,
+        "received": 0,
+        "droppedReceive": 0,
+        "dropEvery": 0
+      },
+      "relayPressure": {
+        "executed": false
+      },
+      "remainingOpenTunnels": 0,
+      "remainingPendingTunnels": 0,
+      "label": "sql-revocation",
+      "evidenceSha256": "5ea39ae7d0c7be11b27e1bff51afe1ff969c5919626df8c10640fcacc137397b",
+      "networkSummary": {
+        "stunDifferentPublicExits": true,
+        "selectedPairsCrossMatched": 2,
+        "dynamicCandidates": 1,
+        "privateCandidateEvidenceSha256": "208c0f7916b39dfd3bb63049576ee3607d27c723596b8d2ed5743ec0e7f76fa5"
+      }
+    },
+    {
+      "completedAt": "2026-10-11T05:05:48.908528938Z",
+      "linkSourceRevision": "6378853d2b834106ce7477134c4c4d7bddd2c58d",
+      "httpCases": [
+        {
+          "requestedPolicy": "DIRECT_ONLY",
+          "actualPath": "DIRECT",
+          "connectMillis": 1668,
+          "protocol": "http",
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 2568
+        },
+        {
+          "requestedPolicy": "RELAY_ONLY",
+          "actualPath": "RELAY",
+          "connectMillis": 4274,
+          "protocol": "http",
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 4676
+        },
+        {
+          "requestedPolicy": "AUTO",
+          "actualPath": "DIRECT",
+          "connectMillis": 341,
+          "protocol": "http",
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 1426
+        }
+      ],
+      "datagramImpairment": {
+        "droppedReceive": 0,
+        "received": 0,
+        "droppedSend": 0,
+        "phase": "after-ICE-nomination",
+        "sendAttempts": 0,
+        "dropEvery": 0
+      },
+      "relayPressure": {
+        "elapsedMillis": 12151,
+        "attempts": 100,
+        "peakOpenMeasured": 7,
+        "dataPassed": 7,
+        "boundedRejected": 93,
+        "otherFailures": 0,
+        "remainingPending": 0,
+        "connected": 7,
+        "remainingOpen": 0,
+        "policy": "RELAY_ONLY"
+      },
+      "remainingOpenTunnels": 0,
+      "remainingPendingTunnels": 0,
+      "label": "http-pressure",
+      "evidenceSha256": "8003c4061045d7c02bac3b86f604cc8ba1e673117825b73db7010f1255161075",
+      "networkSummary": {
+        "stunDifferentPublicExits": true,
+        "selectedPairsCrossMatched": 2,
+        "dynamicCandidates": 0,
+        "privateCandidateEvidenceSha256": "be7def60ffbe80929790d3010fb4a112fe58b40141651dedd90576620f60a32a"
+      }
+    },
+    {
+      "completedAt": "2026-10-11T05:07:45.389209905Z",
+      "linkSourceRevision": "6378853d2b834106ce7477134c4c4d7bddd2c58d",
+      "httpCases": [
+        {
+          "requestedPolicy": "DIRECT_ONLY",
+          "actualPath": "DIRECT",
+          "connectMillis": 1868,
+          "protocol": "ssh",
+          "passed": true,
+          "elapsedMillis": 2451
+        },
+        {
+          "requestedPolicy": "RELAY_ONLY",
+          "actualPath": "RELAY",
+          "connectMillis": 1577,
+          "protocol": "ssh",
+          "passed": true,
+          "elapsedMillis": 2020
+        },
+        {
+          "requestedPolicy": "AUTO",
+          "actualPath": "DIRECT",
+          "connectMillis": 247,
+          "protocol": "ssh",
+          "passed": true,
+          "elapsedMillis": 728
+        },
+        {
+          "requestedPolicy": "DIRECT_ONLY",
+          "actualPath": "DIRECT",
+          "connectMillis": 366,
+          "protocol": "sftp",
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 3831
+        },
+        {
+          "requestedPolicy": "RELAY_ONLY",
+          "actualPath": "RELAY",
+          "connectMillis": 4979,
+          "protocol": "sftp",
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 8370
+        },
+        {
+          "requestedPolicy": "AUTO",
+          "actualPath": "DIRECT",
+          "connectMillis": 235,
+          "protocol": "sftp",
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 2217
+        },
+        {
+          "requestedPolicy": "DIRECT_ONLY",
+          "actualPath": "DIRECT",
+          "connectMillis": 289,
+          "protocol": "ssh",
+          "passed": true,
+          "elapsedMillis": 801
+        },
+        {
+          "requestedPolicy": "RELAY_ONLY",
+          "actualPath": "RELAY",
+          "connectMillis": 3663,
+          "protocol": "ssh",
+          "passed": true,
+          "elapsedMillis": 4076
+        },
+        {
+          "requestedPolicy": "AUTO",
+          "actualPath": "DIRECT",
+          "connectMillis": 236,
+          "protocol": "ssh",
+          "passed": true,
+          "elapsedMillis": 699
+        },
+        {
+          "requestedPolicy": "DIRECT_ONLY",
+          "actualPath": "DIRECT",
+          "connectMillis": 229,
+          "protocol": "sftp",
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 3075
+        },
+        {
+          "requestedPolicy": "RELAY_ONLY",
+          "actualPath": "RELAY",
+          "connectMillis": 5838,
+          "protocol": "sftp",
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 9175
+        },
+        {
+          "requestedPolicy": "AUTO",
+          "actualPath": "DIRECT",
+          "connectMillis": 405,
+          "protocol": "sftp",
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 2709
+        },
+        {
+          "requestedPolicy": "DIRECT_ONLY",
+          "actualPath": "DIRECT",
+          "connectMillis": 251,
+          "protocol": "ssh",
+          "passed": true,
+          "elapsedMillis": 762
+        },
+        {
+          "requestedPolicy": "RELAY_ONLY",
+          "actualPath": "RELAY",
+          "connectMillis": 3237,
+          "protocol": "ssh",
+          "passed": true,
+          "elapsedMillis": 3652
+        },
+        {
+          "requestedPolicy": "AUTO",
+          "actualPath": "DIRECT",
+          "connectMillis": 478,
+          "protocol": "ssh",
+          "passed": true,
+          "elapsedMillis": 1000
+        },
+        {
+          "requestedPolicy": "DIRECT_ONLY",
+          "actualPath": "DIRECT",
+          "connectMillis": 240,
+          "protocol": "sftp",
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 2245
+        },
+        {
+          "requestedPolicy": "RELAY_ONLY",
+          "actualPath": "RELAY",
+          "connectMillis": 6418,
+          "protocol": "sftp",
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 13037
+        },
+        {
+          "requestedPolicy": "AUTO",
+          "actualPath": "DIRECT",
+          "connectMillis": 243,
+          "protocol": "sftp",
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 2967
+        }
+      ],
+      "datagramImpairment": {
+        "droppedReceive": 0,
+        "received": 0,
+        "droppedSend": 0,
+        "phase": "after-ICE-nomination",
+        "sendAttempts": 0,
+        "dropEvery": 0
+      },
+      "relayPressure": {
+        "executed": false
+      },
+      "remainingOpenTunnels": 0,
+      "remainingPendingTunnels": 0,
+      "label": "ssh-matrix",
+      "evidenceSha256": "304471f4934fa9d9d52e3fd3aaee92d1506ebc5e205c5b3b81f3b4bf3eec6ddf",
+      "networkSummary": {
+        "stunDifferentPublicExits": true,
+        "selectedPairsCrossMatched": 12,
+        "dynamicCandidates": 2,
+        "privateCandidateEvidenceSha256": "727c944e9818e4ef4737f2812665c2f0eb9fc2a6edd98a5437918c156e76090c"
+      }
+    },
+    {
+      "completedAt": "2026-10-11T05:08:29.974974436Z",
+      "linkSourceRevision": "6378853d2b834106ce7477134c4c4d7bddd2c58d",
+      "httpCases": [
+        {
+          "requestedPolicy": "DIRECT_ONLY",
+          "actualPath": "DIRECT",
+          "connectMillis": 1678,
+          "protocol": "http",
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 3817
+        },
+        {
+          "requestedPolicy": "RELAY_ONLY",
+          "actualPath": "RELAY",
+          "connectMillis": 7750,
+          "protocol": "http",
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 9007
+        },
+        {
+          "requestedPolicy": "AUTO",
+          "actualPath": "DIRECT",
+          "connectMillis": 462,
+          "protocol": "http",
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 2545
+        },
+        {
+          "requestedPolicy": "DIRECT_ONLY",
+          "actualPath": "DIRECT",
+          "connectMillis": 226,
+          "protocol": "http",
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 2539
+        },
+        {
+          "requestedPolicy": "RELAY_ONLY",
+          "actualPath": "RELAY",
+          "connectMillis": 3939,
+          "protocol": "http",
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 4919
+        },
+        {
+          "requestedPolicy": "AUTO",
+          "actualPath": "DIRECT",
+          "connectMillis": 343,
+          "protocol": "http",
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 2627
+        }
+      ],
+      "datagramImpairment": {
+        "droppedReceive": 114,
+        "received": 1148,
+        "droppedSend": 49,
+        "phase": "after-ICE-nomination",
+        "sendAttempts": 491,
+        "dropEvery": 10
+      },
+      "relayPressure": {
+        "executed": false
+      },
+      "remainingOpenTunnels": 0,
+      "remainingPendingTunnels": 0,
+      "label": "http-loss",
+      "evidenceSha256": "358892f5b8a6520ae08ac1cf043c1ac875c9c3d7a42fbfd581cf958a12a54a5f",
+      "networkSummary": {
+        "stunDifferentPublicExits": true,
+        "selectedPairsCrossMatched": 4,
+        "dynamicCandidates": 2,
+        "privateCandidateEvidenceSha256": "f2b7e4e7fd065ffb0fb17cc7958a3a24c3d3cc8c36e21fb3a5033ef2be19a4bc"
+      }
+    },
+    {
+      "completedAt": "2026-10-11T05:11:03.707319528Z",
+      "linkSourceRevision": "6378853d2b834106ce7477134c4c4d7bddd2c58d",
+      "httpCases": [
+        {
+          "requestedPolicy": "DIRECT_ONLY",
+          "actualPath": "DIRECT",
+          "connectMillis": 1299,
+          "protocol": "http",
+          "slowConsumer": true,
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 8065
+        },
+        {
+          "requestedPolicy": "RELAY_ONLY",
+          "actualPath": "RELAY",
+          "connectMillis": 1649,
+          "protocol": "http",
+          "slowConsumer": true,
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 8178
+        },
+        {
+          "requestedPolicy": "AUTO",
+          "actualPath": "DIRECT",
+          "connectMillis": 455,
+          "protocol": "http",
+          "slowConsumer": true,
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 7175
+        },
+        {
+          "requestedPolicy": "DIRECT_ONLY",
+          "actualPath": "DIRECT",
+          "connectMillis": 284,
+          "protocol": "http",
+          "slowConsumer": true,
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 6993
+        },
+        {
+          "requestedPolicy": "RELAY_ONLY",
+          "actualPath": "RELAY",
+          "connectMillis": 9101,
+          "protocol": "http",
+          "slowConsumer": true,
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 15622
+        },
+        {
+          "requestedPolicy": "AUTO",
+          "actualPath": "DIRECT",
+          "connectMillis": 266,
+          "protocol": "http",
+          "slowConsumer": true,
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 7122
+        },
+        {
+          "requestedPolicy": "DIRECT_ONLY",
+          "actualPath": "DIRECT",
+          "connectMillis": 226,
+          "protocol": "http",
+          "slowConsumer": true,
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 6995
+        },
+        {
+          "requestedPolicy": "RELAY_ONLY",
+          "actualPath": "RELAY",
+          "connectMillis": 9619,
+          "protocol": "http",
+          "slowConsumer": true,
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 16139
+        },
+        {
+          "requestedPolicy": "AUTO",
+          "actualPath": "RELAY",
+          "connectMillis": 3517,
+          "protocol": "http",
+          "slowConsumer": true,
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 10064
+        }
+      ],
+      "datagramImpairment": {
+        "sendAttempts": 0,
+        "phase": "after-ICE-nomination",
+        "droppedSend": 0,
+        "received": 0,
+        "droppedReceive": 0,
+        "dropEvery": 0
+      },
+      "relayPressure": {
+        "executed": false
+      },
+      "remainingOpenTunnels": 0,
+      "remainingPendingTunnels": 0,
+      "label": "http-slow",
+      "evidenceSha256": "9fdeb607dbb439c7acb6e120a62ae4f4f9656792defc07f023f8f726815cc472",
+      "networkSummary": {
+        "stunDifferentPublicExits": true,
+        "selectedPairsCrossMatched": 5,
+        "dynamicCandidates": 0,
+        "privateCandidateEvidenceSha256": "c1182e3980fcccd135a928ee858c158faf016cf2f6e62c37489710256d195e3e"
+      }
+    },
+    {
+      "completedAt": "2026-10-11T05:12:58.015313293Z",
+      "linkSourceRevision": "6378853d2b834106ce7477134c4c4d7bddd2c58d",
+      "httpCases": [
+        {
+          "requestedPolicy": "AUTO",
+          "actualPath": "RELAY",
+          "connectMillis": 10189,
+          "protocol": "http",
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 10600
+        },
+        {
+          "requestedPolicy": "AUTO",
+          "actualPath": "RELAY",
+          "connectMillis": 9560,
+          "protocol": "http",
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 9676
+        },
+        {
+          "requestedPolicy": "AUTO",
+          "actualPath": "RELAY",
+          "connectMillis": 9920,
+          "protocol": "http",
+          "bytes": 262144,
+          "passed": true,
+          "elapsedMillis": 10077
+        }
+      ],
+      "datagramImpairment": {
+        "droppedSend": 39,
+        "received": 0,
+        "droppedReceive": 0,
+        "dropEvery": 1,
+        "sendAttempts": 39,
+        "phase": "after-ICE-nomination"
+      },
+      "relayPressure": {
+        "executed": false
+      },
+      "remainingOpenTunnels": 0,
+      "remainingPendingTunnels": 0,
+      "label": "http-fallback",
+      "evidenceSha256": "16b459f9d6465d1330a6e55bf61314ae7b4abed6a61f100d1700af36e66ecf07",
+      "networkSummary": {
+        "stunDifferentPublicExits": true,
+        "selectedPairsCrossMatched": 3,
+        "dynamicCandidates": 0,
+        "privateCandidateEvidenceSha256": "542d0ecd37480cce8a795f155701c6df14dcb29b31e7a6f605ee0d7db3e738f7"
+      }
+    }
+  ],
+  "runtimeChecks": {
+    "a": {
+      "schemaVersion": 1,
+      "observedAt": "2026-10-11T05:07:02Z",
+      "scope": "isolated-java-component-process-tree",
+      "processCount": 1,
+      "javaProcessCount": 1,
+      "knownRustLinkProcessCount": 0,
+      "desktopHostAcceptance": false
+    },
+    "c": {
+      "schemaVersion": 1,
+      "observedAt": "2026-10-11T05:06:39Z",
+      "scope": "isolated-java-component-process-tree",
+      "processCount": 1,
+      "javaProcessCount": 1,
+      "knownRustLinkProcessCount": 0,
+      "desktopHostAcceptance": false
+    },
+    "b": {
+      "scope": "designated-isolated-backend-container",
+      "processCount": 1,
+      "javaProcessCount": 1,
+      "knownRustLinkProcessCount": 0,
+      "desktopHostAcceptance": false
+    }
+  },
+  "limitations": [
+    "180-second continuity does not cross the 300-second authorization lease",
+    "100 simultaneous attempts are bounded capacity acceptance, not 100 successful streams",
+    "PostgreSQL authentication uses exact-source trust in an empty isolated database",
+    "Formal desktop host, Windows lifecycle, Jenkins images, main-source signed release and recovery window remain pending"
+  ],
+  "cleanup": {
+    "temporaryDatabaseStopped": true,
+    "addedDatabaseAclRemoved": true,
+    "addedAgentTargetRemoved": true,
+    "agentRestartedWithOriginalTargets": true,
+    "temporaryJwtDeletedOnAAndB": true,
+    "productionModified": false
+  },
+  "failureHistory": [
+    {
+      "revision": "1d687d7f3c9d2790de1de0c55cde582c01f15959",
+      "outcome": "direct revocation timed out; relay revocation passed"
+    },
+    {
+      "revision": "5a0432959014295962289a80b2dbc1d9025f8e11",
+      "outcome": "direct setup cleanup prematurely closed handed-off business; fixed at 6378853"
+    }
+  ]
+}

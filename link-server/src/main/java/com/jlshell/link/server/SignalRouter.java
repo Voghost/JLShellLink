@@ -139,7 +139,7 @@ public final class SignalRouter implements AutoCloseable {
             ControlSignal.SessionInvite invite = new ControlSignal.SessionInvite(UUID.randomUUID(),
                     grant.sessionId(), generation.value(), grant.agentId(), grant.clientDeviceId(),
                     grant.agentKeyFingerprint(), grant.clientKeyFingerprint(), grant.policyVersion(), grant.expiresAt(),
-                    next.iceCredentialsNegotiated());
+                    next.iceCredentialsNegotiated(), next.peerReflexiveNegotiated());
             agent.sink.send(invite);
             client.sink.send(invite);
         } catch (RuntimeException deliveryFailure) {
@@ -327,6 +327,7 @@ public final class SignalRouter implements AutoCloseable {
         private final Map<NodeRole, Set<UUID>> candidates = new HashMap<>();
         private final Set<NodeRole> credentialsPublished = new HashSet<>();
         private final Set<NodeRole> iceEnded = new HashSet<>();
+        private final Map<NodeRole, Integer> lateCandidates = new HashMap<>();
         private final Map<NodeRole, ControlSignal.PathReady> readyPaths = new HashMap<>();
 
         private ActiveSession(AuthorizedSession grant, long generation,
@@ -343,6 +344,12 @@ public final class SignalRouter implements AutoCloseable {
             if (connection == client) return NodeRole.CLIENT;
             if (connection == agent) return NodeRole.AGENT;
             return null;
+        }
+
+        private boolean peerReflexiveNegotiated() {
+            String capability = ControlSignal.ICE_PEER_REFLEXIVE_CAPABILITY;
+            return iceCredentialsNegotiated() && client.peer.capabilities().contains(capability)
+                    && agent.peer.capabilities().contains(capability);
         }
 
         private boolean iceCredentialsNegotiated() {
@@ -364,11 +371,18 @@ public final class SignalRouter implements AutoCloseable {
                 if (iceCredentialsNegotiated && !credentialsPublished.contains(sender)) {
                     throw new SecurityException("ICE credentials must be published before candidates");
                 }
-                if (iceEnded.contains(sender)) throw new SecurityException("candidate arrived after ICE_END");
+                if (iceEnded.contains(sender) && (!peerReflexiveNegotiated()
+                        || candidate.candidateType() != ControlSignal.CandidateType.PEER_REFLEXIVE
+                        || candidate.transport() != ControlSignal.Transport.UDP
+                        || readyPaths.containsKey(sender) || lateCandidates.getOrDefault(sender, 0) >= 2
+                        || candidate.address().isLoopbackAddress() || candidate.address().isLinkLocalAddress())) {
+                    throw new SecurityException("candidate arrived after ICE_END");
+                }
                 Set<UUID> known = candidates.get(sender);
                 if (known.size() >= candidateLimit || !known.add(candidate.candidateId())) {
                     throw new SecurityException("candidate limit reached or candidate id repeated");
                 }
+                if (iceEnded.contains(sender)) lateCandidates.merge(sender, 1, Integer::sum);
             } else if (signal instanceof ControlSignal.IceEnd) {
                 if (iceCredentialsNegotiated && !credentialsPublished.contains(sender)) {
                     throw new SecurityException("ICE credentials must be published before ICE_END");

@@ -70,7 +70,7 @@ public final class SignaledIceDirectPathProvider implements IceKcpCarrierPlanFac
                     config.maxDatagramBytes(), config.receiveTimeoutMillis());
             try {
                 worker.execute(() -> startGeneration(request.sessionId(), invite.generation(), bounded,
-                        context, result));
+                        context, result, invite.peerReflexiveSupported()));
             } catch (RuntimeException rejected) {
                 result.completeExceptionally(new LinkFailure("direct.ice_worker_unavailable",
                         LinkFailure.Category.TRANSIENT_NETWORK, "ICE worker is unavailable"));
@@ -81,14 +81,15 @@ public final class SignaledIceDirectPathProvider implements IceKcpCarrierPlanFac
 
     private void startGeneration(LinkSessionId sessionId, long generation,
             Ice4jDirectSession.Config bounded, ConnectionCoordinator.AttemptContext context,
-            CompletableFuture<IceKcpCarrierPlanFactory.DirectPathLease> result) {
+            CompletableFuture<IceKcpCarrierPlanFactory.DirectPathLease> result, boolean peerReflexive) {
         if (result.isDone() || context.isCancelled()) {
             result.completeExceptionally(new CancellationException("ICE setup was cancelled"));
             return;
         }
         Ice4jDirectSession ice;
         try {
-            ice = new Ice4jDirectSession(sessionId, generation, true, bounded);
+            ice = new Ice4jDirectSession(sessionId, generation, true, bounded,
+                    peerReflexive ? candidate -> signaling.send(candidate) : null);
         } catch (IOException | RuntimeException unavailable) {
             result.completeExceptionally(new LinkFailure("direct.ice_candidate_gathering",
                     LinkFailure.Category.TRANSIENT_NETWORK, "ICE candidate gathering failed"));
@@ -131,7 +132,7 @@ public final class SignaledIceDirectPathProvider implements IceKcpCarrierPlanFac
         private final CompletableFuture<ControlSignal.PathReady> peerReady = new CompletableFuture<>();
         private final AtomicReference<Ice4jDirectSession.SelectedPath> selected = new AtomicReference<>();
         private final AtomicBoolean closed = new AtomicBoolean();
-        private final AtomicBoolean transferred = new AtomicBoolean();
+        private volatile IcePathLease established;
         private volatile Subscription subscription;
 
         private Negotiation(Ice4jDirectSession ice, ConnectionCoordinator.AttemptContext context,
@@ -178,12 +179,16 @@ public final class SignaledIceDirectPathProvider implements IceKcpCarrierPlanFac
             sends.whenComplete((ignored, error) -> {
                 if (error != null) fail(classifySignalingFailure(unwrap(error)));
             });
-            context.cancelled().whenComplete((ignored, error) ->
-                    fail(new CancellationException("ICE setup was cancelled")));
+            context.cancelled().whenComplete((ignored, error) -> cancelSetup());
             result.whenComplete((lease, error) -> {
                 if (error != null || result.isCancelled()) close();
-                else if (transferred.get()) closeSubscriptionOnly();
             });
+        }
+
+        private void cancelSetup() {
+            // The coordinator also cancels its setup context after successful CONNECT.
+            // Once handed off, the carrier owns cancellation; control revocation still closes this lease.
+            if (!result.isDone()) fail(new CancellationException("ICE setup was cancelled"));
         }
 
         private void receive(ControlSignal signal) {
@@ -202,7 +207,8 @@ public final class SignaledIceDirectPathProvider implements IceKcpCarrierPlanFac
                         throw new SecurityException("peer repeated its direct path selection");
                     }
                     maybeComplete();
-                } else if (signal instanceof ControlSignal.SessionRevoked) {
+                } else if (signal instanceof ControlSignal.SessionRevoked
+                        && ice.sessionId().equals(signal.sessionId()) && ice.generation() == signal.generation()) {
                     fail(new LinkFailure("direct.authorization_revoked", LinkFailure.Category.AUTHORIZATION,
                             "Website authorization was revoked"));
                 }
@@ -218,7 +224,7 @@ public final class SignaledIceDirectPathProvider implements IceKcpCarrierPlanFac
             });
         }
 
-        private void maybeComplete() {
+        private synchronized void maybeComplete() {
             Ice4jDirectSession.SelectedPath path = selected.get();
             ControlSignal.PathReady ready = peerReady.getNow(null);
             if (path == null || ready == null || result.isDone()) return;
@@ -228,25 +234,25 @@ public final class SignaledIceDirectPathProvider implements IceKcpCarrierPlanFac
                         "Peer selected a different ICE candidate pair"));
                 return;
             }
-            IcePathLease lease = new IcePathLease(ice, path);
-            if (result.complete(lease)) {
-                transferred.set(true);
-                closeSubscriptionOnly();
-            } else {
-                lease.close();
-            }
+            IcePathLease lease = new IcePathLease(ice, path, this::closeSubscriptionOnly);
+            established = lease;
+            if (closed.get() || !result.complete(lease)) lease.close();
         }
 
         private void fail(Throwable error) {
-            if (result.completeExceptionally(error)) close();
+            if (result.completeExceptionally(error) || established != null) close();
         }
 
         @Override public void close() {
             if (!closed.compareAndSet(false, true)) return;
             closeSubscriptionOnly();
-            Ice4jDirectSession.SelectedPath path = selected.get();
-            if (path != null) path.close();
-            else ice.close();
+            IcePathLease lease = established;
+            if (lease != null) lease.close();
+            else {
+                Ice4jDirectSession.SelectedPath path = selected.get();
+                if (path != null) path.close();
+                else ice.close();
+            }
         }
 
         private void closeSubscriptionOnly() {
@@ -278,17 +284,24 @@ public final class SignaledIceDirectPathProvider implements IceKcpCarrierPlanFac
         private final Ice4jDirectSession ice;
         private final Ice4jDirectSession.SelectedPath selected;
         private final AtomicBoolean closed = new AtomicBoolean();
+        private final RevocableDatagramPath datagrams;
+        private final Runnable releaseSubscription;
 
-        private IcePathLease(Ice4jDirectSession ice, Ice4jDirectSession.SelectedPath selected) {
+        private IcePathLease(Ice4jDirectSession ice, Ice4jDirectSession.SelectedPath selected,
+                Runnable releaseSubscription) {
             this.ice = ice;
             this.selected = selected;
+            this.datagrams = new RevocableDatagramPath(selected.datagrams());
+            this.releaseSubscription = releaseSubscription;
         }
         @Override public LinkSessionId sessionId() { return ice.sessionId(); }
         @Override public long generation() { return ice.generation(); }
-        @Override public DatagramPath datagrams() { return selected.datagrams(); }
+        @Override public DatagramPath datagrams() { return datagrams; }
         @Override public void close() {
             if (!closed.compareAndSet(false, true)) return;
-            selected.close();
+            try { datagrams.close(); } finally {
+                try { selected.close(); } finally { releaseSubscription.run(); }
+            }
         }
     }
 

@@ -51,6 +51,7 @@ final class AgentDirectSessionRuntime implements AutoCloseable {
     private final Function<NodeKeyFingerprint, SSLContext> innerTlsForClient;
     private final Supplier<AccessPolicy> localPolicy;
     private final EventLoopGroup eventLoops;
+    private final EventLoopGroup targetEventLoops;
     private final Executor worker;
     private final ScheduledExecutorService expiryScheduler;
     private final AccessGrantJwsService grants;
@@ -67,7 +68,7 @@ final class AgentDirectSessionRuntime implements AutoCloseable {
     AgentDirectSessionRuntime(URI ticketIssuer, UUID agentId, LocalNodeKey nodeKey,
             Function<NodeKeyFingerprint, SSLContext> innerTlsForClient,
             Supplier<AccessPolicy> localPolicy, AgentLeaseSnapshot initialLease,
-            EventLoopGroup eventLoops, Executor worker, ScheduledExecutorService expiryScheduler,
+            EventLoopGroup eventLoops, EventLoopGroup targetEventLoops, Executor worker, ScheduledExecutorService expiryScheduler,
             AccessGrantJwsService grants, SigningKeyResolver signingKeys, TransportBudget budget,
             Ice4jDirectSession.Config iceConfig, TlsHandshakeGate handshakeGate, Clock clock,
             Consumer<String> status) {
@@ -78,6 +79,7 @@ final class AgentDirectSessionRuntime implements AutoCloseable {
         this.localPolicy = Objects.requireNonNull(localPolicy, "localPolicy");
         this.lease = new AtomicReference<>(Objects.requireNonNull(initialLease, "initialLease"));
         this.eventLoops = Objects.requireNonNull(eventLoops, "eventLoops");
+        this.targetEventLoops = Objects.requireNonNull(targetEventLoops, "targetEventLoops");
         this.worker = Objects.requireNonNull(worker, "worker");
         this.expiryScheduler = Objects.requireNonNull(expiryScheduler, "expiryScheduler");
         this.grants = Objects.requireNonNull(grants, "grants");
@@ -197,7 +199,9 @@ final class AgentDirectSessionRuntime implements AutoCloseable {
                         return;
                     }
                     try {
-                        ice = new Ice4jDirectSession(invite.sessionId(), invite.generation(), false, iceConfig);
+                        ice = new Ice4jDirectSession(invite.sessionId(), invite.generation(), false, iceConfig,
+                                invite.peerReflexiveSupported()
+                                        ? candidate -> signaling.send(candidate).thenApply(done -> null) : null);
                         ice.selectedPath().whenComplete((path, error) -> {
                             if (error != null) {
                                 fail("direct-ice-unreachable");
@@ -280,7 +284,7 @@ final class AgentDirectSessionRuntime implements AutoCloseable {
                         invite.expiresAt(), clock, worker, safeAudit());
                 multiplexer = new ConnectStreamMultiplexer(budget,
                         new TransportBufferBudget(budget.maxBufferedBytesTotal()), authorizer,
-                        ConnectStreamMultiplexer.tcpConnector(budget));
+                        ConnectStreamMultiplexer.tcpConnector(budget, targetEventLoops));
                 KcpReliableDuplexChannelHolder holder = new KcpReliableDuplexChannelHolder(
                         conversationId(invite.sessionId(), invite.generation()), local.datagrams(), budget);
                 ReliableCarrierBridge.open(eventLoops, holder.channel, budget).whenComplete((opened, error) -> {
