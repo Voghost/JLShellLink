@@ -85,6 +85,17 @@ class SignaledIceDirectPathProviderTest {
     }
 
     @Test
+    void successfulSetupContextCleanupDoesNotCancelTheTransferredLease() throws Exception {
+        try (var fixture = new EstablishedFixture()) {
+            var cancel = fixture.negotiation.getClass().getDeclaredMethod("cancelSetup");
+            cancel.setAccessible(true);cancel.invoke(fixture.negotiation);
+            assertTrue(fixture.lease.datagrams().isOpen());
+            org.junit.jupiter.api.Assertions.assertEquals(0, fixture.unsubscribed.get());
+            org.junit.jupiter.api.Assertions.assertEquals(0, fixture.failed.get());
+        }
+    }
+
+    @Test
     void controlFailureAfterEstablishmentClosesTheDataPath() throws Exception {
         try (var fixture = new EstablishedFixture()) {
             var fail = fixture.negotiation.getClass().getDeclaredMethod("fail", Throwable.class);

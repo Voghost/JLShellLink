@@ -179,11 +179,16 @@ public final class SignaledIceDirectPathProvider implements IceKcpCarrierPlanFac
             sends.whenComplete((ignored, error) -> {
                 if (error != null) fail(classifySignalingFailure(unwrap(error)));
             });
-            context.cancelled().whenComplete((ignored, error) ->
-                    fail(new CancellationException("ICE setup was cancelled")));
+            context.cancelled().whenComplete((ignored, error) -> cancelSetup());
             result.whenComplete((lease, error) -> {
                 if (error != null || result.isCancelled()) close();
             });
+        }
+
+        private void cancelSetup() {
+            // The coordinator also cancels its setup context after successful CONNECT.
+            // Once handed off, the carrier owns cancellation; control revocation still closes this lease.
+            if (!result.isDone()) fail(new CancellationException("ICE setup was cancelled"));
         }
 
         private void receive(ControlSignal signal) {
