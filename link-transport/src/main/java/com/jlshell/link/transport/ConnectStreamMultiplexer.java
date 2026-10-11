@@ -95,12 +95,23 @@ public final class ConnectStreamMultiplexer {
     }
 
     public static TargetConnector tcpConnector(TransportBudget budget) {
+        return tcpConnectorOn(budget, null);
+    }
+
+    /** A LocalChannel carrier must use an owner-managed NIO group for real TCP targets. */
+    public static TargetConnector tcpConnector(TransportBudget budget,
+            io.netty.channel.EventLoopGroup targetEventLoops) {
+        return tcpConnectorOn(budget, Objects.requireNonNull(targetEventLoops, "targetEventLoops"));
+    }
+
+    private static TargetConnector tcpConnectorOn(TransportBudget budget,
+            io.netty.channel.EventLoopGroup targetEventLoops) {
         Objects.requireNonNull(budget, "budget");
         long timeout = Math.max(1, Math.min(Integer.MAX_VALUE, budget.handshakeTimeout().toMillis()));
         return (target, eventLoop) -> {
             CompletableFuture<Channel> result = new CompletableFuture<>();
             Bootstrap bootstrap = new Bootstrap()
-                    .group(eventLoop)
+                    .group(targetEventLoops == null ? eventLoop : targetEventLoops)
                     .channel(NioSocketChannel.class)
                     .handler(new ChannelInboundHandlerAdapter())
                     .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, (int) timeout);

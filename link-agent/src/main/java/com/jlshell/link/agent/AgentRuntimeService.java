@@ -135,7 +135,7 @@ final class AgentRuntimeService {
                         if (directRuntime == null) {
                             AgentDirectSessionRuntime created = new AgentDirectSessionRuntime(ticketIssuer,
                                     registration.agentId(), nodeKey, innerIdentity::forClient,
-                                    () -> localPolicy, lease, localCarrierLoops, directWorker, scheduler,
+                                    () -> localPolicy, lease, localCarrierLoops, eventLoops, directWorker, scheduler,
                                     grants, authority, budget, iceConfig(),
                                     new TlsHandshakeGate(budget.maxConcurrentHandshakes()), clock,
                                     AgentRuntimeService::reportStatus);
