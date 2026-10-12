@@ -26,11 +26,16 @@ PACKAGE_PREFIX = "jlshell-link-agent-java"
 REQUIRED_MODULES = ["java.se", "jdk.crypto.ec", "jdk.unsupported"]
 OPTIONAL_MODULES = ["jdk.jfr", "jdk.sctp"]
 PACKAGE_FILES = [
+    (Path("scripts/java-agent/agent.sh"), Path("agent.sh")),
+    (Path("scripts/java-agent/Agent.command"), Path("Agent.command")),
+    (Path("scripts/java-agent/agent.cmd"), Path("agent.cmd")),
+    (Path("docs/agent-quickstart.md"), Path("START-HERE.md")),
+    (Path("docs/agent-quickstart.md"), Path("README.md")),
     (Path("scripts/java-agent/user-service-layout.sh"), Path("scripts/java-agent/user-service-layout.sh")),
     (Path("scripts/java-agent/upgrade-windows-service.ps1"), Path("scripts/java-agent/upgrade-windows-service.ps1")),
     (Path("scripts/java-agent/upgrade-user-service.sh"), Path("scripts/java-agent/upgrade-user-service.sh")),
     (Path("docs/agent-cli.md"), Path("docs/agent-cli.md")),
-    (Path("docs/agent-service.md"), Path("README.md")),
+    (Path("docs/agent-service.md"), Path("docs/agent-service.md")),
     (Path("scripts/java-agent/run-agent.sh"), Path("scripts/java-agent/run-agent.sh")),
     (Path("scripts/java-agent/stop-agent.sh"), Path("scripts/java-agent/stop-agent.sh")),
     (Path("scripts/java-agent/install-user-service.sh"), Path("scripts/java-agent/install-user-service.sh")),
@@ -133,7 +138,7 @@ def copy_package_contents(root: Path, agent_jar: Path, dependency_bom: Path) -> 
         target = root / target_rel
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
-        if target.suffix == ".sh":
+        if target.suffix in {".sh", ".command"}:
             target.chmod(0o755)
 
 

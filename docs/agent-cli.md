@@ -1,5 +1,7 @@
 # JLShell Link Java Agent CLI
 
+普通用户使用包根目录的 `agent.cmd`（Windows）、`Agent.command`（macOS）或 `agent.sh`（Linux/macOS）打开配置菜单。首次 `configure` 自动准备身份并注册，之后 `start` 使用保存的配置。见 [快速开始](agent-quickstart.md)。下面参数供高级部署和自动化使用。
+
 `link-agent` 打包时生成带依赖的可执行 JAR，入口类为
 `com.jlshell.link.agent.AgentApplication`。Java 运行时要求 21 或更新版本。
 
