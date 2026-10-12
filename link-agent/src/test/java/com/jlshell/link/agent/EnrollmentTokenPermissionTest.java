@@ -18,11 +18,7 @@ class EnrollmentTokenPermissionTest {
     void checksNativeWindowsOwnerAndAcl(@org.junit.jupiter.api.io.TempDir java.nio.file.Path directory)
             throws Exception {
         var file = java.nio.file.Files.createFile(directory.resolve("test-token"));
-        String user = System.getProperty("user.name");
-        String domain = System.getenv("USERDOMAIN");
-        String qualified = user.contains("\\") || domain == null || domain.isBlank()
-                ? user : domain + "\\" + user;
-        var current = file.getFileSystem().getUserPrincipalLookupService().lookupPrincipalByName(qualified);
+        var current = AgentApplication.currentWindowsTokenOwner(file);
         java.nio.file.Files.setOwner(file, current);
         var acl = java.nio.file.Files.getFileAttributeView(file, AclFileAttributeView.class);
         acl.setAcl(List.of(allow(current, AclEntryPermission.READ_DATA)));

@@ -151,12 +151,7 @@ public final class AgentApplication {
         if (posix) {
             expectedOwner = Files.getOwner(Path.of(System.getProperty("user.home")), LinkOption.NOFOLLOW_LINKS);
         } else {
-            String user = System.getProperty("user.name");
-            String domain = System.getenv("USERDOMAIN");
-            if (user == null || user.isBlank()) throw new IOException("current token user cannot be verified");
-            String qualified = user.contains("\\") || domain == null || domain.isBlank()
-                    ? user : domain + "\\" + user;
-            expectedOwner = file.getFileSystem().getUserPrincipalLookupService().lookupPrincipalByName(qualified);
+            expectedOwner = currentWindowsTokenOwner(file);
         }
         if (!expectedOwner.equals(Files.getOwner(file, LinkOption.NOFOLLOW_LINKS))) {
             throw new IOException("token file must belong to the current user");
@@ -173,6 +168,33 @@ public final class AgentApplication {
                 LinkOption.NOFOLLOW_LINKS);
         if (acl == null) throw new IOException("token file permissions cannot be verified");
         verifyEnrollmentTokenAcl(expectedOwner, acl.getAcl());
+    }
+
+    static java.nio.file.attribute.UserPrincipal currentWindowsTokenOwner(Path file) throws IOException {
+        String systemRoot = System.getenv("SystemRoot");
+        if (systemRoot == null || systemRoot.isBlank()) throw new IOException("current Windows user unavailable");
+        Path powershell = Path.of(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+        Process process = new ProcessBuilder(powershell.toString(), "-NoProfile", "-NonInteractive", "-Command",
+                "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);"
+                        + "[Security.Principal.WindowsIdentity]::GetCurrent().Name")
+                .redirectError(ProcessBuilder.Redirect.DISCARD).start();
+        try {
+            if (!process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                throw new IOException("current Windows user verification timed out");
+            }
+            byte[] raw = process.getInputStream().readNBytes(4097);
+            if (process.exitValue() != 0 || raw.length > 4096) throw new IOException("current Windows user unavailable");
+            String account = new String(raw, java.nio.charset.StandardCharsets.UTF_8).strip();
+            if (account.isBlank() || account.length() > 512 || account.contains("\n") || account.contains("\r")) {
+                throw new IOException("current Windows user unavailable");
+            }
+            return file.getFileSystem().getUserPrincipalLookupService().lookupPrincipalByName(account);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IOException("current Windows user verification interrupted");
+        } finally {
+            if (process.isAlive()) process.destroyForcibly();
+        }
     }
 
     static void verifyEnrollmentTokenAcl(java.nio.file.attribute.UserPrincipal owner,
