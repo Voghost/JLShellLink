@@ -247,6 +247,7 @@ final class AgentDirectSessionRuntime implements AutoCloseable {
             AgentAccessAuthorizer current = authorizer;
             if (current != null) current.updateAuthorizationLease(authorizationExpiresAt);
             scheduleExpiry();
+            safeStatus("direct-authorization-renewed");
         }
 
         private void scheduleExpiry() {

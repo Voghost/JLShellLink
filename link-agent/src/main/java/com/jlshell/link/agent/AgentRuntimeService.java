@@ -168,6 +168,7 @@ final class AgentRuntimeService {
                                     AgentDirectSessionRuntime current = direct.get();
                                     AgentControlSignalClient signalClient = holder.get();
                                     if (current != null && signalClient != null) {
+                                        reportStatus("direct-invite-received");
                                         current.acceptInvite(invite, signalClient);
                                     }
                                 }, signal -> {
