@@ -62,9 +62,20 @@ public final class ClientIceSignalBroker implements SignaledIceDirectPathProvide
                         && authorizedGenerations.size() >= MAX_INVITES) {
                     throw new IllegalStateException("too many pending ICE generations");
                 }
+                ControlSignal.SessionInvite previousInvite = invites.get(invite.sessionId());
+                if (previousInvite != null && previousInvite.generation() == invite.generation()) {
+                    if (!previousInvite.agentId().equals(invite.agentId())
+                            || !previousInvite.clientDeviceId().equals(invite.clientDeviceId())
+                            || !previousInvite.agentKeyFingerprint().equals(invite.agentKeyFingerprint())
+                            || !previousInvite.clientKeyFingerprint().equals(invite.clientKeyFingerprint())
+                            || previousInvite.policyVersion() != invite.policyVersion()
+                            || previousInvite.iceCredentialsSupported() != invite.iceCredentialsSupported()
+                            || previousInvite.peerReflexiveSupported() != invite.peerReflexiveSupported()
+                            || !invite.expiresAt().isAfter(previousInvite.expiresAt())) return;
+                }
                 authorizedGenerations.put(generation, invite.expiresAt());
                 invites.compute(invite.sessionId(), (ignored, previous) -> previous == null
-                        || invite.generation() > previous.generation() ? invite : previous);
+                        || invite.generation() >= previous.generation() ? invite : previous);
                 CompletableFuture<ControlSignal.SessionInvite> waiter = inviteWaiters.remove(invite.sessionId());
                 if (waiter != null) waiter.complete(invites.get(invite.sessionId()));
                 trimInvites();

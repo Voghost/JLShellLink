@@ -118,6 +118,37 @@ public final class SignalRouter implements AutoCloseable {
         if (!generations.containsKey(grant.sessionId()) && generations.size() >= maxSessions * 2L) {
             throw new IllegalStateException("control-session generation capacity reached");
         }
+        ActiveSession existing = sessions.get(grant.sessionId());
+        if (existing != null && existing.client == client && existing.agent == agent) {
+            synchronized (existing) {
+                AuthorizedSession old = existing.grant;
+                if (old.accountId().equals(grant.accountId())
+                        && old.clientDeviceId().equals(grant.clientDeviceId())
+                        && old.agentId().equals(grant.agentId())
+                        && old.clientKeyFingerprint().equals(grant.clientKeyFingerprint())
+                        && old.agentKeyFingerprint().equals(grant.agentKeyFingerprint())
+                        && old.policyVersion() == grant.policyVersion()) {
+                    if (grant.expiresAt().isBefore(old.expiresAt())) {
+                        throw new SecurityException("authorization lease cannot move backwards");
+                    }
+                    if (grant.expiresAt().equals(old.expiresAt())) return;
+                    existing.grant = grant;
+                    generations.put(grant.sessionId(), new GenerationState(existing.generation, grant.expiresAt()));
+                    try {
+                        ControlSignal.SessionInvite renewed = new ControlSignal.SessionInvite(UUID.randomUUID(),
+                                grant.sessionId(), existing.generation, grant.agentId(), grant.clientDeviceId(),
+                                grant.agentKeyFingerprint(), grant.clientKeyFingerprint(), grant.policyVersion(),
+                                grant.expiresAt(), existing.iceCredentialsNegotiated(), existing.peerReflexiveNegotiated());
+                        agent.sink.send(renewed);
+                        client.sink.send(renewed);
+                    } catch (RuntimeException deliveryFailure) {
+                        revoke(grant.sessionId());
+                        throw new IllegalStateException("could not deliver authorization renewal", deliveryFailure);
+                    }
+                    return;
+                }
+            }
+        }
         GenerationState generation = generations.compute(grant.sessionId(), (ignored, previous) -> {
             long next = previous == null ? 1 : Math.addExact(previous.value(), 1);
             Instant expiry = previous == null || grant.expiresAt().isAfter(previous.expiresAt())
@@ -319,7 +350,7 @@ public final class SignalRouter implements AutoCloseable {
     public interface SignalSink { void send(ControlSignal signal); }
 
     private static final class ActiveSession {
-        private final AuthorizedSession grant;
+        private volatile AuthorizedSession grant;
         private final long generation;
         private final ControlConnection client;
         private final ControlConnection agent;

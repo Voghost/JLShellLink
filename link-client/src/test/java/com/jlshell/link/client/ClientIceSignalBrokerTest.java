@@ -17,6 +17,29 @@ class ClientIceSignalBrokerTest {
     private static final NodeKeyFingerprint AGENT = new NodeKeyFingerprint("2".repeat(64));
 
     @Test
+    void sameGenerationRenewalRetainsSubscriptionAndUpdatesInvitation() {
+        var session = LinkSessionId.random();
+        UUID agent = UUID.randomUUID(), device = UUID.randomUUID();
+        Instant firstDeadline = Instant.now().plusSeconds(90);
+        var first = new ControlSignal.SessionInvite(UUID.randomUUID(), session, 1, agent, device,
+                AGENT, CLIENT, 4, firstDeadline, true);
+        var renewed = new ControlSignal.SessionInvite(UUID.randomUUID(), session, 1, agent, device,
+                AGENT, CLIENT, 4, firstDeadline.plusSeconds(90), true);
+        try (var broker = new ClientIceSignalBroker()) {
+            broker.accept(first);
+            var received = new AtomicInteger();
+            broker.listen(session, 1, ignored -> received.incrementAndGet(), ignored -> {});
+            broker.accept(renewed);
+            broker.accept(first);
+            broker.accept(new ControlSignal.SessionInvite(UUID.randomUUID(), session, 1, agent,
+                    UUID.randomUUID(), AGENT, CLIENT, 4, firstDeadline.plusSeconds(180), true));
+            assertSame(renewed, broker.awaitInvite(session).toCompletableFuture().join());
+            broker.accept(new ControlSignal.IceEnd(UUID.randomUUID(), session, 1));
+            assertEquals(1, received.get());
+        }
+    }
+
+    @Test
     void deliversInvitationAndOnlyCurrentGenerationSignals() {
         LinkSessionId sessionId = LinkSessionId.random();
         UUID agentId = UUID.randomUUID();
