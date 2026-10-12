@@ -26,13 +26,15 @@ public final class AgentApplication {
     }
 
     static int execute(String[] args, Console console) {
-        if (args == null || args.length == 0 || "help".equals(args[0]) || "--help".equals(args[0])) {
-            printUsage();
-            return 0;
+        if (args == null || args.length == 0) {
+            if (console == null) { printUsage(); return 0; }
+            try { return AgentInteractive.menu(console, Path.of(System.getProperty("user.home"), ".jlshell-link-agent")); }
+            catch (Exception error) { System.err.println("无法打开配置菜单：" + error.getMessage()); return 1; }
         }
+        if ("help".equals(args[0]) || "--help".equals(args[0])) { printUsage(); return 0; }
         try {
             Options options = Options.parse(args);
-            if (!Set.of("init", "status", "enroll", "run", "stop", "diagnose")
+            if (!Set.of("init", "status", "enroll", "run", "stop", "diagnose", "configure", "setup", "start", "menu")
                     .contains(options.command())) {
                 System.err.println("未知命令：" + options.command());
                 printUsage();
@@ -40,6 +42,9 @@ public final class AgentApplication {
             }
             AgentIdentityStore identity = new AgentIdentityStore(options.stateDirectory());
             return switch (options.command()) {
+                case "configure", "setup" -> { AgentInteractive.configure(console, identity); yield 0; }
+                case "menu" -> AgentInteractive.menu(console, options.stateDirectory());
+                case "start" -> { AgentInteractive.start(console, identity, false); yield 0; }
                 case "init" -> initialize(identity, options);
                 case "status" -> status(identity);
                 case "enroll" -> enroll(identity, options, console);
@@ -95,6 +100,10 @@ public final class AgentApplication {
     }
 
     private static int run(AgentIdentityStore identity, Options options) throws Exception {
+        if (options.value("--link-wss") == null) {
+            if (!options.savedProfileOnly()) throw new IllegalArgumentException("自定义启动参数需要 --link-wss；仅使用保存配置请运行 start");
+            AgentInteractive.start(null, identity, false); return 0;
+        }
         AgentRuntimeService.run(identity, options.stateDirectory(), options.linkWss(),
                 options.path("--tls-identity-p12"), options.path("--tls-password-file"),
                 options.path("--allowed-targets-file"), options.ticketIssuer(identity));
@@ -108,6 +117,10 @@ public final class AgentApplication {
     }
 
     private static int diagnose(AgentIdentityStore identity, Options options) throws Exception {
+        if (options.value("--link-wss") == null) {
+            if (!options.savedProfileOnly()) throw new IllegalArgumentException("自定义诊断参数需要 --link-wss；仅使用保存配置请只传 --state-dir");
+            AgentInteractive.start(null, identity, true); return 0;
+        }
         AgentRuntimeService.diagnose(identity, options.linkWss(), options.path("--tls-identity-p12"),
                 options.path("--tls-password-file"), options.path("--allowed-targets-file"));
         System.out.println("Agent 本地身份、TLS、目标范围与 Website 票据公钥检查通过");
@@ -179,7 +192,7 @@ public final class AgentApplication {
                         + "[Security.Principal.WindowsIdentity]::GetCurrent().Name")
                 .redirectError(ProcessBuilder.Redirect.DISCARD).start();
         try {
-            if (!process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) {
+            if (!process.waitFor(15, java.util.concurrent.TimeUnit.SECONDS)) {
                 throw new IOException("current Windows user verification timed out");
             }
             byte[] raw = process.getInputStream().readNBytes(4097);
@@ -226,7 +239,7 @@ public final class AgentApplication {
         return token;
     }
 
-    private static String platform() {
+    static String platform() {
         String os = System.getProperty("os.name", "unknown").toLowerCase(java.util.Locale.ROOT);
         if (os.contains("win")) return "windows";
         if (os.contains("mac") || os.contains("darwin")) return "macos";
@@ -234,7 +247,7 @@ public final class AgentApplication {
         return "unknown";
     }
 
-    private static String architecture() {
+    static String architecture() {
         return System.getProperty("os.arch", "unknown").toLowerCase(java.util.Locale.ROOT);
     }
 
@@ -244,6 +257,10 @@ public final class AgentApplication {
     }
 
     private static void printUsage() {
+        System.out.println("JLShell Link Agent — 无参数打开菜单，首次使用 configure，之后 start");
+        System.out.println("  agent configure [--state-dir <path>]   交互配置、自动身份、一次性注册");
+        System.out.println("  agent start [--state-dir <path>]       使用已保存配置启动");
+        System.out.println("  agent menu [--state-dir <path>]        配置与状态菜单");
         System.out.println("JLShell Link Agent CLI");
         System.out.println("  agent init [--tls-identity-p12 <path> --tls-password-file <path>] [--state-dir <path>]");
         System.out.println("  agent enroll --website <https-origin> --agent-id <uuid> [--token-file <path>] [--state-dir <path>]");
@@ -259,7 +276,7 @@ public final class AgentApplication {
             Map<String, String> values = new HashMap<>();
             Set<String> allowed = switch (args[0]) {
                 case "init" -> Set.of("--state-dir", "--tls-identity-p12", "--tls-password-file");
-                case "status" -> Set.of("--state-dir");
+                case "status", "configure", "setup", "start", "menu" -> Set.of("--state-dir");
                 case "enroll" -> Set.of("--state-dir", "--website", "--agent-id", "--token-file");
                 case "stop" -> Set.of("--state-dir");
                 case "run", "diagnose" -> Set.of("--state-dir", "--link-wss", "--tls-identity-p12",
@@ -282,6 +299,7 @@ public final class AgentApplication {
         }
 
         private String value(String name) { return values.get(name); }
+        private boolean savedProfileOnly() { return values.keySet().stream().allMatch("--state-dir"::equals); }
 
         private Path stateDirectory() {
             String configured = value("--state-dir");
