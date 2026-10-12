@@ -143,6 +143,21 @@ try {
             Format-List TimeCreated, Id, ProviderName, Message | Out-String | Write-Host
         throw 'Windows service failed to start in the isolated lifecycle.'
     }
+    # Verify effective file permissions as well as the parent directory ACL.
+    $serviceSid = [Security.Principal.NTAccount]::new('NT SERVICE\JLShellLinkAgent').Translate(
+        [Security.Principal.SecurityIdentifier]).Value
+    foreach ($name in @('agent.properties', 'agent.credential', 'node-key.ed25519')) {
+        $acl = Get-Acl -LiteralPath (Join-Path $stateRoot $name)
+        $serviceRules = @($acl.Access | Where-Object {
+            $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -eq $serviceSid -and
+            $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+            ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::ReadData) -ne 0
+        })
+        Assert ($serviceRules.Count -gt 0) 'The virtual service account cannot read a private state file.'
+        Assert (@($acl.Access | Where-Object {
+            $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -in @('S-1-1-0', 'S-1-5-32-545')
+        }).Count -eq 0) 'A private state file grants access to a broad principal.'
+    }
     & pwsh -NoProfile -File $installer status
     if ($LASTEXITCODE -ne 0) { throw 'Windows service status check failed.' }
     & pwsh -NoProfile -File $installer uninstall

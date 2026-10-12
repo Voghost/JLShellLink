@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -136,6 +137,30 @@ def copy_package_contents(root: Path, agent_jar: Path, dependency_bom: Path) -> 
             target.chmod(0o755)
 
 
+def normalize_powershell_encoding(root: Path) -> None:
+    # Windows PowerShell 5.1 otherwise interprets non-ASCII UTF-8 as the local ANSI codepage.
+    for script in root.rglob("*.ps1"):
+        text = script.read_bytes().decode("utf-8-sig")
+        script.write_bytes(b"\xef\xbb\xbf" + text.encode("utf-8"))
+
+
+def validate_windows_powershell(root: Path) -> None:
+    system_root = os.environ.get("SystemRoot")
+    if not system_root:
+        raise RuntimeError("Windows PowerShell system path unavailable")
+    executable = Path(system_root) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    directory = str(root / "scripts").replace("'", "''")
+    command = ("$failures=0;Get-ChildItem -LiteralPath '" + directory + "' -Filter *.ps1 -Recurse|"
+               "ForEach-Object{$tokens=$null;$errors=$null;"
+               "[Management.Automation.Language.Parser]::ParseFile($_.FullName,[ref]$tokens,[ref]$errors)|Out-Null;"
+               "$failures+=$errors.Count};if($failures -ne 0){exit 1}")
+    encoded = base64.b64encode(command.encode("utf-16le")).decode("ascii")
+    result = subprocess.run([str(executable), "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+                            capture_output=True, timeout=30)
+    if result.returncode:
+        raise RuntimeError("Windows PowerShell 5.1 package script parsing failed")
+
+
 def file_manifest(root: Path) -> list[dict[str, object]]:
     files = []
     for path in sorted(p for p in root.rglob("*") if p.is_file() and p.name not in {"manifest.json", "SHA256SUMS"}):
@@ -266,6 +291,9 @@ def main() -> None:
         ], "jlink runtime 构建")
 
         copy_package_contents(package_root, agent_jar, dependency_bom)
+        if os_id == "windows":
+            normalize_powershell_encoding(package_root)
+            validate_windows_powershell(package_root)
         runtime_java = runtime_dir / "bin" / java_name
         runtime_version = java_major(runtime_java)
         if runtime_version != 21:

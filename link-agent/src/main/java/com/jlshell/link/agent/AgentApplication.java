@@ -145,6 +145,71 @@ public final class AgentApplication {
         }
     }
 
+    static void verifyEnrollmentTokenPermissions(Path file) throws IOException {
+        boolean posix = Files.getFileAttributeView(file, java.nio.file.attribute.PosixFileAttributeView.class) != null;
+        java.nio.file.attribute.UserPrincipal expectedOwner;
+        if (posix) {
+            expectedOwner = Files.getOwner(Path.of(System.getProperty("user.home")), LinkOption.NOFOLLOW_LINKS);
+        } else {
+            expectedOwner = currentWindowsTokenOwner(file);
+        }
+        if (!expectedOwner.equals(Files.getOwner(file, LinkOption.NOFOLLOW_LINKS))) {
+            throw new IOException("token file must belong to the current user");
+        }
+        if (Files.getFileAttributeView(file, java.nio.file.attribute.PosixFileAttributeView.class) != null) {
+            Set<PosixFilePermission> permissions = Files.getPosixFilePermissions(file, LinkOption.NOFOLLOW_LINKS);
+            if (permissions.stream().anyMatch(permission -> permission.name().startsWith("GROUP_")
+                    || permission.name().startsWith("OTHERS_"))) {
+                throw new IOException("token file must be owner-only (chmod 600)");
+            }
+            return;
+        }
+        var acl = Files.getFileAttributeView(file, java.nio.file.attribute.AclFileAttributeView.class,
+                LinkOption.NOFOLLOW_LINKS);
+        if (acl == null) throw new IOException("token file permissions cannot be verified");
+        verifyEnrollmentTokenAcl(expectedOwner, acl.getAcl());
+    }
+
+    static java.nio.file.attribute.UserPrincipal currentWindowsTokenOwner(Path file) throws IOException {
+        String systemRoot = System.getenv("SystemRoot");
+        if (systemRoot == null || systemRoot.isBlank()) throw new IOException("current Windows user unavailable");
+        Path powershell = Path.of(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+        Process process = new ProcessBuilder(powershell.toString(), "-NoProfile", "-NonInteractive", "-Command",
+                "[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);"
+                        + "[Security.Principal.WindowsIdentity]::GetCurrent().Name")
+                .redirectError(ProcessBuilder.Redirect.DISCARD).start();
+        try {
+            if (!process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                throw new IOException("current Windows user verification timed out");
+            }
+            byte[] raw = process.getInputStream().readNBytes(4097);
+            if (process.exitValue() != 0 || raw.length > 4096) throw new IOException("current Windows user unavailable");
+            String account = new String(raw, java.nio.charset.StandardCharsets.UTF_8).strip();
+            if (account.isBlank() || account.length() > 512 || account.contains("\n") || account.contains("\r")) {
+                throw new IOException("current Windows user unavailable");
+            }
+            return file.getFileSystem().getUserPrincipalLookupService().lookupPrincipalByName(account);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IOException("current Windows user verification interrupted");
+        } finally {
+            if (process.isAlive()) process.destroyForcibly();
+        }
+    }
+
+    static void verifyEnrollmentTokenAcl(java.nio.file.attribute.UserPrincipal owner,
+            java.util.List<java.nio.file.attribute.AclEntry> entries) throws IOException {
+        boolean ownerCanRead = false;
+        for (var entry : entries) {
+            if (entry.type() != java.nio.file.attribute.AclEntryType.ALLOW) continue;
+            if (!entry.principal().equals(owner)) {
+                throw new IOException("token ACL must grant access only to its owner");
+            }
+            ownerCanRead |= entry.permissions().contains(java.nio.file.attribute.AclEntryPermission.READ_DATA);
+        }
+        if (!ownerCanRead) throw new IOException("token ACL does not grant owner read access");
+    }
+
     private static char[] readEnrollmentToken(String tokenFile, Console console) throws IOException {
         if (tokenFile != null) {
             Path file = Path.of(tokenFile).toAbsolutePath().normalize();
@@ -152,18 +217,7 @@ public final class AgentApplication {
                 throw new IOException("token 文件必须是普通文件，不能是符号链接");
             }
             if (Files.size(file) > 4096) throw new IOException("token 文件超过 4096 字节限制");
-            if (Files.getFileAttributeView(file, java.nio.file.attribute.PosixFileAttributeView.class) == null) {
-                throw new IOException("当前文件系统无法验证 token 文件权限；请使用交互式终端输入");
-            }
-            Set<PosixFilePermission> permissions = Files.getPosixFilePermissions(file, LinkOption.NOFOLLOW_LINKS);
-            if (permissions.stream().anyMatch(permission -> permission.name().startsWith("GROUP_")
-                    || permission.name().startsWith("OTHERS_"))) {
-                throw new IOException("token 文件必须仅允许当前用户访问（chmod 600）");
-            }
-            var expectedOwner = Files.getOwner(Path.of(System.getProperty("user.home")), LinkOption.NOFOLLOW_LINKS);
-            if (!expectedOwner.equals(Files.getOwner(file, LinkOption.NOFOLLOW_LINKS))) {
-                throw new IOException("token 文件必须归当前用户所有");
-            }
+            verifyEnrollmentTokenPermissions(file);
             return Files.readString(file, java.nio.charset.StandardCharsets.UTF_8).trim().toCharArray();
         }
         if (console == null) throw new IOException("请在交互式终端输入 token，或提供权限为 600 的 --token-file");
