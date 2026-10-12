@@ -18,7 +18,9 @@ final class AgentInteractive {
             console.printf("  1. 首次配置 / 注册%n  2. 启动网关%n  3. 查看状态%n  4. 连接诊断%n  5. 修改连接和目标%n  6. 停止网关%n  0. 退出%n");
             console.printf("配置和身份目录：%s%n", state);
             String defaultAction = java.nio.file.Files.exists(AgentProfile.config(state)) ? "2" : "1";
-            String action = read(console, "选择", defaultAction, 16);
+            String action;
+            try { action = read(console, "选择", defaultAction, 16); }
+            catch (Cancelled cancelled) { return 0; }
             if (action.equals("0")) return 0;
             try {
                 var store = new AgentIdentityStore(state);
@@ -52,7 +54,7 @@ final class AgentInteractive {
         String defaultControl = previous == null ? "wss://" + website.getRawAuthority() : previous.control().toString();
         URI control = prompt(console, "Link 服务地址（可填 HTTPS 域名）", defaultControl, AgentProfile::controlUri);
         String defaultStun = previous == null ? hostPortDefault(control) : previous.stunServers();
-        String stun = read(console, "STUN 主机:UDP端口（支持域名；填 - 仅使用中继）", defaultStun, 2048);
+        String stun = read(console, "STUN 主机:UDP端口（支持域名；填 - 不使用 STUN）", defaultStun, 2048);
         if (stun.equals("-")) stun = "";
         if (!stun.isEmpty()) {
             String[] entries = stun.split(",", -1);
@@ -157,5 +159,7 @@ final class AgentInteractive {
         String message = error.getMessage();
         return message == null ? "操作未完成" : message;
     }
-    private static final class Cancelled extends IOException { }
+    private static final class Cancelled extends IOException {
+        Cancelled() { super("已取消配置"); }
+    }
 }

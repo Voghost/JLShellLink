@@ -100,7 +100,10 @@ public final class AgentApplication {
     }
 
     private static int run(AgentIdentityStore identity, Options options) throws Exception {
-        if (options.value("--link-wss") == null) { AgentInteractive.start(null, identity, false); return 0; }
+        if (options.value("--link-wss") == null) {
+            if (!options.savedProfileOnly()) throw new IllegalArgumentException("自定义启动参数需要 --link-wss；仅使用保存配置请运行 start");
+            AgentInteractive.start(null, identity, false); return 0;
+        }
         AgentRuntimeService.run(identity, options.stateDirectory(), options.linkWss(),
                 options.path("--tls-identity-p12"), options.path("--tls-password-file"),
                 options.path("--allowed-targets-file"), options.ticketIssuer(identity));
@@ -114,7 +117,10 @@ public final class AgentApplication {
     }
 
     private static int diagnose(AgentIdentityStore identity, Options options) throws Exception {
-        if (options.value("--link-wss") == null) { AgentInteractive.start(null, identity, true); return 0; }
+        if (options.value("--link-wss") == null) {
+            if (!options.savedProfileOnly()) throw new IllegalArgumentException("自定义诊断参数需要 --link-wss；仅使用保存配置请只传 --state-dir");
+            AgentInteractive.start(null, identity, true); return 0;
+        }
         AgentRuntimeService.diagnose(identity, options.linkWss(), options.path("--tls-identity-p12"),
                 options.path("--tls-password-file"), options.path("--allowed-targets-file"));
         System.out.println("Agent 本地身份、TLS、目标范围与 Website 票据公钥检查通过");
@@ -293,6 +299,7 @@ public final class AgentApplication {
         }
 
         private String value(String name) { return values.get(name); }
+        private boolean savedProfileOnly() { return values.keySet().stream().allMatch("--state-dir"::equals); }
 
         private Path stateDirectory() {
             String configured = value("--state-dir");

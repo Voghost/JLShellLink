@@ -138,6 +138,8 @@ def copy_package_contents(root: Path, agent_jar: Path, dependency_bom: Path) -> 
         target = root / target_rel
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
+        if target.suffix == ".cmd":
+            target.write_bytes(target.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
         if target.suffix in {".sh", ".command"}:
             target.chmod(0o755)
 

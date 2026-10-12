@@ -71,7 +71,7 @@ final class AgentManagedIdentity {
             builder.addExtension(Extension.basicConstraints, true, new BasicConstraints(false));
             builder.addExtension(Extension.keyUsage, true, new KeyUsage(KeyUsage.digitalSignature));
             builder.addExtension(Extension.extendedKeyUsage, false,
-                    new ExtendedKeyUsage(KeyPurposeId.id_kp_serverAuth));
+                    new ExtendedKeyUsage(new KeyPurposeId[]{KeyPurposeId.id_kp_serverAuth, KeyPurposeId.id_kp_clientAuth}));
             var holder = builder.build(new JcaContentSignerBuilder("Ed25519").build(key.privateKey()));
             var certificate = new JcaX509CertificateConverter().getCertificate(holder);
             certificate.verify(key.publicKey());
