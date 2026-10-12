@@ -68,6 +68,32 @@ final class AgentPrivateFiles {
         } finally { if (process.isAlive()) process.destroyForcibly(); }
     }
 
+    static Operation lock(Path root) throws IOException {
+        directory(root);
+        Path file = root.resolve(".profile.lock");
+        if (Files.exists(file, LinkOption.NOFOLLOW_LINKS)) regular(file);
+        var channel = java.nio.channels.FileChannel.open(file, StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+        try {
+            protect(file, false);
+            var lock = channel.tryLock();
+            if (lock == null) throw new IOException("此配置正在另一个窗口中使用，请先关闭或停止网关");
+            return new Operation(channel, lock);
+        } catch (java.nio.channels.OverlappingFileLockException busy) {
+            channel.close(); throw new IOException("此配置正在使用，请勿重复启动", busy);
+        } catch (IOException | RuntimeException error) { channel.close(); throw error; }
+    }
+
+    static final class Operation implements AutoCloseable {
+        private final java.nio.channels.FileChannel channel;
+        private final java.nio.channels.FileLock lock;
+        Operation(java.nio.channels.FileChannel channel, java.nio.channels.FileLock lock) {
+            this.channel = channel; this.lock = lock;
+        }
+        @Override public void close() throws IOException {
+            try { lock.release(); } finally { channel.close(); }
+        }
+    }
+
     static void write(Path path, byte[] bytes) throws IOException {
         directory(path.toAbsolutePath().getParent());
         if (Files.exists(path, LinkOption.NOFOLLOW_LINKS)) regular(path);
@@ -115,6 +141,7 @@ final class AgentPrivateFiles {
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt(); throw new IOException("Windows 权限设置中断", interrupted);
         } finally { if (process.isAlive()) process.destroyForcibly(); }
-        acl.setAcl(entries);
+        // Keep the native protected DACL as the final state; reapplying a Java
+        // security descriptor here could re-enable inheritance on some filesystems.
     }
 }

@@ -17,7 +17,9 @@ final class AgentInteractive {
             console.printf("%n╭─ JLShell Link Agent ──────────────────╮%n");
             console.printf("  1. 首次配置 / 注册%n  2. 启动网关%n  3. 查看状态%n  4. 连接诊断%n  5. 修改连接和目标%n  6. 停止网关%n  0. 退出%n");
             console.printf("配置和身份目录：%s%n", state);
-            String defaultAction = java.nio.file.Files.exists(AgentProfile.config(state)) ? "2" : "1";
+            boolean registered = java.nio.file.Files.exists(state.resolve("agent.properties"))
+                    && java.nio.file.Files.exists(state.resolve("agent.credential"));
+            String defaultAction = registered && java.nio.file.Files.exists(AgentProfile.config(state)) ? "2" : "1";
             String action;
             try { action = read(console, "选择", defaultAction, 16); }
             catch (Cancelled cancelled) { return 0; }
@@ -38,6 +40,16 @@ final class AgentInteractive {
     }
 
     static void configure(Console console, AgentIdentityStore store) throws Exception {
+        requireConsole(console);
+        if (AgentServiceControl.running(store.directory())) throw new IOException("网关正在运行，请先停止后修改配置");
+        boolean launch;
+        try (var operation = AgentPrivateFiles.lock(store.directory())) {
+            launch = configureProfile(console, store);
+        }
+        if (launch) start(console, store, false);
+    }
+
+    private static boolean configureProfile(Console console, AgentIdentityStore store) throws Exception {
         requireConsole(console);
         if (AgentServiceControl.running(store.directory())) throw new IOException("网关正在运行，请先停止后修改配置");
         AgentProfile previous = AgentProfile.load(store.directory()).orElse(null);
@@ -98,10 +110,17 @@ final class AgentInteractive {
             console.printf("注册成功。请在 Website 核对此网关的目标授权。%n");
         }
         console.printf("下次直接使用 agent start；修改配置使用 agent configure。%n");
-        if (yes(console, "现在前台启动网关？")) start(console, store, false);
+        return yes(console, "现在前台启动网关？");
     }
 
     static void start(Console console, AgentIdentityStore store, boolean diagnose) throws Exception {
+        if (AgentServiceControl.running(store.directory())) throw new IOException("网关已在运行，请先停止后操作");
+        try (var operation = AgentPrivateFiles.lock(store.directory())) {
+            runConfigured(console, store, diagnose);
+        }
+    }
+
+    private static void runConfigured(Console console, AgentIdentityStore store, boolean diagnose) throws Exception {
         AgentProfile profile = AgentProfile.load(store.directory()).orElseThrow(() ->
                 new IOException("尚未配置，请先运行 configure 或菜单 1"));
         profile.validateBinding(store);
