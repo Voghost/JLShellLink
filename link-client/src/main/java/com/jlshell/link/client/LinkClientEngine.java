@@ -133,7 +133,7 @@ public final class LinkClientEngine implements AutoCloseable {
                 try {
                     listener.bind(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0), 1);
                     lease = new LocalTunnelLease(flow.sessionId().orElseThrow(),
-                            connection, listener, permits::release);
+                            connection, listener, permits::release, flow.authorization().orElseThrow());
                     leases.add(lease);
                     LocalTunnelLease activeLease = lease;
                     lease.closed().whenComplete((ignored, failure) -> {
@@ -141,6 +141,7 @@ public final class LinkClientEngine implements AutoCloseable {
                         flow.closeSession();
                     });
                     lease.start();
+                    if (lease.stopped.get()) throw new SecurityException("Authorization lease is inactive");
                     connection.channel().closed().whenComplete((ignored, failure) -> activeLease.close());
                     if (!result.complete(lease)) lease.close();
                 } catch (Throwable failure) {
@@ -232,17 +233,20 @@ public final class LinkClientEngine implements AutoCloseable {
         private final ConnectionCoordinator.Connection connection;
         private final ServerSocket listener;
         private final Runnable releasePermit;
+        private final AuthorizationLeaseRenewer renewal;
         private final CompletableFuture<Void> closedFuture = new CompletableFuture<>();
         private final AtomicBoolean stopped = new AtomicBoolean();
         private final AtomicInteger directionsFinished = new AtomicInteger();
         private volatile Socket socket;
 
         private LocalTunnelLease(LinkSessionId sessionId, ConnectionCoordinator.Connection connection,
-                ServerSocket listener, Runnable releasePermit) {
+                ServerSocket listener, Runnable releasePermit,
+                ReauthorizingConnectionFlow.AuthorizedTunnel grant) {
             this.sessionId = sessionId;
             this.connection = connection;
             this.listener = listener;
             this.releasePermit = releasePermit;
+            this.renewal = new AuthorizationLeaseRenewer(grant, access, scheduler, Clock.systemUTC(), this::close);
         }
 
         public String host() { return "127.0.0.1"; }
@@ -253,6 +257,8 @@ public final class LinkClientEngine implements AutoCloseable {
         @Override public CompletionStage<Void> closed() { return closedFuture; }
 
         private void start() {
+            renewal.start();
+            if (stopped.get()) return;
             Thread.ofVirtual().name("jlshell-link-loopback-accept").start(() -> {
                 try {
                     listener.setSoTimeout(Math.toIntExact(acceptTimeout.toMillis()));
@@ -310,6 +316,7 @@ public final class LinkClientEngine implements AutoCloseable {
 
         @Override public void close() {
             if (!stopped.compareAndSet(false, true)) return;
+            renewal.close();
             try { listener.close(); } catch (IOException ignored) { }
             Socket accepted = socket;
             if (accepted != null) try { accepted.close(); } catch (IOException ignored) { }

@@ -207,6 +207,40 @@ class SignalRouterTest {
                 23000, 100, "foundation1");
     }
 
+    @Test
+    void renewalPreservesGenerationAndReplayProtection() throws Exception {
+        SignalRouter router = router();
+        List<ControlSignal> delivered = new ArrayList<>();
+        var client = router.register(clientPeer(), ignored -> { });
+        router.register(agentPeer(), delivered::add);
+        router.authorize(grant());
+        long generation = delivered.getFirst().generation();
+        var candidate = candidate(generation, "192.0.2.10");
+        router.route(client, candidate);
+        var renewed = new SignalRouter.AuthorizedSession(accountId, sessionId, clientId, agentId,
+                clientKey, agentKey, 4, NOW.plusSeconds(180));
+        router.authorize(renewed);
+        var invite = assertInstanceOf(ControlSignal.SessionInvite.class, delivered.getLast());
+        assertEquals(generation, invite.generation());
+        assertEquals(renewed.expiresAt(), invite.expiresAt());
+        assertThrows(SecurityException.class, () -> router.route(client, candidate));
+        assertThrows(SecurityException.class, () -> router.authorize(grant()));
+        router.authorize(renewed);
+        assertEquals(3, delivered.size());
+    }
+
+    @Test
+    void policyChangeStartsFreshGeneration() {
+        SignalRouter router = router();
+        List<ControlSignal> delivered = new ArrayList<>();
+        router.register(clientPeer(), ignored -> { });
+        router.register(agentPeer(), delivered::add);
+        router.authorize(grant());
+        router.authorize(new SignalRouter.AuthorizedSession(accountId, sessionId, clientId, agentId,
+                clientKey, agentKey, 5, NOW.plusSeconds(180)));
+        assertEquals(delivered.getFirst().generation() + 1, delivered.getLast().generation());
+    }
+
     private SignalRouter router() {
         return new SignalRouter(Clock.fixed(NOW, ZoneOffset.UTC), 16, 16, 32, 256);
     }

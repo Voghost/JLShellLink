@@ -122,6 +122,88 @@ public final class WebsiteAccessRequestProvider implements ReauthorizingConnecti
         });
     }
 
+    @Override
+    public CompletionStage<ReauthorizingConnectionFlow.RenewedAuthorization> renewAuthorization(
+            LinkSessionId sessionId, TunnelId tunnelId) {
+        Objects.requireNonNull(sessionId, "sessionId");
+        Objects.requireNonNull(tunnelId, "tunnelId");
+        return controlCredential.get().thenCompose(credential -> {
+            if (credential == null || credential.isBlank() || credential.length() > 4096) {
+                return CompletableFuture.failedFuture(new IllegalStateException(
+                        "Host did not provide a valid Link control credential"));
+            }
+            HttpRequest request = HttpRequest.newBuilder(websiteOrigin.resolve(
+                            "/api/v2/link/sessions/" + sessionId.value() + "/renew"))
+                    .timeout(timeout)
+                    .header("X-Link-Control-Credential", credential)
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString("{\"tunnelId\":"
+                            + quote(tunnelId.toString()) + "}"))
+                    .build();
+            CompletableFuture<HttpResponse<byte[]>> sending = http.sendAsync(request,
+                    ignored -> limitedBodySubscriber());
+            CompletableFuture<ReauthorizingConnectionFlow.RenewedAuthorization> result =
+                    sending.thenApply(response -> {
+                try {
+                    if (response.statusCode() != 200) {
+                        throw new AccessRequestException(response.statusCode());
+                    }
+                    return parseRenewal(sessionId, tunnelId,
+                            JSONObjectUtils.parse(new String(response.body(), StandardCharsets.UTF_8)));
+                } catch (IOException | ParseException invalid) {
+                    throw new java.util.concurrent.CompletionException(invalid);
+                }
+            });
+            result.orTimeout(Math.max(1, timeout.toMillis()), java.util.concurrent.TimeUnit.MILLISECONDS);
+            result.whenComplete((value, error) -> { if (error != null) sending.cancel(true); });
+            return result;
+        });
+    }
+
+    static HttpResponse.BodySubscriber<byte[]> limitedBodySubscriber() {
+        return new HttpResponse.BodySubscriber<>() {
+            private final HttpResponse.BodySubscriber<byte[]> delegate = HttpResponse.BodySubscribers.ofByteArray();
+            private java.util.concurrent.Flow.Subscription subscription;
+            private int received;
+            private boolean terminal;
+            @Override public CompletionStage<byte[]> getBody() { return delegate.getBody(); }
+            @Override public void onSubscribe(java.util.concurrent.Flow.Subscription value) {
+                subscription = value;
+                delegate.onSubscribe(value);
+            }
+            @Override public void onNext(java.util.List<java.nio.ByteBuffer> chunks) {
+                if (terminal) return;
+                for (var chunk : chunks) {
+                    if (chunk.remaining() > MAX_RESPONSE_BYTES - received) {
+                        terminal = true;
+                        subscription.cancel();
+                        delegate.onError(new IOException("Website renewal response exceeds limit"));
+                        return;
+                    }
+                    received += chunk.remaining();
+                }
+                delegate.onNext(chunks);
+            }
+            @Override public void onError(Throwable error) {
+                if (!terminal) { terminal = true; delegate.onError(error); }
+            }
+            @Override public void onComplete() {
+                if (!terminal) { terminal = true; delegate.onComplete(); }
+            }
+        };
+    }
+
+    static ReauthorizingConnectionFlow.RenewedAuthorization parseRenewal(LinkSessionId sessionId,
+            TunnelId tunnelId, java.util.Map<String, Object> body) throws ParseException {
+        if (!sessionId.toString().equals(JSONObjectUtils.getString(body, "sessionId"))
+                || !tunnelId.toString().equals(JSONObjectUtils.getString(body, "tunnelId"))) {
+            throw new SecurityException("Website renewed a different session or tunnel");
+        }
+        return new ReauthorizingConnectionFlow.RenewedAuthorization(sessionId, tunnelId,
+                Instant.parse(JSONObjectUtils.getString(body, "authorizationLeaseExpiresAt")),
+                JSONObjectUtils.getLong(body, "policyVersion"));
+    }
+
     /** Activates the prepared Website Relay quota before the Agent may pair a fallback path. */
     public CompletionStage<Void> activateRelay(LinkSessionId sessionId) {
         Objects.requireNonNull(sessionId, "sessionId");

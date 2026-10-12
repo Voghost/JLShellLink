@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-12",
+  "scope": "isolated-component-and-platform-preparation",
+  "formalRelease": false,
+  "linkSourceRevision": "c46c6b29fbeb0efa08953d317cdb2790e3a1da05",
+  "candidateSourceRevision": "791d0315134ff60a7c2366166a2de6770f8db283",
+  "matchingSourceTree": "d81b42db9e9816334f7d30e21087a9168d3163ec",
+  "java21Tests": {
+    "tests": 131,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "ci": {
+    "runId": 38197889132,
+    "checksPassed": 10
+  },
+  "relayLongConnection": {
+    "protocol": "ssh",
+    "actualPath": "RELAY",
+    "passed": true,
+    "elapsedMillis": 361311,
+    "acceptedAuthorizationRenewals": 6
+  },
+  "directLongConnection": {
+    "protocol": "ssh",
+    "actualPath": "DIRECT",
+    "passed": false,
+    "connectMillis": 2346,
+    "elapsedMillis": 300056,
+    "acceptedAuthorizationRenewals": 4,
+    "remainingOpenTunnels": 0,
+    "remainingPendingTunnels": 0,
+    "historicalFailure": true
+  },
+  "windows": {
+    "keyLoginVerified": true,
+    "administratorVerified": true,
+    "existingAgentService": false,
+    "existingAgentDirectories": false,
+    "bundledJava21Started": true,
+    "independentIdentityInitialized": true,
+    "registered": false,
+    "serviceInstalled": false,
+    "rebootAcceptance": false,
+    "unattendedStartupAcceptance": false,
+    "upgradeRecoveryAcceptance": false,
+    "latestCandidateZipSha256": "3d43053a0dab181804322aab2dfda84b80bda6bf3f54e6b8fb6a8a7c5df9514f"
+  },
+  "website": {
+    "jenkinsGatesPassed": true,
+    "productionPersistentTicketKeyConfigured": true,
+    "authorityHttpStatus": 200,
+    "productionImageChanged": false
+  },
+  "chapterComplete": false,
+  "rustRetired": false,
+  "latestComponentSourceRevision": "b27b1a6322a346f82f887070c95e99bbece38fe0",
+  "latestLongConnections": {
+    "scope": "real-two-egress-component-acceptance",
+    "cases": [
+      {
+        "requestedPolicy": "DIRECT_ONLY",
+        "actualPath": "DIRECT",
+        "protocol": "ssh",
+        "passed": true,
+        "connectMillis": 2735,
+        "elapsedMillis": 363213,
+        "acceptedAuthorizationRenewals": 5
+      },
+      {
+        "requestedPolicy": "RELAY_ONLY",
+        "actualPath": "RELAY",
+        "protocol": "ssh",
+        "passed": true,
+        "connectMillis": 6100,
+        "elapsedMillis": 366778,
+        "acceptedAuthorizationRenewals": 5
+      }
+    ],
+    "remainingOpenTunnels": 0,
+    "remainingPendingTunnels": 0
+  },
+  "latestLocalJava21Tests": {
+    "tests": 133,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "scope": "includes-generation-owned-cleanup-and-consumed-invite-binding"
+  },
+  "temporaryValidationJwtCleaned": true
+}

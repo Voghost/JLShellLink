@@ -21,6 +21,7 @@ public final class ReauthorizingConnectionFlow {
     private final Clock clock;
     private final AtomicReference<LinkSessionId> sessionId = new AtomicReference<>();
     private final AtomicReference<AccessRequestProvider> accessProvider = new AtomicReference<>();
+    private final AtomicReference<AuthorizedTunnel> authorization = new AtomicReference<>();
     private final AtomicBoolean started = new AtomicBoolean();
     private final AtomicBoolean sessionClosed = new AtomicBoolean();
 
@@ -73,6 +74,7 @@ public final class ReauthorizingConnectionFlow {
             try {
                 if (grant != null) sessionId.compareAndSet(null, grant.sessionId());
                 validateGrant(grant, target);
+                authorization.set(grant);
                 PathPlan pathPlan = Objects.requireNonNull(plans.create(grant), "path plan factory returned null");
                 ConnectionCoordinator.TargetRequest targetRequest = new ConnectionCoordinator.TargetRequest(
                         grant.target(), grant.tunnelId(), grant.accessTicket());
@@ -96,6 +98,10 @@ public final class ReauthorizingConnectionFlow {
         return Optional.ofNullable(sessionId.get());
     }
 
+    Optional<AuthorizedTunnel> authorization() {
+        return Optional.ofNullable(authorization.get());
+    }
+
     /** Revokes the one-shot Website session; safe to call from every teardown path. */
     public CompletionStage<Void> closeSession() {
         LinkSessionId current = sessionId.get();
@@ -115,6 +121,9 @@ public final class ReauthorizingConnectionFlow {
         if (!grant.target().equals(requestedTarget)) throw new SecurityException("Website authorized a different target");
         if (!grant.ticketExpiresAt().isAfter(clock.instant())) {
             throw new SecurityException("Website returned an expired access ticket");
+        }
+        if (!grant.authorizationLeaseExpiresAt().isAfter(clock.instant())) {
+            throw new SecurityException("Website returned an expired authorization lease");
         }
     }
 
@@ -136,6 +145,23 @@ public final class ReauthorizingConnectionFlow {
         /** Revokes the one-shot session on tunnel shutdown. */
         default CompletionStage<Void> closeSession(LinkSessionId sessionId) {
             return CompletableFuture.completedFuture(null);
+        }
+
+        /** Rechecks current Website authorization without reusing the consumed access ticket. */
+        default CompletionStage<RenewedAuthorization> renewAuthorization(LinkSessionId sessionId,
+                TunnelId tunnelId) {
+            return CompletableFuture.failedFuture(new UnsupportedOperationException(
+                    "Access provider does not support authorization renewal"));
+        }
+    }
+
+    public record RenewedAuthorization(LinkSessionId sessionId, TunnelId tunnelId,
+                                       Instant authorizationLeaseExpiresAt, long policyVersion) {
+        public RenewedAuthorization {
+            Objects.requireNonNull(sessionId, "sessionId");
+            Objects.requireNonNull(tunnelId, "tunnelId");
+            Objects.requireNonNull(authorizationLeaseExpiresAt, "authorizationLeaseExpiresAt");
+            if (policyVersion < 1) throw new IllegalArgumentException("policyVersion must be positive");
         }
     }
 

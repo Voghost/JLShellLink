@@ -28,7 +28,7 @@ public final class ClientIceSignalBroker implements SignaledIceDirectPathProvide
     private final Map<SessionGeneration, CopyOnWriteArrayList<Registration>> listeners = new ConcurrentHashMap<>();
     private final Object inviteLock = new Object();
     // ICE gathering can take longer than the peer's authenticated offer delivery.
-    private final Map<SessionGeneration, Instant> authorizedGenerations = new java.util.HashMap<>();
+    private final Map<SessionGeneration, ControlSignal.SessionInvite> authorizedGenerations = new java.util.HashMap<>();
     private final Map<SessionGeneration, List<ControlSignal>> pendingSignals = new java.util.HashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean();
     private volatile Function<ControlSignal, ? extends CompletionStage<Void>> sender;
@@ -62,9 +62,20 @@ public final class ClientIceSignalBroker implements SignaledIceDirectPathProvide
                         && authorizedGenerations.size() >= MAX_INVITES) {
                     throw new IllegalStateException("too many pending ICE generations");
                 }
-                authorizedGenerations.put(generation, invite.expiresAt());
+                ControlSignal.SessionInvite previousInvite = authorizedGenerations.get(generation);
+                if (previousInvite != null && previousInvite.generation() == invite.generation()) {
+                    if (!previousInvite.agentId().equals(invite.agentId())
+                            || !previousInvite.clientDeviceId().equals(invite.clientDeviceId())
+                            || !previousInvite.agentKeyFingerprint().equals(invite.agentKeyFingerprint())
+                            || !previousInvite.clientKeyFingerprint().equals(invite.clientKeyFingerprint())
+                            || previousInvite.policyVersion() != invite.policyVersion()
+                            || previousInvite.iceCredentialsSupported() != invite.iceCredentialsSupported()
+                            || previousInvite.peerReflexiveSupported() != invite.peerReflexiveSupported()
+                            || !invite.expiresAt().isAfter(previousInvite.expiresAt())) return;
+                }
+                authorizedGenerations.put(generation, invite);
                 invites.compute(invite.sessionId(), (ignored, previous) -> previous == null
-                        || invite.generation() > previous.generation() ? invite : previous);
+                        || invite.generation() >= previous.generation() ? invite : previous);
                 CompletableFuture<ControlSignal.SessionInvite> waiter = inviteWaiters.remove(invite.sessionId());
                 if (waiter != null) waiter.complete(invites.get(invite.sessionId()));
                 trimInvites();
@@ -195,7 +206,7 @@ public final class ClientIceSignalBroker implements SignaledIceDirectPathProvide
 
     private void expirePending() {
         Instant now = Instant.now();
-        authorizedGenerations.entrySet().removeIf(entry -> !entry.getValue().isAfter(now));
+        authorizedGenerations.entrySet().removeIf(entry -> !entry.getValue().expiresAt().isAfter(now));
         pendingSignals.keySet().removeIf(key -> !authorizedGenerations.containsKey(key));
     }
 

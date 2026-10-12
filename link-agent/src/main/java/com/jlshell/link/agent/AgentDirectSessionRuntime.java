@@ -108,7 +108,10 @@ final class AgentDirectSessionRuntime implements AutoCloseable {
         DirectSession next = new DirectSession(invite, signaling);
         AtomicReference<DirectSession> replaced = new AtomicReference<>();
         DirectSession previous = active.compute(sessionId, (ignored, current) -> {
-            if (current != null && current.generation() >= invite.generation()) return current;
+            if (current != null && current.generation() >= invite.generation()) {
+                if (current.generation() == invite.generation()) current.renew(invite, signaling);
+                return current;
+            }
             replaced.set(current);
             return next;
         });
@@ -180,9 +183,11 @@ final class AgentDirectSessionRuntime implements AutoCloseable {
         private volatile ConnectStreamMultiplexer multiplexer;
         private volatile AgentAccessAuthorizer authorizer;
         private volatile ScheduledFuture<?> expires;
+        private volatile Instant authorizationExpiresAt;
 
         private DirectSession(ControlSignal.SessionInvite invite, AgentControlSignalClient signaling) {
             this.invite = invite;
+            this.authorizationExpiresAt = invite.expiresAt();
             this.signaling = signaling;
             this.earlyIce = new EarlyIceSignals(invite.sessionId(), invite.generation());
         }
@@ -190,12 +195,11 @@ final class AgentDirectSessionRuntime implements AutoCloseable {
         private long generation() { return invite.generation(); }
 
         private void start() {
-            long delay = Math.max(0, invite.expiresAt().toEpochMilli() - clock.millis());
-            expires = expiryScheduler.schedule(() -> closeSession(invite.sessionId()), delay, TimeUnit.MILLISECONDS);
+            synchronized (this) { scheduleExpiry(); }
             try {
                 worker.execute(() -> {
                     if (closed.get() || !currentAuthorization()) {
-                        closeSession(invite.sessionId());
+                        closeOwnedSession();
                         return;
                     }
                     try {
@@ -229,9 +233,43 @@ final class AgentDirectSessionRuntime implements AutoCloseable {
             }
         }
 
+        private synchronized void renew(ControlSignal.SessionInvite renewed, AgentControlSignalClient source) {
+            if (closed.get() || source != signaling || !currentAuthorization()
+                    || !invite.agentId().equals(renewed.agentId())
+                    || !invite.clientDeviceId().equals(renewed.clientDeviceId())
+                    || !invite.agentKeyFingerprint().equals(renewed.agentKeyFingerprint())
+                    || !invite.clientKeyFingerprint().equals(renewed.clientKeyFingerprint())
+                    || invite.policyVersion() != renewed.policyVersion()
+                    || invite.iceCredentialsSupported() != renewed.iceCredentialsSupported()
+                    || invite.peerReflexiveSupported() != renewed.peerReflexiveSupported()
+                    || !renewed.expiresAt().isAfter(authorizationExpiresAt)) return;
+            authorizationExpiresAt = renewed.expiresAt();
+            AgentAccessAuthorizer current = authorizer;
+            if (current != null) current.updateAuthorizationLease(authorizationExpiresAt);
+            scheduleExpiry();
+            safeStatus("direct-authorization-renewed");
+        }
+
+        private void scheduleExpiry() {
+            if (closed.get()) return;
+            ScheduledFuture<?> old = expires;
+            if (old != null) old.cancel(false);
+            Instant expected = authorizationExpiresAt;
+            long delay = Math.max(0, expected.toEpochMilli() - clock.millis());
+            expires = expiryScheduler.schedule(() -> {
+                synchronized (this) {
+                    if (!closed.get() && authorizationExpiresAt.equals(expected)
+                            && !authorizationExpiresAt.isAfter(clock.instant())) {
+                        active.remove(invite.sessionId(), this);
+                        close();
+                    }
+                }
+            }, delay, TimeUnit.MILLISECONDS);
+        }
+
         private boolean currentAuthorization() {
             AgentLeaseSnapshot current = lease.get();
-            return !closed.get() && invite.expiresAt().isAfter(clock.instant())
+            return !closed.get() && authorizationExpiresAt.isAfter(clock.instant())
                     && current.permitsNewStreams(clock.instant())
                     && invite.policyVersion() == current.policyVersion();
         }
@@ -281,7 +319,8 @@ final class AgentDirectSessionRuntime implements AutoCloseable {
                         new AgentAccessAuthorizer.UUIDBinding(invite.sessionId(), agentId, key,
                                 invite.agentKeyFingerprint()), grants, signingKeys,
                         Objects.requireNonNull(localPolicy.get(), "local target policy"), currentLease,
-                        invite.expiresAt(), clock, worker, safeAudit());
+                        authorizationExpiresAt, clock, worker, safeAudit());
+                synchronized (this) { authorizer.updateAuthorizationLease(authorizationExpiresAt); }
                 multiplexer = new ConnectStreamMultiplexer(budget,
                         new TransportBufferBudget(budget.maxBufferedBytesTotal()), authorizer,
                         ConnectStreamMultiplexer.tcpConnector(budget, targetEventLoops));
@@ -294,11 +333,11 @@ final class AgentDirectSessionRuntime implements AutoCloseable {
                         return;
                     }
                     bridge = opened;
-                    opened.closed().whenComplete((ignored, closedError) -> closeSession(invite.sessionId()));
+                    opened.closed().whenComplete((ignored, closedError) -> closeOwnedSession());
                     Channel endpoint = opened.endpoint();
                     endpoint.eventLoop().execute(() -> {
                         if (closed.get() || !currentAuthorization()) {
-                            closeSession(invite.sessionId());
+                            closeOwnedSession();
                             return;
                         }
                         CompletionStage<Void> secure;
@@ -346,18 +385,23 @@ final class AgentDirectSessionRuntime implements AutoCloseable {
         private void updateLease(AgentLeaseSnapshot next) {
             AgentAccessAuthorizer current = authorizer;
             if (!next.permitsNewStreams(clock.instant()) || next.policyVersion() != invite.policyVersion()) {
-                closeSession(invite.sessionId());
+                closeOwnedSession();
             } else if (current != null) {
                 current.updateLease(next);
             }
         }
 
-        private void fail(String code) {
-            safeStatus(code);
-            closeSession(invite.sessionId());
+        private void closeOwnedSession() {
+            active.remove(invite.sessionId(), this);
+            close();
         }
 
-        @Override public void close() {
+        private void fail(String code) {
+            safeStatus(code);
+            closeOwnedSession();
+        }
+
+        @Override public synchronized void close() {
             if (!closed.compareAndSet(false, true)) return;
             earlyIce.close();
             ScheduledFuture<?> expiry = expires;

@@ -58,6 +58,12 @@ public final class ClientControlSignalClient implements AutoCloseable {
     private final Consumer<Throwable> disconnected;
     private volatile CompletableFuture<Void> ready = new CompletableFuture<>();
     private volatile WebSocket socket;
+    private volatile String activeCredential;
+    private volatile java.util.concurrent.ScheduledFuture<?> credentialRefresh;
+    private final AtomicBoolean refreshInFlight = new AtomicBoolean();
+    private volatile UUID refreshChallenge;
+    private volatile CompletableFuture<Void> refreshAcknowledgment;
+
 
     public ClientControlSignalClient(URI controlUri, UUID deviceId, LocalNodeKey nodeKey,
             Supplier<? extends CompletionStage<String>> credential, SSLContext tls,
@@ -84,7 +90,10 @@ public final class ClientControlSignalClient implements AutoCloseable {
         CompletionStage<String> token;
         try { token = Objects.requireNonNull(credential.get(), "control credential provider returned null"); }
         catch (RuntimeException error) { fail(currentReady, error); return currentReady; }
-        token.thenCompose(value -> requestChallenge(value).thenCompose(challenge -> openWebSocket(value, challenge)))
+        token.thenCompose(value -> {
+                    activeCredential = value;
+                    return requestChallenge(value).thenCompose(challenge -> openWebSocket(value, challenge));
+                })
                 .whenComplete((connected, error) -> {
                     if (error != null) fail(currentReady, unwrap(error));
                     else if (closed.get()) connected.sendClose(WebSocket.NORMAL_CLOSURE, "");
@@ -166,6 +175,48 @@ public final class ClientControlSignalClient implements AutoCloseable {
                 .buildAsync(controlUri, new Listener(ready));
     }
 
+    private void refreshCredential(CompletableFuture<Void> generation) {
+        WebSocket current = socket;
+        if (closed.get() || generation != ready || current == null || !generation.isDone()
+                || generation.isCompletedExceptionally() || !refreshInFlight.compareAndSet(false, true)) return;
+        CompletionStage<Void> refresh;
+        try {
+            refresh = Objects.requireNonNull(credential.get(), "control credential provider returned null")
+                    .toCompletableFuture().orTimeout(15, TimeUnit.SECONDS).thenCompose(value -> {
+                        if (Objects.equals(value, activeCredential)) return CompletableFuture.completedFuture(null);
+                        return requestChallenge(value).thenCompose(challenge -> {
+                            if (closed.get() || generation != ready || socket != current) {
+                                return CompletableFuture.failedFuture(new IllegalStateException("control generation changed"));
+                            }
+                            CompletableFuture<Void> acknowledgment = new CompletableFuture<>();
+                            refreshChallenge = challenge.id();
+                            refreshAcknowledgment = acknowledgment;
+                            return current.sendText(codec.encodeReauthentication(challenge.id(), value,
+                                            challenge.proof()), true)
+                                    .thenCompose(ignored -> acknowledgment)
+                                    .thenRun(() -> activeCredential = value);
+                        });
+                    }).orTimeout(20, TimeUnit.SECONDS);
+        } catch (RuntimeException error) { refresh = CompletableFuture.failedFuture(error); }
+        refresh.whenComplete((ignored, error) -> {
+            refreshInFlight.set(false);
+            refreshChallenge = null;
+            refreshAcknowledgment = null;
+            if (error != null && generation == ready && !closed.get()) {
+                current.abort();
+                fail(generation, new SecurityException("control credential refresh failed"));
+            }
+        });
+    }
+
+    private void cancelCredentialRefresh() {
+        var task = credentialRefresh;
+        credentialRefresh = null;
+        if (task != null) task.cancel(false);
+        CompletableFuture<Void> pending = refreshAcknowledgment;
+        if (pending != null) pending.completeExceptionally(new SecurityException("control connection closed"));
+    }
+
     private String hello() {
         return JSONObjectUtils.toJSONString(Map.of(
                 "type", "HELLO", "role", "client", "nodeId", deviceId.toString(),
@@ -222,9 +273,26 @@ public final class ClientControlSignalClient implements AutoCloseable {
                     reconnectAttempts.set(0);
                     reconnectScheduled.set(false);
                     connectionReady.complete(null);
+                    Object capabilities = value.get("capabilities");
+                    if (capabilities instanceof List<?> advertised
+                            && advertised.contains(ControlSignalJsonCodec.REAUTH_CAPABILITY)) {
+                        credentialRefresh = reconnectTimer.scheduleWithFixedDelay(
+                                () -> refreshCredential(connectionReady), 15, 15, TimeUnit.SECONDS);
+                    }
                     return;
                 }
                 if (!connectionReady.isDone()) throw new IllegalStateException("control READY is required first");
+                if ("REAUTH_READY".equals(type)) {
+                    CompletableFuture<Void> pending = refreshAcknowledgment;
+                    if (connectionReady != ready || pending == null || pending.isDone()
+                            || !Objects.equals(refreshChallenge,
+                                    UUID.fromString(JSONObjectUtils.getString(value, "challengeId")))) {
+                        throw new SecurityException("unexpected control refresh acknowledgment");
+                    }
+                    pending.complete(null);
+                    return;
+                }
+
                 if ("ERROR".equals(type)) throw new SecurityException("control server rejected a message");
                 ControlSignal signal = codec.decodeServerSignal(json);
                 if (signal instanceof ControlSignal.SessionInvite invite
@@ -255,6 +323,7 @@ public final class ClientControlSignalClient implements AutoCloseable {
         if (connectionReady != ready || closed.get()) return;
         if (!failedGeneration.compareAndSet(null, connectionReady)) return;
         started.set(false);
+        cancelCredentialRefresh();
         socket = null;
         connectionReady.completeExceptionally(error);
         signals.connectionLost(error);
@@ -272,6 +341,7 @@ public final class ClientControlSignalClient implements AutoCloseable {
 
     @Override public void close() {
         if (!closed.compareAndSet(false, true)) return;
+        cancelCredentialRefresh();
         WebSocket current = socket;
         if (current != null) current.sendClose(WebSocket.NORMAL_CLOSURE, "");
         ready.completeExceptionally(new IllegalStateException("control client is closed"));

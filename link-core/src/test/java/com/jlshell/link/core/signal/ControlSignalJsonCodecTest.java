@@ -12,6 +12,24 @@ import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
 class ControlSignalJsonCodecTest {
+
+    @org.junit.jupiter.api.Test
+    void reauthenticationIsBoundedAndRedacted() {
+        var codec = new ControlSignalJsonCodec();
+        var id = java.util.UUID.randomUUID();
+        var encoded = codec.encodeReauthentication(id, "test-token", "test-proof");
+        var decoded = codec.decodeReauthentication(encoded);
+        org.junit.jupiter.api.Assertions.assertEquals(id, decoded.challengeId());
+        org.junit.jupiter.api.Assertions.assertEquals("test-token", decoded.credential());
+        org.junit.jupiter.api.Assertions.assertFalse(decoded.toString().contains("test-token"));
+        org.junit.jupiter.api.Assertions.assertTrue(codec.isReauthentication(encoded));
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> codec.encodeReauthentication(id, "x".repeat(4097), "test-proof"));
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> codec.encodeReauthentication(id, "test token", "test-proof"));
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> codec.decodeReauthentication(encoded.replace("test-proof", "x".repeat(129))));
+    }
     private final ControlSignalJsonCodec codec = new ControlSignalJsonCodec();
     private final LinkSessionId sessionId = LinkSessionId.random();
 

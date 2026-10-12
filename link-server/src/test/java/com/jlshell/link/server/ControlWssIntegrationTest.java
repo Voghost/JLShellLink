@@ -70,7 +70,7 @@ class ControlWssIntegrationTest {
                 new TransportBufferBudget(65_536), 65_536, Duration.ofSeconds(10), 2,
                 (handshake, credential) -> {
                     var principal = principals.get(handshake.nodeId());
-                    return "test-credential".equals(credential) && principal != null
+                    return ("test-credential".equals(credential) || "test-credential-next".equals(credential)) && principal != null
                             && principal.matches(handshake)
                             ? CompletableFuture.completedFuture(principal)
                             : CompletableFuture.failedFuture(new SecurityException());
@@ -93,12 +93,40 @@ class ControlWssIntegrationTest {
                 assertEquals("SESSION_INVITE", type(inviteForAgent));
                 long generation = ((ControlSignal.SessionInvite) new ControlSignalJsonCodec()
                         .decodeServerSignal(inviteForClient)).generation();
+                HttpRequest refreshChallenge = HttpRequest.newBuilder(
+                                URI.create("https://127.0.0.1:" + port + "/link/v2/control-challenges"))
+                        .header("Authorization", "Bearer test-credential-next")
+                        .header("X-Link-Role", "client")
+                        .header("X-Link-Node-Id", clientId.toString())
+                        .header("X-Link-Key-Fingerprint", clientKey.fingerprint().value())
+                        .POST(HttpRequest.BodyPublishers.noBody()).build();
+                var refreshResponse = http.send(refreshChallenge, HttpResponse.BodyHandlers.ofString());
+                assertEquals(201, refreshResponse.statusCode());
+                var challengeBody = JSONObjectUtils.parse(refreshResponse.body());
+                UUID refreshId = UUID.fromString(JSONObjectUtils.getString(challengeBody, "challengeId"));
+                byte[] refreshNonce = Base64.getUrlDecoder().decode(
+                        JSONObjectUtils.getString(challengeBody, "challenge"));
+                String refreshProof = Base64.getUrlEncoder().withoutPadding().encodeToString(
+                        proofs.sign(clientKey, new NodeProofContext("control-channel", clientId, Optional.empty()),
+                                refreshNonce));
+                String refreshFrame = new ControlSignalJsonCodec().encodeReauthentication(
+                        refreshId, "test-credential-next", refreshProof);
+                client.socket.sendText(refreshFrame, true).join();
+                String acknowledged = client.next();
+                assertEquals("REAUTH_READY", type(acknowledged));
+                assertEquals(refreshId.toString(), JSONObjectUtils.getString(
+                        JSONObjectUtils.parse(acknowledged), "challengeId"));
                 ControlSignal.IceEnd end = new ControlSignal.IceEnd(UUID.randomUUID(), session, generation);
                 client.socket.sendText(new ControlSignalJsonCodec().encode(end), true).join();
                 assertEquals("ICE_END", agent.nextType());
                 router.revoke(session);
                 assertEquals("SESSION_REVOKED", client.nextType());
                 assertEquals("SESSION_REVOKED", agent.nextType());
+                // A consumed challenge cannot authorize another refresh on this same socket.
+                client.socket.sendText(refreshFrame, true).join();
+                var denied = JSONObjectUtils.parse(client.next());
+                assertEquals("ERROR", JSONObjectUtils.getString(denied, "type"));
+                assertEquals("AUTH_DENIED", JSONObjectUtils.getString(denied, "code"));
             }
         } finally {
             http.close();
