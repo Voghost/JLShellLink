@@ -27,6 +27,7 @@ class ClientIceSignalBrokerTest {
                 AGENT, CLIENT, 4, firstDeadline.plusSeconds(90), true);
         try (var broker = new ClientIceSignalBroker()) {
             broker.accept(first);
+            assertSame(first, broker.awaitInvite(session).toCompletableFuture().join());
             var received = new AtomicInteger();
             broker.listen(session, 1, ignored -> received.incrementAndGet(), ignored -> {});
             broker.accept(renewed);

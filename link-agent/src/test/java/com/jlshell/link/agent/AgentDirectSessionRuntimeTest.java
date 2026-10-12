@@ -22,6 +22,24 @@ import org.junit.jupiter.api.Test;
 /** Exercises invitation lease handling without starting an ICE network transport. */
 class AgentDirectSessionRuntimeTest {
     @Test
+    void staleWorkerCannotCloseReplacementGeneration() throws Exception {
+        try (Fixture f = new Fixture()) {
+            var first = f.invite(90, f.clientId, 4);
+            f.runtime.acceptInvite(first, f.signaling);
+            Object old = f.session();
+            var replacement = new ControlSignal.SessionInvite(UUID.randomUUID(), f.sessionId, 2,
+                    f.agentId, f.clientId, f.agent.fingerprint(), f.client.fingerprint(), 4,
+                    f.now.plusSeconds(180), true, false);
+            f.runtime.acceptInvite(replacement, f.signaling);
+            Object current = f.session();
+            assertNotSame(old, current);
+            f.workerTasks.getFirst().run();
+            assertSame(current, f.session());
+            assertFalse(f.expiry(current).isCancelled());
+        }
+    }
+
+    @Test
     void sameGenerationRenewalExtendsLeaseAndCancelsOldDeadline() throws Exception {
         try (Fixture f = new Fixture()) {
             var first = f.invite(90, f.clientId, 4);
@@ -83,6 +101,7 @@ class AgentDirectSessionRuntimeTest {
         private final LinkSessionId sessionId = LinkSessionId.random();
         private final Ed25519NodeKey agent = Ed25519NodeKey.generate(), client = Ed25519NodeKey.generate();
         private final DefaultEventLoopGroup loops = new DefaultEventLoopGroup(1);
+        private final List<Runnable> workerTasks = new ArrayList<>();
         private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
         private final AgentControlSignalClient signaling;
         private final AgentDirectSessionRuntime runtime;
@@ -94,7 +113,7 @@ class AgentDirectSessionRuntimeTest {
             runtime = new AgentDirectSessionRuntime(URI.create("https://link.example.test"), agentId, agent,
                     ignored -> null, () -> new AccessPolicy(false, false, 1, List.of()),
                     new AgentLeaseSnapshot(agentId, agent.fingerprint(), 4, now.plusSeconds(600), false),
-                    loops, loops, ignored -> {}, scheduler,
+                    loops, loops, workerTasks::add, scheduler,
                     new AccessGrantJwsService(clock, Duration.ZERO, new InMemoryReplayStore()),
                     ignored -> Optional.empty(), budget,
                     new Ice4jDirectSession.Config(List.of(), 8, Duration.ofSeconds(5), 1500, 100),

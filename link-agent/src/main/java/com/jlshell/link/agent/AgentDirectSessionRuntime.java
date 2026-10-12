@@ -199,7 +199,7 @@ final class AgentDirectSessionRuntime implements AutoCloseable {
             try {
                 worker.execute(() -> {
                     if (closed.get() || !currentAuthorization()) {
-                        closeSession(invite.sessionId());
+                        closeOwnedSession();
                         return;
                     }
                     try {
@@ -333,11 +333,11 @@ final class AgentDirectSessionRuntime implements AutoCloseable {
                         return;
                     }
                     bridge = opened;
-                    opened.closed().whenComplete((ignored, closedError) -> closeSession(invite.sessionId()));
+                    opened.closed().whenComplete((ignored, closedError) -> closeOwnedSession());
                     Channel endpoint = opened.endpoint();
                     endpoint.eventLoop().execute(() -> {
                         if (closed.get() || !currentAuthorization()) {
-                            closeSession(invite.sessionId());
+                            closeOwnedSession();
                             return;
                         }
                         CompletionStage<Void> secure;
@@ -385,15 +385,20 @@ final class AgentDirectSessionRuntime implements AutoCloseable {
         private void updateLease(AgentLeaseSnapshot next) {
             AgentAccessAuthorizer current = authorizer;
             if (!next.permitsNewStreams(clock.instant()) || next.policyVersion() != invite.policyVersion()) {
-                closeSession(invite.sessionId());
+                closeOwnedSession();
             } else if (current != null) {
                 current.updateLease(next);
             }
         }
 
+        private void closeOwnedSession() {
+            active.remove(invite.sessionId(), this);
+            close();
+        }
+
         private void fail(String code) {
             safeStatus(code);
-            closeSession(invite.sessionId());
+            closeOwnedSession();
         }
 
         @Override public synchronized void close() {

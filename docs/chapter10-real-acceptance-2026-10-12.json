@@ -31,7 +31,8 @@
     "elapsedMillis": 300056,
     "acceptedAuthorizationRenewals": 4,
     "remainingOpenTunnels": 0,
-    "remainingPendingTunnels": 0
+    "remainingPendingTunnels": 0,
+    "historicalFailure": true
   },
   "windows": {
     "keyLoginVerified": true,
@@ -54,5 +55,39 @@
     "productionImageChanged": false
   },
   "chapterComplete": false,
-  "rustRetired": false
+  "rustRetired": false,
+  "latestComponentSourceRevision": "b27b1a6322a346f82f887070c95e99bbece38fe0",
+  "latestLongConnections": {
+    "scope": "real-two-egress-component-acceptance",
+    "cases": [
+      {
+        "requestedPolicy": "DIRECT_ONLY",
+        "actualPath": "DIRECT",
+        "protocol": "ssh",
+        "passed": true,
+        "connectMillis": 2735,
+        "elapsedMillis": 363213,
+        "acceptedAuthorizationRenewals": 5
+      },
+      {
+        "requestedPolicy": "RELAY_ONLY",
+        "actualPath": "RELAY",
+        "protocol": "ssh",
+        "passed": true,
+        "connectMillis": 6100,
+        "elapsedMillis": 366778,
+        "acceptedAuthorizationRenewals": 5
+      }
+    ],
+    "remainingOpenTunnels": 0,
+    "remainingPendingTunnels": 0
+  },
+  "latestLocalJava21Tests": {
+    "tests": 133,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "scope": "includes-generation-owned-cleanup-and-consumed-invite-binding"
+  },
+  "temporaryValidationJwtCleaned": true
 }
