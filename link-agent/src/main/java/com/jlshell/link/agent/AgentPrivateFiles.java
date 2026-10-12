@@ -54,7 +54,7 @@ final class AgentPrivateFiles {
                 "-NoProfile", "-NonInteractive", "-Command", command)
                 .redirectError(ProcessBuilder.Redirect.DISCARD).start();
         try {
-            if (!process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) throw new IOException("Windows 权限检查超时");
+            if (!process.waitFor(15, java.util.concurrent.TimeUnit.SECONDS)) throw new IOException("Windows 权限检查超时");
             byte[] output = process.getInputStream().readNBytes(8193);
             if (process.exitValue() != 0 || output.length > 8192) throw new IOException("Windows 权限检查失败");
             String[] names = new String(output, java.nio.charset.StandardCharsets.UTF_8).strip().split("\\R");

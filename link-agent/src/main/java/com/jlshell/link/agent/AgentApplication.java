@@ -192,7 +192,7 @@ public final class AgentApplication {
                         + "[Security.Principal.WindowsIdentity]::GetCurrent().Name")
                 .redirectError(ProcessBuilder.Redirect.DISCARD).start();
         try {
-            if (!process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) {
+            if (!process.waitFor(15, java.util.concurrent.TimeUnit.SECONDS)) {
                 throw new IOException("current Windows user verification timed out");
             }
             byte[] raw = process.getInputStream().readNBytes(4097);
