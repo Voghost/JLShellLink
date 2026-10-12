@@ -146,7 +146,18 @@ public final class AgentApplication {
     }
 
     static void verifyEnrollmentTokenPermissions(Path file) throws IOException {
-        var expectedOwner = Files.getOwner(Path.of(System.getProperty("user.home")), LinkOption.NOFOLLOW_LINKS);
+        boolean posix = Files.getFileAttributeView(file, java.nio.file.attribute.PosixFileAttributeView.class) != null;
+        java.nio.file.attribute.UserPrincipal expectedOwner;
+        if (posix) {
+            expectedOwner = Files.getOwner(Path.of(System.getProperty("user.home")), LinkOption.NOFOLLOW_LINKS);
+        } else {
+            String user = System.getProperty("user.name");
+            String domain = System.getenv("USERDOMAIN");
+            if (user == null || user.isBlank()) throw new IOException("current token user cannot be verified");
+            String qualified = user.contains("\\") || domain == null || domain.isBlank()
+                    ? user : domain + "\\" + user;
+            expectedOwner = file.getFileSystem().getUserPrincipalLookupService().lookupPrincipalByName(qualified);
+        }
         if (!expectedOwner.equals(Files.getOwner(file, LinkOption.NOFOLLOW_LINKS))) {
             throw new IOException("token file must belong to the current user");
         }
