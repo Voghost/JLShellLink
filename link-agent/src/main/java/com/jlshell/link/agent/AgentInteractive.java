@@ -52,8 +52,16 @@ final class AgentInteractive {
     private static boolean configureProfile(Console console, AgentIdentityStore store) throws Exception {
         requireConsole(console);
         if (AgentServiceControl.running(store.directory())) throw new IOException("网关正在运行，请先停止后修改配置");
-        AgentProfile previous = AgentProfile.load(store.directory()).orElse(null);
         var registration = store.loadRegistration();
+        AgentProfile previous = null;
+        Path config = AgentProfile.config(store.directory());
+        if (java.nio.file.Files.exists(config, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+            AgentPrivateFiles.regular(config);
+            try { previous = AgentProfile.load(store.directory()).orElse(null); }
+            catch (IOException | IllegalArgumentException invalid) {
+                console.printf("旧公共配置无法读取，请重新填写；原节点身份和注册保留。%n");
+            }
+        }
         console.printf("%n配置向导：直接回车保留默认值；输入 :back 取消。%n");
         URI website;
         if (registration.isPresent()) {

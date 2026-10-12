@@ -1,6 +1,6 @@
 # 开始使用 JLShell Link Agent
 
-解压对应平台的包，运行：
+选择对应 OS/CPU 的包（当前 CI 为 Linux x64、macOS ARM64、Windows x64），解压后运行：
 
 | 平台 | 入口 |
 | --- | --- |
