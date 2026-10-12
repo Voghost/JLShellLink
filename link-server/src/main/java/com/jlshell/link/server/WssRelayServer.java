@@ -565,7 +565,10 @@ public final class WssRelayServer implements AutoCloseable {
     }
 
     private final class ControlWebSocketHandler extends io.netty.channel.SimpleChannelInboundHandler<WebSocketFrame> {
-        private final ControlAuthContext auth;
+        private ControlAuthContext auth;
+        private boolean refreshInFlight;
+        private long refreshWindowNanos;
+        private int refreshAttempts;
         private SignalRouter.ControlConnection connection;
         private ScheduledFuture<?> helloTimeout;
         private ScheduledFuture<?> reauthentication;
@@ -602,6 +605,10 @@ public final class WssRelayServer implements AutoCloseable {
                 return;
             }
             try {
+                if (controlCodec.isReauthentication(text.text())) {
+                    refreshAuthentication(context, controlCodec.decodeReauthentication(text.text()));
+                    return;
+                }
                 signalRouter.route(connection, controlCodec.decodeSignal(text.text()));
             } catch (SecurityException rejected) {
                 reject(context, "AUTH_DENIED");
@@ -650,19 +657,52 @@ public final class WssRelayServer implements AutoCloseable {
             context.executor().execute(write);
         }
 
+        private void refreshAuthentication(ChannelHandlerContext context,
+                ControlSignalJsonCodec.Reauthentication request) {
+            long now = System.nanoTime();
+            if (refreshAttempts == 0 || now - refreshWindowNanos >= java.util.concurrent.TimeUnit.MINUTES.toNanos(1)) {
+                refreshWindowNanos = now;
+                refreshAttempts = 0;
+            }
+            if (refreshInFlight || ++refreshAttempts > 4) { reject(context, "AUTH_DENIED"); return; }
+            refreshInFlight = true;
+            ControlAuthContext previous = auth;
+            try {
+                controlAuthenticator.authenticate(previous.handshake(), request.credential())
+                        .toCompletableFuture().orTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+                        .whenComplete((current, error) -> executeOnEventLoop(context, () -> {
+                            refreshInFlight = false;
+                            if (!context.channel().isActive()) return;
+                            if (auth != previous || error != null || current == null
+                                    || !sameIdentity(previous.principal(), current)
+                                    || !controlChallenges.consume(request.challengeId(), previous.handshake(),
+                                            current, request.proof())) {
+                                reject(context, "AUTH_DENIED");
+                                return;
+                            }
+                            auth = new ControlAuthContext(previous.handshake(), request.credential(), current);
+                            context.writeAndFlush(new TextWebSocketFrame(
+                                    controlCodec.encodeReauthenticated(request.challengeId())));
+                        }, context::close));
+            } catch (RuntimeException rejected) {
+                refreshInFlight = false;
+                reject(context, "AUTH_DENIED");
+            }
+        }
+
         private void reauthenticate(ChannelHandlerContext context) {
             if (!context.channel().isActive()) return;
             CompletionStage<ControlPeerAuthenticator.AuthenticatedPeer> stage;
+            ControlAuthContext checked = auth;
             try {
-                stage = controlAuthenticator.authenticate(auth.handshake(), auth.bearerCredential());
+                stage = controlAuthenticator.authenticate(checked.handshake(), checked.bearerCredential());
             } catch (RuntimeException rejected) {
                 context.close();
                 return;
             }
             stage.whenComplete((current, error) -> executeOnEventLoop(context, () -> {
-                if (error != null || current == null || !sameIdentity(auth.principal(), current)) {
-                    context.close();
-                }
+                if (auth == checked && (error != null || current == null
+                        || !sameIdentity(checked.principal(), current))) context.close();
             }, context::close));
         }
 

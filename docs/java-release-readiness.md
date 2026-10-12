@@ -1,5 +1,16 @@
 # Java Link 发布就绪状态
 
+## 最新进展（2026-10-12）
+
+- Website 最新 Jenkins 后端、依赖/许可证/秘密以及前后端镜像门禁通过；生产票据签名密钥已在用户批准范围内持久化，当前镜像保留，后端运行且 authority API 为 HTTP 200。
+- [Link #65](https://github.com/Voghost/JLShellLink/pull/65) 的客户端业务续租及 B/C 同代授权期限传播已实现。提交 `c46c6b29fbeb0efa08953d317cdb2790e3a1da05` Java21 全模块 131 项测试通过；[CI 38197889132](https://github.com/Voghost/JLShellLink/actions/runs/38197889132) 十项检查通过。
+- CI 合成合并来源 `791d0315134ff60a7c2366166a2de6770f8db283` 与上述功能提交 Git tree 同为 `d81b42db9e9816334f7d30e21087a9168d3163ec`。候选包不是 main 正式发行。
+- Relay 真实 SSH 已持续 361311 ms，六次业务续租成功。DIRECT 新一轮实际路径为 DIRECT，建连 2346 ms，但在 300056 ms 断开，四次续租返回成功；整体跨租约直连验收仍失败，不关闭 QA-01。
+- Windows SSH 密钥接入、管理员权限及无既有 Agent 服务/目录已确认；已核对候选 ZIP 和内置 Java21 实机启动，独立节点/TLS 身份已初始化。安装服务、注册、重启、登录边界和升级失败恢复尚未验收。
+- Windows 安装/重启范围已获用户批准，但一次性 enrollment-token 从隔离 B 传到 Windows 被自动审批拒绝，需要具体传递授权；令牌未传出。旧 JWT 授权仅覆盖原 A。
+- 桌面兼容版本发布准备见 [JLShell #88](https://github.com/Voghost/JLShell/pull/88)；票据密钥工具及维护文档见 [Website !76](https://gitlab.ooml.net/root/jlshellwebsite/-/merge_requests/76)。正式发布、平台完整生命周期、恢复窗口及 Rust 退役仍未完成。
+
+
 更新日期：2026-10-11。本文记录平台交付、迁移、综合验收、发布切换和 Rust 退役的
 放行状态。只记录版本、提交、汇总结果和公开工作流链接；不记录账号、节点标识、IP、
 SSH 信息、凭据、票据或原始生产日志。

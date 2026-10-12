@@ -19,6 +19,47 @@ import java.util.UUID;
 public final class ControlSignalJsonCodec {
     private static final int MAX_JSON_BYTES = 65_536;
 
+    public static final String REAUTH_CAPABILITY = "control-reauth-v1";
+
+    public boolean isReauthentication(String json) {
+        return "REAUTH".equals(parse(json).get("type"));
+    }
+
+    public Reauthentication decodeReauthentication(String json) {
+        Map<String, Object> value = parse(json);
+        try {
+            requireType(value, "REAUTH");
+            requireSentAt(value);
+            return new Reauthentication(UUID.fromString(JSONObjectUtils.getString(value, "challengeId")),
+                    JSONObjectUtils.getString(value, "credential"), JSONObjectUtils.getString(value, "proof"));
+        } catch (ParseException | IllegalArgumentException invalid) {
+            throw new IllegalArgumentException("invalid control reauthentication");
+        }
+    }
+
+    public String encodeReauthentication(UUID challengeId, String credential, String proof) {
+        var request = new Reauthentication(challengeId, credential, proof);
+        return JSONObjectUtils.toJSONString(Map.of("type", "REAUTH", "challengeId", request.challengeId().toString(),
+                "credential", request.credential(), "proof", request.proof(), "sentAt", Instant.now().toString()));
+    }
+
+    public String encodeReauthenticated(UUID challengeId) {
+        return JSONObjectUtils.toJSONString(Map.of("type", "REAUTH_READY", "challengeId", challengeId.toString(),
+                "sentAt", Instant.now().toString()));
+    }
+
+    public record Reauthentication(UUID challengeId, String credential, String proof) {
+        public Reauthentication {
+            java.util.Objects.requireNonNull(challengeId, "challengeId");
+            if (credential == null || credential.isBlank() || credential.length() > 4096
+                    || credential.chars().anyMatch(Character::isWhitespace)
+                    || proof == null || proof.length() > 128 || proof.isBlank()) {
+                throw new IllegalArgumentException("invalid control reauthentication");
+            }
+        }
+        @Override public String toString() { return "Reauthentication[redacted]"; }
+    }
+
     public Hello decodeHello(String json) {
         Map<String, Object> value = parse(json);
         try {
@@ -133,6 +174,7 @@ public final class ControlSignalJsonCodec {
     public String encodeReady(UUID nodeId, long connectionGeneration) {
         Map<String, Object> value = new LinkedHashMap<>();
         value.put("type", "READY");
+        value.put("capabilities", List.of(REAUTH_CAPABILITY));
         value.put("protocol", "link-v2");
         value.put("nodeId", nodeId.toString());
         value.put("connectionGeneration", connectionGeneration);
