@@ -31,11 +31,33 @@ function Quote-Argument([string]$Value) {
 }
 function Set-PrivateAcl([string]$Path, [string]$ServiceAccount, [string]$ServiceRights,
                        [string]$InstallerAccount) {
-    & icacls.exe $Path /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" `
-        "BUILTIN\Administrators:(OI)(CI)F" "${InstallerAccount}:(OI)(CI)F" `
-        "${ServiceAccount}:(OI)(CI)$ServiceRights" /T | Out-Null
-    if ($LASTEXITCODE -ne 0) { Fail "无法保护目录权限: $Path" }
+    $installer = [Security.Principal.NTAccount]::new($InstallerAccount).Translate([Security.Principal.SecurityIdentifier])
+    $service = [Security.Principal.NTAccount]::new($ServiceAccount).Translate([Security.Principal.SecurityIdentifier])
+    $security = [Security.AccessControl.DirectorySecurity]::new()
+    $security.SetOwner($installer)
+    $security.SetAccessRuleProtection($true, $false)
+    $inherit = [Security.AccessControl.InheritanceFlags]'ContainerInherit,ObjectInherit'
+    foreach ($sid in @([Security.Principal.SecurityIdentifier]::new('S-1-5-18'),
+                       [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'), $installer)) {
+        $security.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid,
+            [Security.AccessControl.FileSystemRights]::FullControl, $inherit,
+            [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow))
+    }
+    $rights = if ($ServiceRights -eq 'M') { [Security.AccessControl.FileSystemRights]::Modify }
+              else { [Security.AccessControl.FileSystemRights]::ReadAndExecute }
+    $security.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($service, $rights, $inherit,
+        [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow))
+    Set-Acl -LiteralPath $Path -AclObject $security
+    # Files need effective inherited rights, not directory-only ACEs after /inheritance:r /T.
+    foreach ($child in Get-ChildItem -LiteralPath $Path -Recurse -Force) {
+        $acl = if ($child.PSIsContainer) { [Security.AccessControl.DirectorySecurity]::new() }
+               else { [Security.AccessControl.FileSecurity]::new() }
+        $acl.SetOwner($installer)
+        $acl.SetAccessRuleProtection($false, $false)
+        Set-Acl -LiteralPath $child.FullName -AclObject $acl
+    }
 }
+
 function Set-ProgramAcl([string]$Path, [string]$ServiceAccount) {
     & icacls.exe $Path /inheritance:e | Out-Null
     if ($LASTEXITCODE -ne 0) { Fail "无法保留程序目录继承权限: $Path" }
