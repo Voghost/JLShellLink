@@ -80,10 +80,22 @@ switch ($Action) {
     uninstall {
         if (Test-Path $wrapperPath) {
             & $wrapperPath stop
+            if ($LASTEXITCODE -ne 0) { Fail '停止 Windows Service 失败。' }
+            $stoppingService = Get-Service -Name $serviceId -ErrorAction SilentlyContinue
+            if ($null -ne $stoppingService) {
+                $stoppingService.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+            }
             & $wrapperPath uninstall
             if ($LASTEXITCODE -ne 0) { Fail '卸载 Windows Service 失败。' }
         }
-        Remove-Item -Recurse -Force $programRoot -ErrorAction SilentlyContinue
+        # SCM may finish before Windows releases the bundled JVM library handles.
+        for ($attempt = 0; $attempt -lt 10 -and (Test-Path -LiteralPath $programRoot); $attempt++) {
+            try { Remove-Item -LiteralPath $programRoot -Recurse -Force -ErrorAction Stop }
+            catch {
+                if ($attempt -eq 9) { Fail '服务已卸载，但程序文件仍被占用；请检查后重试清理。' }
+                Start-Sleep -Milliseconds 500
+            }
+        }
         Write-Host "服务已移除；Agent 状态和身份仍保存在 $stateRoot。"
         exit 0
     }

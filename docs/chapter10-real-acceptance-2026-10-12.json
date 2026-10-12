@@ -41,12 +41,28 @@
     "existingAgentDirectories": false,
     "bundledJava21Started": true,
     "independentIdentityInitialized": true,
-    "registered": false,
-    "serviceInstalled": false,
-    "rebootAcceptance": false,
-    "unattendedStartupAcceptance": false,
-    "upgradeRecoveryAcceptance": false,
-    "latestCandidateZipSha256": "3d43053a0dab181804322aab2dfda84b80bda6bf3f54e6b8fb6a8a7c5df9514f"
+    "registered": true,
+    "serviceInstalled": true,
+    "rebootAcceptance": true,
+    "unattendedStartupAcceptance": true,
+    "upgradeRecoveryAcceptance": true,
+    "latestCandidateZipSha256": "3d43053a0dab181804322aab2dfda84b80bda6bf3f54e6b8fb6a8a7c5df9514f",
+    "serviceStopStartAcceptance": true,
+    "recentHeartbeatAfterReboot": true,
+    "recentHeartbeatAfterRecovery": true,
+    "scope": "real-isolated-service-with-bootstrap-and-install-script-fixes-not-final-unmodified-signed-package",
+    "signedCandidateSourceRevision": "d7df467bdbf16de239e2f818d5eb316acc0e4ebf",
+    "signedCandidateZipSha256": "69f1db991923d2f55f0035029a6c62290c3a991ff28ce8a04ee1b2f952492a51",
+    "enrollmentBootstrapRevision": "ff99c56d786f09d06f33791ed72caa419c18f584",
+    "powershellMajorVersion": 5,
+    "desktopProcessCountAfterReboot": 0,
+    "autoLoginEnabled": false,
+    "injectedUpgradeFailure": "post-install-missing-manifest",
+    "sameCandidateRecoveryOnly": true,
+    "serviceRemovedAfterAcceptance": true,
+    "programRemovedAfterAcceptance": true,
+    "identityRetainedAfterCleanup": true,
+    "registrationTokenFilesDeleted": true
   },
   "website": {
     "jenkinsGatesPassed": true,
@@ -89,5 +105,14 @@
     "skipped": 0,
     "scope": "includes-generation-owned-cleanup-and-consumed-invite-binding"
   },
-  "temporaryValidationJwtCleaned": true
+  "temporaryValidationJwtCleaned": true,
+  "desktopRelease": {
+    "version": "0.1.67",
+    "sourceRevision": "ca171d2a5a9bee7fc4007da5c5de43a2c3b88d48",
+    "runId": 38208589314,
+    "threePlatformBuildsPassed": true,
+    "githubReleasePublished": true,
+    "ossUploadExecuted": false,
+    "websitePublicationExecuted": false
+  }
 }

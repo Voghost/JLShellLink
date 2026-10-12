@@ -7,12 +7,12 @@
 - CI 合成合并来源 `791d0315134ff60a7c2366166a2de6770f8db283` 与上述功能提交 Git tree 同为 `d81b42db9e9816334f7d30e21087a9168d3163ec`。候选包不是 main 正式发行。
 - Relay 真实 SSH 已持续 361311 ms，六次业务续租成功。DIRECT 新一轮实际路径为 DIRECT，建连 2346 ms，但在 300056 ms 断开，四次续租返回成功；整体跨租约直连验收仍失败，不关闭 QA-01。
 - 后续源码 `b27b1a6322a346f82f887070c95e99bbece38fe0` 补充 WSS 同连接节点证明刷新，Java21 全模块 132 项测试及 [CI 38200962560](https://github.com/Voghost/JLShellLink/actions/runs/38200962560) 全部通过。实际双出口 SSH：DIRECT 建连 2735 ms、持续 363213 ms；RELAY 建连 6100 ms、持续 366778 ms；两条路径各五次业务续租成功，结束后打开/等待隧道均为 0。跨租约组件缺陷已关闭，但不代替正式签名包与兼容宿主综合验收。
-- Windows SSH 密钥接入、管理员权限及无既有 Agent 服务/目录已确认；已核对候选 ZIP 和内置 Java21 实机启动，独立节点/TLS 身份已初始化。安装服务、注册、重启、登录边界和升级失败恢复尚未验收。
-- Windows 安装/重启范围已获用户批准，但一次性 enrollment-token 从隔离 B 传到 Windows 被自动审批拒绝，需要具体传递授权；令牌未传出。旧 JWT 授权仅覆盖原 A。
-- 桌面兼容版本发布准备见 [JLShell #88](https://github.com/Voghost/JLShell/pull/88)；票据密钥工具及维护文档见 [Website !76](https://gitlab.ooml.net/root/jlshellwebsite/-/merge_requests/76)。正式发布、平台完整生命周期、恢复窗口及 Rust 退役仍未完成。
+- Windows 实机已完成一次性注册、真实 Java Agent 专属虚拟账号安装、启停、重启后无人桌面登录自动启动、隔离 B 心跳及同候选升级失败恢复。测试服务和程序目录已移除，身份与注册状态保留；令牌临时文件已删除。原签名候选 JAR 配合本轮注册/脚本修复完成实测，统一源码的原样签名包验收仍待修复合入和重打包。
+- [JLShell 0.1.67](https://github.com/Voghost/JLShell/releases/tag/v0.1.67) 已从 main `ca171d2a5a9bee7fc4007da5c5de43a2c3b88d48` 发布，三平台构建通过：[流水线](https://github.com/Voghost/JLShell/actions/runs/38208589314)。OSS 上传和 Website 发布未执行；发布成功不代替桌面插件真实业务验收。
+- Windows 原生权限、编码与卸载文件占用修复见 [Link #66](https://github.com/Voghost/JLShellLink/pull/66)；票据密钥工具及维护文档见 [Website !76](https://gitlab.ooml.net/root/jlshellwebsite/-/merge_requests/76)。Linux/macOS 完整生命周期、统一制品综合 QA、Link/插件正式发布、恢复窗口及 Rust 退役仍未完成。
 
 
-更新日期：2026-10-11。本文记录平台交付、迁移、综合验收、发布切换和 Rust 退役的
+更新日期：2026-10-12。本文记录平台交付、迁移、综合验收、发布切换和 Rust 退役的
 放行状态。只记录版本、提交、汇总结果和公开工作流链接；不记录账号、节点标识、IP、
 SSH 信息、凭据、票据或原始生产日志。
 
